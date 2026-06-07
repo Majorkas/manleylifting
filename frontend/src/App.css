@@ -1,0 +1,221 @@
+.fade-up {
+  opacity: 0;
+  transform: translateY(10px);
+  animation: fadeUp 0.6s ease-out forwards;
+}
+
+.delay-1 {
+  animation-delay: 0.14s;
+}
+
+.footer-link {
+  color: #334155;
+  transition: color 0.2s ease;
+}
+
+.footer-link:hover {
+  color: #123a7a;
+}
+
+.cookie-panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  animation: cookieIn 0.25s ease-out forwards;
+}
+
+.hero-photo {
+  background-image: url('/manley-lifting-hero-bg.jpg');
+  background-size: cover;
+  background-repeat: no-repeat;
+  background-position: 52% 42%;
+}
+
+.hero-photo__overlay {
+  min-height: 520px;
+  display: flex;
+  align-items: center;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(8, 16, 34, 0.78) 0%,
+      rgba(8, 16, 34, 0.62) 38%,
+      rgba(8, 16, 34, 0.35) 100%
+    );
+}
+
+.site-header {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 70;
+  transition: background-color 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.site-header--transparent {
+  background: linear-gradient(
+    180deg,
+    rgba(8, 16, 34, 0.62) 0%,
+    rgba(8, 16, 34, 0.32) 55%,
+    rgba(8, 16, 34, 0) 100%
+  );
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.site-header--solid {
+  background: #f8fafc;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.12);
+  box-shadow: 0 8px 24px rgba(2, 6, 23, 0.08);
+}
+
+.nav-link {
+  color: rgba(255, 255, 255, 0.9);
+  transition: color 0.2s ease;
+}
+
+.nav-link:hover {
+  color: #fecaca;
+}
+
+.site-header--transparent .nav-link {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.site-header--transparent .nav-link:hover {
+  color: #fecaca;
+}
+
+.site-header--solid .nav-link {
+  color: #123a7a;
+}
+
+.site-header--solid .nav-link:hover {
+  color: #c61f2a;
+}
+
+.menu-button {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 8px;
+  background: transparent;
+}
+
+.site-header--solid .menu-button {
+  border-color: rgba(15, 23, 42, 0.18);
+}
+
+.menu-icon,
+.menu-icon::before,
+.menu-icon::after {
+  width: 18px;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.92);
+  transition: transform 0.2s ease, opacity 0.2s ease, background-color 0.2s ease;
+  content: '';
+  display: block;
+  border-radius: 2px;
+}
+
+.menu-icon {
+  position: relative;
+}
+
+.menu-icon::before {
+  position: absolute;
+  transform: translateY(-6px);
+}
+
+.menu-icon::after {
+  position: absolute;
+  transform: translateY(6px);
+}
+
+.site-header--solid .menu-icon,
+.site-header--solid .menu-icon::before,
+.site-header--solid .menu-icon::after {
+  background: #123a7a;
+}
+
+.menu-icon.open {
+  background: transparent;
+}
+
+.menu-icon.open::before {
+  transform: rotate(45deg);
+}
+
+.menu-icon.open::after {
+  transform: rotate(-45deg);
+}
+
+.mobile-nav {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.25s ease;
+}
+
+.mobile-nav.open {
+  max-height: 240px;
+}
+
+.mobile-nav a {
+  display: block;
+  padding: 12px 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #123a7a;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.mobile-nav a:hover {
+  color: #c61f2a;
+}
+
+@keyframes fadeUp {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes cookieIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 900px) {
+  .hero-photo {
+    background-position: 56% 40%;
+  }
+
+  .hero-photo__overlay {
+    min-height: 460px;
+    background:
+      linear-gradient(
+        180deg,
+        rgba(8, 16, 34, 0.74) 0%,
+        rgba(8, 16, 34, 0.55) 55%,
+        rgba(8, 16, 34, 0.44) 100%
+      );
+  }
+}
+
+@media (min-width: 768px) {
+  .menu-button {
+    display: none;
+  }
+
+  .mobile-nav {
+    display: none;
+  }
+}
