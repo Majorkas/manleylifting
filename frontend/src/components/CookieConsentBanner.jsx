@@ -2,20 +2,16 @@ import { useEffect, useState } from 'react'
 import { defaultPreferences, loadConsent, saveConsent } from '../utils/cookieConsent'
 
 export default function CookieConsentBanner({ regionPolicy, onConsentChange }) {
-  const [showCookieBanner, setShowCookieBanner] = useState(false)
+  const [initialConsent] = useState(() => loadConsent())
+  const [showCookieBanner, setShowCookieBanner] = useState(() => !initialConsent)
   const [showPreferences, setShowPreferences] = useState(false)
-  const [prefs, setPrefs] = useState(defaultPreferences())
+  const [prefs, setPrefs] = useState(() => initialConsent?.preferences || defaultPreferences())
 
   useEffect(() => {
-    const saved = loadConsent()
-    if (saved) {
-      setPrefs(saved.preferences || defaultPreferences())
-      onConsentChange(saved.type)
-      setShowCookieBanner(false)
-      return
+    if (initialConsent) {
+      onConsentChange(initialConsent.type)
     }
-    setShowCookieBanner(true)
-  }, [onConsentChange])
+  }, [initialConsent, onConsentChange])
 
   function finish(type, preferences) {
     saveConsent(type, preferences, regionPolicy)

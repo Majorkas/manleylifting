@@ -71,11 +71,14 @@ export default function ContactPage() {
     <div className="min-h-screen bg-slate-50">
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex w-full max-w-7xl items-center justify-between px-6 py-4">
-          <img
-            src="/logo-navbar.png"
-            alt="Manley Lifting logo"
-            className="h-12 w-auto md:h-14"
-          />
+          <Link to="/" aria-label="Go to homepage">
+            <img
+              src="/logo-navbar.png"
+              alt="Manley Lifting logo"
+              className="h-12 w-auto md:h-14"
+            />
+          </Link>
+
           <Link to="/" className="text-sm font-semibold text-[#123A7A] hover:text-[#C61F2A]">
             Back to Home
           </Link>
@@ -86,7 +89,8 @@ export default function ContactPage() {
         <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
           <h2 className="text-2xl font-extrabold text-[#123A7A]">Send Us an Enquiry</h2>
           <p className="mt-2 text-slate-600">
-            Tell us about your lifting equipment requirements and a member of our family team in Oulart, Co. Wexford will get back to you promptly.
+            Tell us about your lifting equipment requirements and a member of our family team in
+            Oulart, Co. Wexford will get back to you promptly.
           </p>
 
           <form className="mt-8 space-y-5" onSubmit={onSubmit}>
@@ -148,7 +152,13 @@ export default function ContactPage() {
             </div>
 
             {status.text ? (
-              <p className={status.type === 'success' ? 'text-sm font-medium text-green-700' : 'text-sm font-medium text-red-700'}>
+              <p
+                className={
+                  status.type === 'success'
+                    ? 'text-sm font-medium text-green-700'
+                    : 'text-sm font-medium text-red-700'
+                }
+              >
                 {status.text}
               </p>
             ) : null}
