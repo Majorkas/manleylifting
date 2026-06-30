@@ -124,12 +124,19 @@ DATABASES = {
 }
 
 USE_REDIS_CACHE = env_bool("USE_REDIS_CACHE", not DEBUG)
+REDIS_URL = os.getenv("REDIS_URL", "").strip()
 
 if USE_REDIS_CACHE:
+    if not REDIS_URL:
+        if DEBUG:
+            REDIS_URL = "redis://127.0.0.1:6379/1"
+        else:
+            raise ValueError("REDIS_URL must be set when USE_REDIS_CACHE is enabled")
+
     CACHES = {
         "default": {
             "BACKEND": "django_redis.cache.RedisCache",
-            "LOCATION": os.getenv("REDIS_URL", "redis://127.0.0.1:6379/1"),
+            "LOCATION": REDIS_URL,
             "OPTIONS": {
                 "CLIENT_CLASS": "django_redis.client.DefaultClient",
                 "IGNORE_EXCEPTIONS": True,

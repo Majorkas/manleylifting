@@ -107,6 +107,134 @@ class ShopifyReadEndpointTests(BaseApiTestCase):
 
 
 class CheckoutUrlTests(BaseApiTestCase):
+    @patch("api.views.REQUIRE_TURNSTILE", False)
+    @patch("api.views.CHECKOUT_ALLOWED_ORIGINS", {"https://manleylifting.ie"})
+    @patch("api.views.ENFORCE_CHECKOUT_ORIGIN", True)
+    def test_checkout_url_rejects_disallowed_origin(self):
+        response = self.client.post(
+            "/api/shop/checkout-url/",
+            data=json.dumps(
+                {
+                    "checkoutRef": "origin_fail_1",
+                    "items": [{"variantId": "gid://shopify/ProductVariant/1", "quantity": 1}],
+                }
+            ),
+            content_type="application/json",
+            HTTP_ORIGIN="https://evil.example",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"], "Invalid request origin")
+
+    @patch(
+        "api.views._shopify_graphql",
+        return_value=(
+            {
+                "cartCreate": {
+                    "cart": {"id": "gid://shopify/Cart/999", "checkoutUrl": "https://checkout.example"},
+                    "userErrors": [],
+                }
+            },
+            None,
+            200,
+        ),
+    )
+    @patch("api.views.REQUIRE_TURNSTILE", False)
+    @patch("api.views.CHECKOUT_ALLOWED_ORIGINS", {"https://manleylifting.ie"})
+    @patch("api.views.ENFORCE_CHECKOUT_ORIGIN", True)
+    def test_checkout_url_accepts_allowed_origin(self, _mock_graphql):
+        response = self.client.post(
+            "/api/shop/checkout-url/",
+            data=json.dumps(
+                {
+                    "checkoutRef": "origin_ok_1",
+                    "items": [{"variantId": "gid://shopify/ProductVariant/1", "quantity": 1}],
+                }
+            ),
+            content_type="application/json",
+            HTTP_ORIGIN="https://manleylifting.ie",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    @patch("api.views._verify_turnstile_token", return_value=False)
+    @patch("api.views.REQUIRE_TURNSTILE", True)
+    @patch("api.views.ENFORCE_CHECKOUT_ORIGIN", False)
+    def test_checkout_url_turnstile_rejects_invalid_token(self, _mock_verify):
+        response = self.client.post(
+            "/api/shop/checkout-url/",
+            data=json.dumps(
+                {
+                    "checkoutRef": "turnstile_fail_1",
+                    "items": [{"variantId": "gid://shopify/ProductVariant/1", "quantity": 1}],
+                    "antiBotToken": "invalid-token",
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"], "Bot verification failed")
+
+    @patch(
+        "api.views._shopify_graphql",
+        return_value=(
+            {
+                "cartCreate": {
+                    "cart": {"id": "gid://shopify/Cart/999", "checkoutUrl": "https://checkout.example"},
+                    "userErrors": [],
+                }
+            },
+            None,
+            200,
+        ),
+    )
+    @patch("api.views._verify_turnstile_token", return_value=True)
+    @patch("api.views.REQUIRE_TURNSTILE", True)
+    @patch("api.views.ENFORCE_CHECKOUT_ORIGIN", False)
+    def test_checkout_url_turnstile_accepts_valid_token(self, _mock_verify, _mock_graphql):
+        response = self.client.post(
+            "/api/shop/checkout-url/",
+            data=json.dumps(
+                {
+                    "checkoutRef": "turnstile_ok_1",
+                    "items": [{"variantId": "gid://shopify/ProductVariant/1", "quantity": 1}],
+                    "antiBotToken": "valid-token",
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
+    @patch(
+        "api.views._shopify_graphql",
+        return_value=(
+            {
+                "cartCreate": {
+                    "cart": {"id": "gid://shopify/Cart/999", "checkoutUrl": "https://checkout.example"},
+                    "userErrors": [],
+                }
+            },
+            None,
+            200,
+        ),
+    )
+    def test_checkout_url_is_csrf_exempt(self, _mock_graphql):
+        strict_client = Client(enforce_csrf_checks=True)
+        response = strict_client.post(
+            "/api/shop/checkout-url/",
+            data=json.dumps(
+                {
+                    "checkoutRef": "csrf_exempt_ref_1",
+                    "items": [{"variantId": "gid://shopify/ProductVariant/1", "quantity": 1}],
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+
     @patch("api.views._is_rate_limited", return_value=True)
     def test_checkout_url_rate_limited(self, _mock_limit):
         response = self.client.post(
@@ -458,6 +586,15 @@ class HelperLogicTests(TestCase):
     def test_client_ip_uses_remote_addr_by_default(self):
         request = self.factory.get("/api/hello/", REMOTE_ADDR="10.0.0.5")
         self.assertEqual(views._client_ip(request), "10.0.0.5")
+
+    def test_rate_limiter_blocks_after_limit(self):
+        request = self.factory.get("/api/hello/", REMOTE_ADDR="10.0.0.5")
+
+        # The limiter increments until the stored count reaches limit; the next hit is blocked.
+        self.assertFalse(views._is_rate_limited(request, "shop-read", limit=3, window_seconds=60))
+        self.assertFalse(views._is_rate_limited(request, "shop-read", limit=3, window_seconds=60))
+        self.assertFalse(views._is_rate_limited(request, "shop-read", limit=3, window_seconds=60))
+        self.assertTrue(views._is_rate_limited(request, "shop-read", limit=3, window_seconds=60))
 
     @override_settings(TRUST_X_FORWARDED_FOR=False, TRUSTED_PROXY_IPS=["127.0.0.1"])
     def test_client_ip_ignores_xff_when_not_trusted(self):

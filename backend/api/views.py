@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 from datetime import timedelta
+from urllib.parse import urlencode, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -34,9 +35,33 @@ def _env_int(name, default):
     return int(default)
 
 
+def _env_bool(name, default=False):
+  value = os.getenv(name)
+  if value is None:
+    return bool(default)
+  return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_list(name, default=None):
+  if default is None:
+    default = []
+  value = os.getenv(name, "")
+  if not value.strip():
+    return list(default)
+  return [item.strip() for item in value.split(",") if item.strip()]
+
+
 PENDING_CHECKOUT_TTL_MINUTES = max(5, _env_int("SHOP_PENDING_TTL_MINUTES", 120))
 PENDING_CHECKOUT_RETENTION_DAYS = max(1, _env_int("SHOP_PENDING_RETENTION_DAYS", 30))
 WEBHOOK_EVENT_RETENTION_DAYS = max(1, _env_int("SHOP_WEBHOOK_EVENT_RETENTION_DAYS", 30))
+ENFORCE_CHECKOUT_ORIGIN = _env_bool("SHOP_ENFORCE_CHECKOUT_ORIGIN", not bool(getattr(settings, "DEBUG", False)))
+REQUIRE_CHECKOUT_ORIGIN = _env_bool("SHOP_REQUIRE_CHECKOUT_ORIGIN", False)
+CHECKOUT_ALLOWED_ORIGINS = set(
+  _env_list("SHOP_CHECKOUT_ALLOWED_ORIGINS", getattr(settings, "CORS_ALLOWED_ORIGINS", []))
+)
+TURNSTILE_SECRET_KEY = os.getenv("SHOP_TURNSTILE_SECRET_KEY", "").strip()
+REQUIRE_TURNSTILE = _env_bool("SHOP_REQUIRE_TURNSTILE", bool(TURNSTILE_SECRET_KEY))
+TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 
 PRODUCT_FIELDS = """
 id
@@ -72,6 +97,13 @@ def csrf_seed(request):
 
 
 def _safe_shop_error(message, status=502):
+  return JsonResponse({"error": message}, status=status)
+
+
+def _client_error(message, status=400, log_message="", log_level="warning", **context):
+  if log_message:
+    logger_fn = getattr(logger, log_level, logger.warning)
+    logger_fn("%s | context=%s", log_message, context or {})
   return JsonResponse({"error": message}, status=status)
 
 
@@ -117,6 +149,79 @@ def _is_rate_limited(request, scope, limit, window_seconds):
     cache.set(key, int(current) + 1, timeout=window_seconds)
 
   return False
+
+
+def _normalized_origin(value):
+  candidate = str(value or "").strip()
+  if not candidate:
+    return ""
+
+  parsed = urlparse(candidate)
+  if not parsed.scheme or not parsed.netloc:
+    return ""
+
+  return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+
+def _request_origin(request):
+  origin = str(request.META.get("HTTP_ORIGIN", "")).strip()
+  if origin:
+    return _normalized_origin(origin)
+
+  referer = str(request.META.get("HTTP_REFERER", "")).strip()
+  if not referer:
+    return ""
+
+  return _normalized_origin(referer)
+
+
+def _is_allowed_checkout_origin(request):
+  if not ENFORCE_CHECKOUT_ORIGIN:
+    return True
+
+  request_origin = _request_origin(request)
+  if not request_origin:
+    return not REQUIRE_CHECKOUT_ORIGIN
+
+  allowed = {_normalized_origin(item) for item in CHECKOUT_ALLOWED_ORIGINS}
+  allowed.discard("")
+  return request_origin in allowed
+
+
+def _verify_turnstile_token(token, remote_ip=""):
+  if not REQUIRE_TURNSTILE:
+    return True
+
+  if not TURNSTILE_SECRET_KEY:
+    logger.error("SHOP_TURNSTILE_SECRET_KEY is required when SHOP_REQUIRE_TURNSTILE is enabled")
+    return False
+
+  response_token = str(token or "").strip()
+  if not response_token:
+    return False
+
+  payload = {
+    "secret": TURNSTILE_SECRET_KEY,
+    "response": response_token,
+  }
+  if remote_ip:
+    payload["remoteip"] = remote_ip
+
+  req = Request(
+    TURNSTILE_VERIFY_URL,
+    data=urlencode(payload).encode("utf-8"),
+    headers={"Content-Type": "application/x-www-form-urlencoded"},
+    method="POST",
+  )
+
+  try:
+    with urlopen(req, timeout=10) as response:
+      body = json.loads(response.read().decode("utf-8") or "{}")
+  except Exception:
+    logger.warning("Turnstile verification request failed")
+    return False
+
+  return bool(body.get("success"))
 
 
 def _is_valid_checkout_ref(value):
@@ -314,7 +419,13 @@ def _map_product(node):
 @require_GET
 def shop_featured_products(request):
   if _is_rate_limited(request, "shop-read", limit=120, window_seconds=60):
-    return JsonResponse({"error": "Too many requests"}, status=429)
+    return _client_error(
+      "Too many requests",
+      status=429,
+      log_message="Featured products rate limit exceeded",
+      ip=_client_ip(request),
+      scope="shop-read",
+    )
 
   query = f"""
   query FeaturedProducts {{
@@ -340,7 +451,13 @@ def shop_featured_products(request):
 @require_GET
 def shop_collections(request):
   if _is_rate_limited(request, "shop-read", limit=120, window_seconds=60):
-    return JsonResponse({"error": "Too many requests"}, status=429)
+    return _client_error(
+      "Too many requests",
+      status=429,
+      log_message="Collections rate limit exceeded",
+      ip=_client_ip(request),
+      scope="shop-read",
+    )
 
   query = """
   query Collections {
@@ -375,7 +492,14 @@ def shop_collections(request):
 @require_GET
 def shop_collection_detail(request, handle):
   if _is_rate_limited(request, "shop-read", limit=120, window_seconds=60):
-    return JsonResponse({"error": "Too many requests"}, status=429)
+    return _client_error(
+      "Too many requests",
+      status=429,
+      log_message="Collection detail rate limit exceeded",
+      handle=handle,
+      ip=_client_ip(request),
+      scope="shop-read",
+    )
 
   query = f"""
   query CollectionByHandle($handle: String!) {{
@@ -404,7 +528,14 @@ def shop_collection_detail(request, handle):
 
   collection = data.get("collection")
   if not collection:
-    return JsonResponse({"error": "Collection not found"}, status=404)
+    return _client_error(
+      "Collection not found",
+      status=404,
+      log_message="Collection detail lookup returned no collection",
+      handle=handle,
+      ip=_client_ip(request),
+      log_level="info",
+    )
 
   products = [_map_product(node) for node in collection.get("products", {}).get("nodes", [])]
   products = [item for item in products if item]
@@ -424,7 +555,14 @@ def shop_collection_detail(request, handle):
 @require_GET
 def shop_product_detail(request, handle):
   if _is_rate_limited(request, "shop-read", limit=120, window_seconds=60):
-    return JsonResponse({"error": "Too many requests"}, status=429)
+    return _client_error(
+      "Too many requests",
+      status=429,
+      log_message="Product detail rate limit exceeded",
+      handle=handle,
+      ip=_client_ip(request),
+      scope="shop-read",
+    )
 
   query = f"""
   query ProductByHandle($handle: String!) {{
@@ -446,15 +584,38 @@ def shop_product_detail(request, handle):
 
   product = _map_product(data.get("product"))
   if not product:
-    return JsonResponse({"error": "Product not found"}, status=404)
+    return _client_error(
+      "Product not found",
+      status=404,
+      log_message="Product detail lookup returned no product",
+      handle=handle,
+      ip=_client_ip(request),
+      log_level="info",
+    )
 
   return JsonResponse({"product": product})
 
 
+@csrf_exempt
 @require_POST
 def shop_checkout_url(request):
+  if not _is_allowed_checkout_origin(request):
+    return _client_error(
+      "Invalid request origin",
+      status=403,
+      log_message="Checkout blocked due to disallowed origin",
+      origin=_request_origin(request),
+      allowed_origins=sorted({_normalized_origin(item) for item in CHECKOUT_ALLOWED_ORIGINS if item}),
+      ip=_client_ip(request),
+    )
+
   if _is_rate_limited(request, "shop-checkout", limit=30, window_seconds=60):
-    return JsonResponse({"error": "Too many requests"}, status=429)
+    return _client_error(
+      "Too many requests",
+      status=429,
+      log_message="Checkout rate limit exceeded",
+      ip=_client_ip(request),
+    )
 
   _expire_stale_pending_checkouts()
   _purge_old_terminal_checkouts()
@@ -462,16 +623,42 @@ def shop_checkout_url(request):
   try:
     payload = json.loads(request.body.decode("utf-8") or "{}")
   except Exception:
-    return JsonResponse({"error": "Invalid JSON body"}, status=400)
+    return _client_error(
+      "Invalid JSON body",
+      status=400,
+      log_message="Checkout payload JSON parsing failed",
+      ip=_client_ip(request),
+    )
 
   items = payload.get("items") or []
   checkout_ref = str(payload.get("checkoutRef") or "").strip()
+  anti_bot_token = str(payload.get("antiBotToken") or "").strip()
+
+  if not _verify_turnstile_token(anti_bot_token, remote_ip=_client_ip(request)):
+    return _client_error(
+      "Bot verification failed",
+      status=403,
+      log_message="Turnstile verification failed for checkout",
+      ip=_client_ip(request),
+    )
 
   if not _is_valid_checkout_ref(checkout_ref):
-    return JsonResponse({"error": "Valid checkoutRef is required"}, status=400)
+    return _client_error(
+      "Valid checkoutRef is required",
+      status=400,
+      log_message="Checkout rejected due to invalid checkoutRef",
+      checkout_ref=checkout_ref,
+      ip=_client_ip(request),
+    )
 
   if not isinstance(items, list) or not items:
-    return JsonResponse({"error": "Items are required"}, status=400)
+    return _client_error(
+      "Items are required",
+      status=400,
+      log_message="Checkout rejected due to empty items list",
+      checkout_ref=checkout_ref,
+      ip=_client_ip(request),
+    )
 
   lines = []
   for item in items:
@@ -488,7 +675,14 @@ def shop_checkout_url(request):
     lines.append({"merchandiseId": variant_id, "quantity": quantity})
 
   if not lines:
-    return JsonResponse({"error": "No valid checkout lines provided"}, status=400)
+    return _client_error(
+      "No valid checkout lines provided",
+      status=400,
+      log_message="Checkout rejected because all lines were invalid",
+      checkout_ref=checkout_ref,
+      item_count=len(items),
+      ip=_client_ip(request),
+    )
 
   status_token = _new_status_token()
 
@@ -532,13 +726,27 @@ def shop_checkout_url(request):
   result = data.get("cartCreate") or {}
   user_errors = result.get("userErrors") or []
   if user_errors:
-    return JsonResponse({"error": "Checkout validation failed"}, status=400)
+    return _client_error(
+      "Checkout validation failed",
+      status=400,
+      log_message="Shopify returned checkout validation errors",
+      checkout_ref=checkout_ref,
+      user_errors=user_errors,
+      ip=_client_ip(request),
+    )
 
   cart = result.get("cart") or {}
   shopify_cart_id = str(cart.get("id") or "")
   checkout_url = str(cart.get("checkoutUrl") or "")
   if not checkout_url:
-    return JsonResponse({"error": "Checkout URL not returned"}, status=400)
+    return _client_error(
+      "Checkout URL not returned",
+      status=400,
+      log_message="Shopify cartCreate response missing checkoutUrl",
+      checkout_ref=checkout_ref,
+      shopify_cart_id=shopify_cart_id,
+      ip=_client_ip(request),
+    )
 
   PendingCheckout.objects.filter(checkout_ref=checkout_ref).update(
     shopify_cart_id=shopify_cart_id,
@@ -556,7 +764,12 @@ def shop_checkout_url(request):
 @require_GET
 def shop_checkout_status(request):
   if _is_rate_limited(request, "shop-status", limit=120, window_seconds=60):
-    return JsonResponse({"error": "Too many requests"}, status=429)
+    return _client_error(
+      "Too many requests",
+      status=429,
+      log_message="Checkout status rate limit exceeded",
+      ip=_client_ip(request),
+    )
 
   _expire_stale_pending_checkouts()
   _purge_old_terminal_checkouts()
@@ -565,16 +778,35 @@ def shop_checkout_status(request):
   status_token = str(request.GET.get("statusToken") or "").strip()
 
   if not _is_valid_checkout_ref(checkout_ref):
-    return JsonResponse({"error": "Valid checkoutRef is required"}, status=400)
+    return _client_error(
+      "Valid checkoutRef is required",
+      status=400,
+      log_message="Checkout status rejected due to invalid checkoutRef",
+      checkout_ref=checkout_ref,
+      ip=_client_ip(request),
+    )
   if not _is_valid_status_token(status_token):
-    return JsonResponse({"error": "Valid statusToken is required"}, status=400)
+    return _client_error(
+      "Valid statusToken is required",
+      status=400,
+      log_message="Checkout status rejected due to invalid status token",
+      checkout_ref=checkout_ref,
+      ip=_client_ip(request),
+    )
 
   checkout = PendingCheckout.objects.filter(
     checkout_ref=checkout_ref,
     status_token=status_token,
   ).first()
   if not checkout:
-    return JsonResponse({"error": "Checkout not found"}, status=404)
+    return _client_error(
+      "Checkout not found",
+      status=404,
+      log_message="Checkout status lookup returned no record",
+      checkout_ref=checkout_ref,
+      ip=_client_ip(request),
+      log_level="info",
+    )
 
   confirmed_at = checkout.confirmed_at.isoformat() if checkout.confirmed_at else None
   return JsonResponse(
@@ -593,17 +825,35 @@ def shopify_orders_create_webhook(request):
   _purge_old_processed_webhooks()
 
   if not _verify_shopify_webhook(request):
-    return JsonResponse({"error": "Invalid webhook signature"}, status=401)
+    return _client_error(
+      "Invalid webhook signature",
+      status=401,
+      log_message="Webhook rejected due to invalid signature",
+      ip=_client_ip(request),
+    )
 
   shop_domain = str(request.META.get("HTTP_X_SHOPIFY_SHOP_DOMAIN", "")).strip()
   if not _is_valid_shop_domain(shop_domain):
-    return JsonResponse({"error": "Invalid webhook shop domain"}, status=401)
+    return _client_error(
+      "Invalid webhook shop domain",
+      status=401,
+      log_message="Webhook rejected due to shop domain mismatch",
+      shop_domain=shop_domain,
+      ip=_client_ip(request),
+    )
 
   webhook_id = str(request.META.get("HTTP_X_SHOPIFY_WEBHOOK_ID", "")).strip()
   topic = str(request.META.get("HTTP_X_SHOPIFY_TOPIC", "")).strip()
 
   if not _is_valid_webhook_id(webhook_id):
-    return JsonResponse({"error": "Missing or invalid webhook id"}, status=400)
+    return _client_error(
+      "Missing or invalid webhook id",
+      status=400,
+      log_message="Webhook rejected due to missing or malformed webhook id",
+      webhook_id=webhook_id,
+      topic=topic,
+      ip=_client_ip(request),
+    )
 
   event, created = ProcessedWebhookEvent.objects.get_or_create(
     webhook_id=webhook_id,
@@ -616,7 +866,14 @@ def shopify_orders_create_webhook(request):
   try:
     order_payload = json.loads(request.body.decode("utf-8") or "{}")
   except Exception:
-    return JsonResponse({"error": "Invalid JSON body"}, status=400)
+    return _client_error(
+      "Invalid JSON body",
+      status=400,
+      log_message="Webhook payload JSON parsing failed",
+      webhook_id=webhook_id,
+      topic=topic,
+      ip=_client_ip(request),
+    )
 
   checkout_ref = _extract_checkout_ref_from_order(order_payload)
   if not checkout_ref:
