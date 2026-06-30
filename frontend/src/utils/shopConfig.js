@@ -23,6 +23,80 @@ function apiUrl(path) {
   return base + path
 }
 
+function toFriendlyApiError(rawMessage, status, path) {
+  const message = String(rawMessage || '').trim().toLowerCase()
+
+  if (status === 429 || message === 'too many requests') {
+    return 'You are making requests too quickly. Please wait a moment and try again.'
+  }
+
+  if (message === 'collection not found') {
+    return 'That collection is no longer available.'
+  }
+
+  if (message === 'product not found') {
+    return 'That product is no longer available.'
+  }
+
+  if (message === 'checkout not found') {
+    return 'Checkout not found'
+  }
+
+  if (message === 'valid statustoken is required') {
+    return 'We could not verify your checkout status. Please refresh the page and try again.'
+  }
+
+  if (message === 'valid checkoutref is required') {
+    return 'We could not verify your checkout details. Please refresh the page and try again.'
+  }
+
+  if (message === 'invalid json body') {
+    return 'We could not process your request right now. Please try again.'
+  }
+
+  if (message === 'invalid request origin') {
+    return 'We could not verify your request source. Please refresh the page and try again.'
+  }
+
+  if (message === 'bot verification failed') {
+    return 'We could not verify the security check. Please try again.'
+  }
+
+  if (path.includes('/shop/checkout-url/')) {
+    if (message === 'valid checkoutref is required') {
+      return 'We could not start checkout because your cart reference was invalid. Please refresh and try again.'
+    }
+    if (message === 'items are required' || message === 'no valid checkout lines provided') {
+      return 'Your cart appears to be empty or invalid. Please review your cart and try again.'
+    }
+    if (message === 'checkout validation failed') {
+      return 'We could not validate your checkout details. Please review your cart and try again.'
+    }
+    if (message === 'checkout url not returned') {
+      return 'Checkout could not be started right now. Please try again in a moment.'
+    }
+  }
+
+  if (message.startsWith('could not load')) {
+    return 'We could not load this content right now. Please try again in a moment.'
+  }
+
+  if (message.startsWith('could not start checkout')) {
+    return 'We could not start checkout right now. Please try again in a moment.'
+  }
+
+  if (message === 'request failed') {
+    return 'Something went wrong while contacting the server. Please try again.'
+  }
+
+  return String(rawMessage || '').trim() || 'Something went wrong. Please try again.'
+}
+
+export function getUserFacingErrorMessage(error, fallbackMessage = 'Something went wrong. Please try again.') {
+  const message = String(error?.message || '').trim()
+  return message || fallbackMessage
+}
+
 function getCookie(name) {
   if (typeof document === 'undefined') return ''
   const cookie = document.cookie
@@ -107,12 +181,26 @@ export function clearPendingCheckout() {
   window.localStorage.removeItem(PENDING_CHECKOUT_KEY)
 }
 
-async function parseResponse(response) {
+async function parseResponse(response, path = '') {
   const body = await response.json().catch(() => ({}))
 
   if (!response.ok) {
-    const message = typeof body.error === 'string' ? body.error : 'Request failed'
-    throw new Error(message)
+    const rawMessage = typeof body.error === 'string' ? body.error : 'Request failed'
+    const friendlyMessage = toFriendlyApiError(rawMessage, response.status, path)
+
+    // Keep detailed context in logs while showing friendly messaging in the UI.
+    console.error('API request failed', {
+      status: response.status,
+      path,
+      rawMessage,
+      responseBody: body,
+    })
+
+    const error = new Error(friendlyMessage)
+    error.status = response.status
+    error.path = path
+    error.rawMessage = rawMessage
+    throw error
   }
 
   return body
@@ -124,31 +212,41 @@ async function getJson(path) {
     credentials: 'include',
     headers: { Accept: 'application/json' },
   })
-  return parseResponse(response)
+  return parseResponse(response, path)
 }
 
 async function ensureCsrfCookie() {
   await getJson('/csrf/')
 }
 
-async function postJson(path, payload) {
-  await ensureCsrfCookie()
-  const csrfToken = getCookie('csrftoken')
-  if (!csrfToken) {
-    throw new Error('Missing CSRF token')
+async function postJson(path, payload, options = {}) {
+  const requireCsrf = options.requireCsrf !== false
+  let csrfToken = ''
+
+  if (requireCsrf) {
+    await ensureCsrfCookie()
+    csrfToken = getCookie('csrftoken')
+    if (!csrfToken) {
+      throw new Error('Missing CSRF token')
+    }
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  }
+
+  if (requireCsrf) {
+    headers['X-CSRFToken'] = csrfToken
   }
 
   const response = await fetch(apiUrl(path), {
     method: 'POST',
     credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      'X-CSRFToken': csrfToken,
-    },
+    headers,
     body: JSON.stringify(payload),
   })
-  return parseResponse(response)
+  return parseResponse(response, path)
 }
 
 export function formatCurrency(amount, currencyCode = shopifyConfig.currencyCode) {
@@ -178,8 +276,15 @@ export async function getProductByHandle(handle) {
   return body.product || null
 }
 
-export async function createCheckoutUrl(items, checkoutRef) {
-  const body = await postJson('/shop/checkout-url/', { items, checkoutRef })
+export async function createCheckoutUrl(items, checkoutRef, options = {}) {
+  const antiBotToken = String(options.antiBotToken || '').trim()
+  const payload = { items, checkoutRef }
+
+  if (antiBotToken) {
+    payload.antiBotToken = antiBotToken
+  }
+
+  const body = await postJson('/shop/checkout-url/', payload, { requireCsrf: false })
   return {
     checkoutUrl: body.checkoutUrl || '',
     statusToken: body.statusToken || '',
@@ -210,7 +315,7 @@ export async function getCheckoutStatus(checkoutRef, statusToken) {
       confirmedAt: body.confirmedAt || null,
     }
   } catch (error) {
-    if (error?.message === 'Checkout not found') {
+    if (error?.status === 404 || error?.rawMessage === 'Checkout not found') {
       return {
         checkoutRef: ref,
         status: 'missing',

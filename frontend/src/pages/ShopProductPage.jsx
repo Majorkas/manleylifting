@@ -4,7 +4,7 @@ import QuantityAddToCart from '../components/QuantityAddToCart'
 import ShopPageLayout from '../components/ShopPageLayout'
 import { ProductDetailSkeleton } from '../components/ShopSkeleton'
 import { useCart } from '../context/CartContext'
-import { formatCurrency, getProductByHandle, shopRoutes } from '../utils/shopConfig'
+import { formatCurrency, getProductByHandle, getUserFacingErrorMessage, shopRoutes } from '../utils/shopConfig'
 
 export default function ShopProductPage() {
   const { handle } = useParams()
@@ -27,7 +27,16 @@ export default function ShopProductPage() {
         setProduct(nextProduct)
       } catch (error) {
         if (cancelled) return
-        setErrorMessage(error.message || 'Could not load this product.')
+        console.error('Failed to load product page', {
+          handle,
+          error,
+        })
+        setErrorMessage(
+          getUserFacingErrorMessage(
+            error,
+            'We could not load this product right now. Please try again in a moment.',
+          ),
+        )
       } finally {
         if (!cancelled) setLoading(false)
       }

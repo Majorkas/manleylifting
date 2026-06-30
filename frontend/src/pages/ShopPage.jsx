@@ -10,6 +10,7 @@ import {
   formatCurrency,
   getFeaturedCollections,
   getFeaturedProducts,
+  getUserFacingErrorMessage,
   shopRoutes,
 } from '../utils/shopConfig'
 
@@ -38,7 +39,15 @@ export default function ShopPage() {
         setFeaturedProducts(nextProducts)
       } catch (error) {
         if (cancelled) return
-        setErrorMessage(error.message || 'Could not load shop data right now.')
+        console.error('Failed to load shop homepage data', {
+          error,
+        })
+        setErrorMessage(
+          getUserFacingErrorMessage(
+            error,
+            'We could not load shop data right now. Please try again in a moment.',
+          ),
+        )
       } finally {
         if (!cancelled) setLoading(false)
       }

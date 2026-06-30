@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import ShopPageLayout from '../components/ShopPageLayout'
 import { useCart } from '../context/CartContext'
@@ -13,11 +13,66 @@ import {
   shopRoutes,
 } from '../utils/shopConfig'
 
+const turnstileSiteKey = String(import.meta.env.VITE_TURNSTILE_SITE_KEY || '').trim()
+
+function loadTurnstileScript() {
+  if (typeof window === 'undefined') {
+    return Promise.reject(new Error('Browser environment not available'))
+  }
+
+  if (window.turnstile) {
+    return Promise.resolve(window.turnstile)
+  }
+
+  if (window.__manleyTurnstileLoader) {
+    return window.__manleyTurnstileLoader
+  }
+
+  window.__manleyTurnstileLoader = new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-turnstile-script="true"]')
+    if (existing) {
+      existing.addEventListener('load', () => resolve(window.turnstile))
+      existing.addEventListener('error', () => reject(new Error('Could not load Turnstile script')))
+      return
+    }
+
+    const script = document.createElement('script')
+    script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
+    script.async = true
+    script.defer = true
+    script.dataset.turnstileScript = 'true'
+    script.onload = () => resolve(window.turnstile)
+    script.onerror = () => reject(new Error('Could not load Turnstile script'))
+    document.head.appendChild(script)
+  })
+
+  return window.__manleyTurnstileLoader
+}
+
+function getFriendlyCheckoutErrorMessage(error) {
+  const rawMessage = String(error?.message || '').trim().toLowerCase()
+
+  if (rawMessage.includes('security check')) {
+    return 'We could not verify the security check. Please try again and place your order.'
+  }
+
+  if (rawMessage.includes('request source') || rawMessage.includes('security reasons')) {
+    return 'We could not verify your request source. Please refresh the page and try again.'
+  }
+
+  return error?.message || 'We could not start checkout right now. Please try again in a moment.'
+}
+
 export default function CheckoutPage() {
   const { cartItems, cartCount, subtotal, clearCart } = useCart()
   const [errorMessage, setErrorMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
+  const [turnstileToken, setTurnstileToken] = useState('')
+  const [turnstileLoaded, setTurnstileLoaded] = useState(!turnstileSiteKey)
+  const [turnstileLoadError, setTurnstileLoadError] = useState('')
+  const turnstileContainerRef = useRef(null)
+  const turnstileWidgetIdRef = useRef(null)
 
   const checkoutItems = useMemo(
     () =>
@@ -77,15 +132,63 @@ export default function CheckoutPage() {
     }
   }, [clearCart])
 
+  useEffect(() => {
+    if (!turnstileSiteKey) return
+
+    let cancelled = false
+
+    loadTurnstileScript()
+      .then((turnstile) => {
+        if (cancelled || !turnstile || !turnstileContainerRef.current || turnstileWidgetIdRef.current !== null) {
+          return
+        }
+
+        turnstileWidgetIdRef.current = turnstile.render(turnstileContainerRef.current, {
+          sitekey: turnstileSiteKey,
+          theme: 'light',
+          callback: (token) => {
+            setTurnstileToken(String(token || ''))
+            setTurnstileLoadError('')
+          },
+          'expired-callback': () => {
+            setTurnstileToken('')
+          },
+          'error-callback': () => {
+            setTurnstileToken('')
+            setTurnstileLoadError('Bot check failed to load. Please refresh and try again.')
+          },
+        })
+
+        setTurnstileLoaded(true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        console.error('Failed to load Turnstile script')
+        setTurnstileLoadError('Bot check failed to load. Please refresh and try again.')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   async function handlePlaceOrder() {
     if (checkoutItems.length === 0) return
 
     setIsSubmitting(true)
     setErrorMessage('')
 
+    if (turnstileSiteKey && !turnstileToken) {
+      setErrorMessage('Please complete the bot check before placing your order.')
+      setIsSubmitting(false)
+      return
+    }
+
     try {
       const checkoutRef = generateCheckoutRef()
-      const checkout = await createCheckoutUrl(checkoutItems, checkoutRef)
+      const checkout = await createCheckoutUrl(checkoutItems, checkoutRef, {
+        antiBotToken: turnstileToken,
+      })
       const checkoutUrl = checkout.checkoutUrl
       const statusToken = checkout.statusToken
 
@@ -95,7 +198,15 @@ export default function CheckoutPage() {
       savePendingCheckout(checkoutRef, statusToken)
       window.location.assign(checkoutUrl)
     } catch (error) {
-      setErrorMessage(error.message || 'Could not start checkout right now.')
+      console.error('Failed to create checkout URL', {
+        cartItemCount: checkoutItems.length,
+        error,
+      })
+      setErrorMessage(getFriendlyCheckoutErrorMessage(error))
+      if (turnstileSiteKey && window.turnstile && turnstileWidgetIdRef.current !== null) {
+        window.turnstile.reset(turnstileWidgetIdRef.current)
+      }
+      setTurnstileToken('')
       setIsSubmitting(false)
     }
   }
@@ -201,10 +312,27 @@ export default function CheckoutPage() {
               </div>
 
               <div className="mt-8 space-y-3">
+                {turnstileSiteKey && (
+                  <div className="rounded-lg border border-slate-200 bg-white p-3">
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
+                      Security Check
+                    </p>
+                    <div ref={turnstileContainerRef} />
+                    {!turnstileLoaded && !turnstileLoadError && (
+                      <p className="mt-2 text-xs text-slate-500">Loading bot check...</p>
+                    )}
+                    {turnstileLoadError && <p className="mt-2 text-xs text-red-700">{turnstileLoadError}</p>}
+                  </div>
+                )}
+
                 <button
                   type="button"
                   onClick={handlePlaceOrder}
-                  disabled={cartItems.length === 0 || isSubmitting}
+                  disabled={
+                    cartItems.length === 0 ||
+                    isSubmitting ||
+                    Boolean(turnstileSiteKey && (!turnstileToken || turnstileLoadError))
+                  }
                   className="block w-full rounded-md bg-[#123A7A] px-6 py-3 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-[#0f3168] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isSubmitting ? 'Redirecting...' : 'Place Order'}

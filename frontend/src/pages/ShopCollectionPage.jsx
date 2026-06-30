@@ -8,6 +8,7 @@ import {
   buildProductPath,
   formatCurrency,
   getCollectionByHandle,
+  getUserFacingErrorMessage,
   shopRoutes,
 } from '../utils/shopConfig'
 
@@ -32,7 +33,16 @@ export default function ShopCollectionPage() {
         setCollection(nextCollection)
       } catch (error) {
         if (cancelled) return
-        setErrorMessage(error.message || 'Could not load this collection.')
+        console.error('Failed to load collection page', {
+          handle,
+          error,
+        })
+        setErrorMessage(
+          getUserFacingErrorMessage(
+            error,
+            'We could not load this collection right now. Please try again in a moment.',
+          ),
+        )
       } finally {
         if (!cancelled) setLoading(false)
       }
