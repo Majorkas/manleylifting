@@ -3,6 +3,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from .portal_views import (
   portal_certificate_download,
+  portal_companies,
   portal_company_header,
   portal_equipment_certificates,
   portal_equipment_list,
@@ -30,6 +31,7 @@ urlpatterns = [
   path("auth/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
   path("auth/logout/", portal_logout),
   path("portal/me/", portal_me),
+  path("portal/companies/", portal_companies),
   path("portal/company-header/", portal_company_header),
   path("portal/equipment/", portal_equipment_list),
   path("portal/equipment/<int:equipment_id>/reports/", portal_equipment_reports),

@@ -130,6 +130,14 @@ def portal_company_header(request):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+def portal_companies(request):
+    companies = _visible_companies(request.user).order_by("name")
+    serializer = CompanyHeaderSerializer(companies, many=True, context={"request": request})
+    return Response({"results": serializer.data})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
 def portal_equipment_list(request):
     company_id = request.GET.get("companyId")
     search = (request.GET.get("search") or "").strip()

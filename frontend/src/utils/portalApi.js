@@ -194,6 +194,13 @@ export async function getPortalCompanyHeader(companyId) {
   return parseResponse(response, path)
 }
 
+export async function getPortalCompanies() {
+  const path = '/portal/companies/'
+  const response = await authFetch(path)
+  const body = await parseResponse(response, path)
+  return Array.isArray(body?.results) ? body.results : []
+}
+
 export async function getPortalEquipment({ companyId = '', search = '' } = {}) {
   const params = new URLSearchParams()
   if (companyId) params.set('companyId', String(companyId))

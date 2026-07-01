@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Navigate, useNavigate } from 'react-router-dom'
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import PortalLayout from '../components/PortalLayout'
 import {
   clearPortalSession,
+  getPortalCompanies,
   getPortalCompanyHeader,
   getPortalEquipment,
   getPortalMe,
@@ -18,20 +19,24 @@ function roleLabel(role) {
 
 export default function PortalDashboardPage() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const isAuthenticated = hasPortalSession()
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
   const [profile, setProfile] = useState(null)
+  const [companies, setCompanies] = useState([])
   const [company, setCompany] = useState(null)
   const [equipment, setEquipment] = useState([])
   const [searchInput, setSearchInput] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [loggingOut, setLoggingOut] = useState(false)
+  const selectedCompanyId = searchParams.get('companyId') || ''
 
   const canEditReports = useMemo(
     () => profile?.role === 'owner' || profile?.role === 'staff',
     [profile?.role],
   )
+  const showsCustomerPicker = canEditReports && !selectedCompanyId
 
   useEffect(() => {
     let cancelled = false
@@ -45,11 +50,35 @@ export default function PortalDashboardPage() {
         if (cancelled) return
 
         setProfile(nextProfile)
-        const selectedCompanyId = nextProfile.allowedCompanyIds[0] || ''
+        const isStaffOrOwner = nextProfile.role === 'staff' || nextProfile.role === 'owner'
+
+        let activeCompanyId = nextProfile.allowedCompanyIds[0] || ''
+
+        if (isStaffOrOwner) {
+          const nextCompanies = await getPortalCompanies()
+          if (cancelled) return
+          setCompanies(nextCompanies)
+
+          if (selectedCompanyId) {
+            activeCompanyId = selectedCompanyId
+          } else {
+            setCompany(null)
+            setEquipment([])
+            return
+          }
+        } else {
+          setCompanies([])
+        }
+
+        if (!activeCompanyId) {
+          setCompany(null)
+          setEquipment([])
+          return
+        }
 
         const [nextCompany, nextEquipment] = await Promise.all([
-          getPortalCompanyHeader(selectedCompanyId),
-          getPortalEquipment({ companyId: selectedCompanyId, search: searchQuery }),
+          getPortalCompanyHeader(activeCompanyId),
+          getPortalEquipment({ companyId: activeCompanyId, search: searchQuery }),
         ])
         if (cancelled) return
 
@@ -76,7 +105,7 @@ export default function PortalDashboardPage() {
     return () => {
       cancelled = true
     }
-  }, [navigate, searchQuery])
+  }, [navigate, searchQuery, selectedCompanyId])
 
   async function handleLogout() {
     if (loggingOut) return
@@ -99,9 +128,20 @@ export default function PortalDashboardPage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">Portal</p>
-            <h1 className="mt-1 text-3xl font-extrabold text-[#123A7A] md:text-4xl">
-              Equipment & Certification Hub
-            </h1>
+            {showsCustomerPicker ? (
+              <>
+                <h1 className="mt-1 text-3xl font-extrabold text-[#123A7A] md:text-4xl">
+                  Manley Lifting Customer Portal
+                </h1>
+                <p className="mt-2 text-slate-600">
+                  Select a customer below to open their company profile.
+                </p>
+              </>
+            ) : (
+              <h1 className="mt-1 text-3xl font-extrabold text-[#123A7A] md:text-4xl">
+                Equipment & Certification Hub
+              </h1>
+            )}
           </div>
 
           {profile && (
@@ -127,7 +167,66 @@ export default function PortalDashboardPage() {
           </div>
         )}
 
-        {company && (
+        {showsCustomerPicker && (
+          <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-2xl font-extrabold text-[#123A7A]">Customer List</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  Open a customer to view company details, equipment, reports, and certificates.
+                </p>
+              </div>
+              <span className="rounded-full border border-slate-300 bg-slate-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700">
+                {companies.length} customer{companies.length === 1 ? '' : 's'}
+              </span>
+            </div>
+
+            {loading ? (
+              <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                Loading customers...
+              </div>
+            ) : companies.length === 0 ? (
+              <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                No customer companies are assigned to this account.
+              </div>
+            ) : (
+              <div className="mt-6 grid gap-4 md:grid-cols-2">
+                {companies.map((item) => (
+                  <article key={item.id} className="rounded-xl border border-slate-200 p-4">
+                    <h3 className="text-lg font-bold text-[#123A7A]">{item.name}</h3>
+                    <p className="mt-1 text-sm text-slate-600">{item.contact_email || 'No email provided'}</p>
+                    <p className="mt-1 text-sm text-slate-600">{item.contact_phone || 'No phone provided'}</p>
+                    <button
+                      type="button"
+                      onClick={() => setSearchParams({ companyId: String(item.id) })}
+                      className="mt-4 rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168]"
+                    >
+                      Open Customer Profile
+                    </button>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {!showsCustomerPicker && canEditReports && (
+          <div className="mt-6">
+            <button
+              type="button"
+              onClick={() => {
+                setSearchParams({})
+                setSearchInput('')
+                setSearchQuery('')
+              }}
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:border-[#123A7A]"
+            >
+              Back to Customer List
+            </button>
+          </div>
+        )}
+
+        {!showsCustomerPicker && company && (
           <article className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex flex-wrap items-start gap-5">
               <div className="grid h-20 w-20 place-items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
@@ -166,7 +265,8 @@ export default function PortalDashboardPage() {
           </article>
         )}
 
-        <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        {!showsCustomerPicker && (
+          <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
               <h2 className="text-2xl font-extrabold text-[#123A7A]">Managed Equipment</h2>
@@ -244,7 +344,8 @@ export default function PortalDashboardPage() {
               </div>
             </div>
           )}
-        </section>
+          </section>
+        )}
       </section>
     </PortalLayout>
   )
