@@ -18,7 +18,7 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        username = os.getenv("OWNER_USERNAME", "").strip()
+        username = os.getenv("OWNER_USERNAME", "").strip().lower()
         email = os.getenv("OWNER_EMAIL", "").strip()
         password = os.getenv("OWNER_PASSWORD", "").strip()
         first_name = os.getenv("OWNER_FIRST_NAME", "").strip()
@@ -42,17 +42,19 @@ class Command(BaseCommand):
         User = get_user_model()
 
         with transaction.atomic():
-            user, created = User.objects.get_or_create(
-                username=username,
-                defaults={
-                    "email": email,
-                    "first_name": first_name,
-                    "last_name": last_name,
-                    "is_staff": True,
-                    "is_superuser": True,
-                    "is_active": True,
-                },
-            )
+            user = User.objects.filter(username__iexact=username).first()
+            created = user is None
+
+            if created:
+                user = User.objects.create(
+                    username=username,
+                    email=email,
+                    first_name=first_name,
+                    last_name=last_name,
+                    is_staff=True,
+                    is_superuser=True,
+                    is_active=True,
+                )
 
             details_changed = False
 

@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import PortalLoginPage from './PortalLoginPage'
@@ -12,7 +13,7 @@ vi.mock('../utils/portalApi', () => ({
   portalLogin: vi.fn(),
 }))
 
-import { hasPortalSession } from '../utils/portalApi'
+import { hasPortalSession, portalLogin } from '../utils/portalApi'
 
 function renderLoginPage() {
   return render(
@@ -45,5 +46,19 @@ describe('PortalLoginPage', () => {
 
     expect(screen.getByRole('heading', { name: 'Portal Login' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sign In' })).toBeInTheDocument()
+  })
+
+  it('trims whitespace from the username before submitting', async () => {
+    hasPortalSession.mockReturnValue(false)
+    portalLogin.mockResolvedValue({})
+    const user = userEvent.setup()
+
+    renderLoginPage()
+
+    await user.type(screen.getByRole('textbox', { name: 'Username' }), '  DemoUser  ')
+    await user.type(screen.getByLabelText('Password'), 'testpass123')
+    await user.click(screen.getByRole('button', { name: 'Sign In' }))
+
+    expect(portalLogin).toHaveBeenCalledWith('DemoUser', 'testpass123')
   })
 })
