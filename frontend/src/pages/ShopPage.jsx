@@ -85,7 +85,7 @@ export default function ShopPage() {
               Shop lifting equipment and accessories
             </h1>
             <p className="mt-4 max-w-3xl text-slate-600">
-              Product and collection data now comes directly from Shopify via your backend API.
+              Product and collection data is served from your local catalog snapshot.
             </p>
             <div className="mt-8 flex flex-wrap gap-4">
               <a

@@ -1,19 +1,76 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js'
+import { loadStripe } from '@stripe/stripe-js'
+import { Link, useNavigate } from 'react-router-dom'
 import ShopPageLayout from '../components/ShopPageLayout'
 import { useCart } from '../context/CartContext'
 import {
   clearPendingCheckout,
-  createCheckoutUrl,
+  createOnsitePaymentIntent,
   formatCurrency,
   generateCheckoutRef,
-  getCheckoutStatus,
+  getOnsiteCheckoutStatus,
+  saveCompletedCheckout,
   loadPendingCheckout,
   savePendingCheckout,
   shopRoutes,
 } from '../utils/shopConfig'
 
 const turnstileSiteKey = String(import.meta.env.VITE_TURNSTILE_SITE_KEY || '').trim()
+const stripePublishableKey = String(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || '').trim()
+const stripePromise = stripePublishableKey ? loadStripe(stripePublishableKey) : null
+
+function OnsitePaymentForm({
+  amountTotalCents,
+  currency,
+  email,
+  isPaymentElementReady,
+  isSubmitting,
+  setIsSubmitting,
+  setErrorMessage,
+  onPaymentElementReady,
+  onPaymentSubmitted,
+}) {
+  const stripe = useStripe()
+  const elements = useElements()
+
+  async function handleSubmit(event) {
+    event.preventDefault()
+    if (!stripe || !elements) return
+
+    setErrorMessage('')
+    setIsSubmitting(true)
+
+    const result = await stripe.confirmPayment({
+      elements,
+      confirmParams: {
+        receipt_email: email,
+      },
+      redirect: 'if_required',
+    })
+
+    if (result.error) {
+      setErrorMessage(result.error.message || 'We could not complete payment right now. Please try again.')
+      setIsSubmitting(false)
+      return
+    }
+
+    onPaymentSubmitted(result.paymentIntent)
+  }
+
+  return (
+    <form className="mt-4 space-y-3" onSubmit={handleSubmit}>
+      <PaymentElement onReady={onPaymentElementReady} />
+      <button
+        type="submit"
+        disabled={!stripe || !elements || !isPaymentElementReady || isSubmitting}
+        className="block w-full rounded-md bg-[#123A7A] px-6 py-3 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-[#0f3168] disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        {isSubmitting ? 'Processing...' : `Pay ${formatCurrency(amountTotalCents / 100, currency)}`}
+      </button>
+    </form>
+  )
+}
 
 function loadTurnstileScript() {
   if (typeof window === 'undefined') {
@@ -64,10 +121,21 @@ function getFriendlyCheckoutErrorMessage(error) {
 }
 
 export default function CheckoutPage() {
+  const navigate = useNavigate()
   const { cartItems, cartCount, subtotal, clearCart } = useCart()
   const [errorMessage, setErrorMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
+  const [customerName, setCustomerName] = useState('')
+  const [customerEmail, setCustomerEmail] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [checkoutRef, setCheckoutRef] = useState('')
+  const [statusToken, setStatusToken] = useState('')
+  const [amountTotalCents, setAmountTotalCents] = useState(0)
+  const [checkoutCurrency, setCheckoutCurrency] = useState('EUR')
+  const [isPaymentElementReady, setIsPaymentElementReady] = useState(false)
+  const [paymentElementLoadIssue, setPaymentElementLoadIssue] = useState('')
+  const [isAwaitingPaymentConfirmation, setIsAwaitingPaymentConfirmation] = useState(false)
   const [turnstileToken, setTurnstileToken] = useState('')
   const [turnstileLoaded, setTurnstileLoaded] = useState(!turnstileSiteKey)
   const [turnstileLoadError, setTurnstileLoadError] = useState('')
@@ -96,19 +164,22 @@ export default function CheckoutPage() {
       attempts += 1
 
       try {
-        const result = await getCheckoutStatus(pending.checkoutRef, pending.statusToken)
+        const result = await getOnsiteCheckoutStatus(pending.checkoutRef, pending.statusToken)
         if (cancelled) return
 
-        if (result.status === 'confirmed') {
+        if (result.status === 'paid') {
+          saveCompletedCheckout(pending.checkoutRef, pending.statusToken)
           clearCart()
           clearPendingCheckout()
           setStatusMessage('Order confirmed. Your cart has been cleared.')
+          navigate(shopRoutes.orderConfirmed)
           if (intervalId) window.clearInterval(intervalId)
           return
         }
 
-        if (result.status === 'missing' || result.status === 'expired') {
+        if (result.status === 'failed' || result.status === 'canceled') {
           clearPendingCheckout()
+          setStatusMessage('Your payment was not completed. Please try again.')
           if (intervalId) window.clearInterval(intervalId)
           return
         }
@@ -130,7 +201,79 @@ export default function CheckoutPage() {
       cancelled = true
       if (intervalId) window.clearInterval(intervalId)
     }
-  }, [clearCart])
+  }, [clearCart, navigate])
+
+  useEffect(() => {
+    if (!isAwaitingPaymentConfirmation || !checkoutRef || !statusToken) return
+
+    let cancelled = false
+    let intervalId = null
+    let attempts = 0
+    const maxAttempts = 40
+
+    async function pollStatus() {
+      attempts += 1
+      try {
+        const result = await getOnsiteCheckoutStatus(checkoutRef, statusToken)
+        if (cancelled) return
+
+        if (result.status === 'paid') {
+          saveCompletedCheckout(checkoutRef, statusToken)
+          clearCart()
+          clearPendingCheckout()
+          setStatusMessage('Payment confirmed. Thank you for your order.')
+          setIsAwaitingPaymentConfirmation(false)
+          setIsSubmitting(false)
+          navigate(shopRoutes.orderConfirmed)
+          if (intervalId) window.clearInterval(intervalId)
+          return
+        }
+
+        if (result.status === 'failed' || result.status === 'canceled') {
+          setErrorMessage('Your payment could not be confirmed. Please try again.')
+          setIsAwaitingPaymentConfirmation(false)
+          setIsSubmitting(false)
+          if (intervalId) window.clearInterval(intervalId)
+          return
+        }
+
+        if (attempts >= maxAttempts && intervalId) {
+          window.clearInterval(intervalId)
+          setIsSubmitting(false)
+          setIsAwaitingPaymentConfirmation(false)
+          setStatusMessage('Payment is still processing. We will update this page once confirmed.')
+        }
+      } catch {
+        if (attempts >= maxAttempts && intervalId) {
+          window.clearInterval(intervalId)
+          setIsSubmitting(false)
+          setIsAwaitingPaymentConfirmation(false)
+        }
+      }
+    }
+
+    pollStatus()
+    intervalId = window.setInterval(pollStatus, 3000)
+
+    return () => {
+      cancelled = true
+      if (intervalId) window.clearInterval(intervalId)
+    }
+  }, [checkoutRef, statusToken, isAwaitingPaymentConfirmation, clearCart, navigate])
+
+  useEffect(() => {
+    if (!clientSecret || isPaymentElementReady) return
+
+    const timeoutId = window.setTimeout(() => {
+      setPaymentElementLoadIssue(
+        'Payment options are taking longer than expected to load. Confirm VITE_STRIPE_PUBLISHABLE_KEY is set, restart the frontend dev server, and check browser blockers/network.',
+      )
+    }, 12000)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+    }
+  }, [clientSecret, isPaymentElementReady])
 
   useEffect(() => {
     if (!turnstileSiteKey) return
@@ -172,11 +315,23 @@ export default function CheckoutPage() {
     }
   }, [])
 
-  async function handlePlaceOrder() {
+  async function handlePreparePayment() {
     if (checkoutItems.length === 0) return
 
     setIsSubmitting(true)
     setErrorMessage('')
+
+    if (!customerName.trim()) {
+      setErrorMessage('Please provide your full name before continuing.')
+      setIsSubmitting(false)
+      return
+    }
+
+    if (!customerEmail.trim()) {
+      setErrorMessage('Please provide your email before continuing.')
+      setIsSubmitting(false)
+      return
+    }
 
     if (turnstileSiteKey && !turnstileToken) {
       setErrorMessage('Please complete the bot check before placing your order.')
@@ -184,21 +339,44 @@ export default function CheckoutPage() {
       return
     }
 
+    if (!stripePromise) {
+      setErrorMessage('Stripe is not configured. Please try again later.')
+      setIsSubmitting(false)
+      return
+    }
+
     try {
-      const checkoutRef = generateCheckoutRef()
-      const checkout = await createCheckoutUrl(checkoutItems, checkoutRef, {
+      const nextCheckoutRef = generateCheckoutRef()
+      const checkout = await createOnsitePaymentIntent(
+        checkoutItems,
+        nextCheckoutRef,
+        {
+          name: customerName,
+          email: customerEmail,
+        },
+        {
         antiBotToken: turnstileToken,
-      })
-      const checkoutUrl = checkout.checkoutUrl
-      const statusToken = checkout.statusToken
+        },
+      )
+      const nextStatusToken = checkout.statusToken
+      const nextClientSecret = checkout.clientSecret
 
-      if (!checkoutUrl) throw new Error('No checkout URL returned from server')
-      if (!statusToken) throw new Error('No status token returned from server')
+      if (!nextClientSecret) throw new Error('No payment client secret returned from server')
+      if (!nextStatusToken) throw new Error('No status token returned from server')
 
-      savePendingCheckout(checkoutRef, statusToken)
-      window.location.assign(checkoutUrl)
+      setCheckoutRef(checkout.checkoutRef || nextCheckoutRef)
+      setStatusToken(nextStatusToken)
+      setClientSecret(nextClientSecret)
+      setAmountTotalCents(checkout.amountTotalCents)
+      setCheckoutCurrency(checkout.currency || 'EUR')
+      setIsPaymentElementReady(false)
+      setPaymentElementLoadIssue('')
+
+      savePendingCheckout(checkout.checkoutRef || nextCheckoutRef, nextStatusToken)
+      setStatusMessage('Secure payment details loaded. Complete card payment below.')
+      setIsSubmitting(false)
     } catch (error) {
-      console.error('Failed to create checkout URL', {
+      console.error('Failed to create onsite payment intent', {
         cartItemCount: checkoutItems.length,
         error,
       })
@@ -211,6 +389,24 @@ export default function CheckoutPage() {
     }
   }
 
+  function handlePaymentSubmitted(paymentIntent) {
+    const status = String(paymentIntent?.status || '').toLowerCase()
+    if (status === 'succeeded') {
+      if (checkoutRef && statusToken) {
+        saveCompletedCheckout(checkoutRef, statusToken)
+      }
+      clearCart()
+      clearPendingCheckout()
+      setStatusMessage('Payment confirmed. Thank you for your order.')
+      setIsSubmitting(false)
+      navigate(shopRoutes.orderConfirmed)
+      return
+    }
+
+    setStatusMessage('Payment submitted. Waiting for secure confirmation...')
+    setIsAwaitingPaymentConfirmation(true)
+  }
+
   return (
     <ShopPageLayout>
       <main className="mx-auto w-full max-w-7xl px-6 py-16">
@@ -218,7 +414,7 @@ export default function CheckoutPage() {
           <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">Checkout</p>
           <h1 className="mt-2 text-4xl font-extrabold text-[#123A7A] md:text-5xl">Checkout</h1>
           <p className="mt-4 max-w-3xl text-slate-600">
-            Place order now creates a live Shopify checkout and redirects the customer securely.
+            Complete your payment securely on this page without leaving the site.
           </p>
         </div>
 
@@ -243,6 +439,8 @@ export default function CheckoutPage() {
                 <label className="mb-2 block text-sm font-semibold text-slate-700">Full Name</label>
                 <input
                   type="text"
+                    value={customerName}
+                    onChange={(event) => setCustomerName(event.target.value)}
                   placeholder="John Smith"
                   className="w-full rounded-md border border-slate-300 px-4 py-3 text-slate-900 outline-none transition focus:border-[#123A7A] focus:ring-2 focus:ring-[#123A7A]/20"
                 />
@@ -253,6 +451,8 @@ export default function CheckoutPage() {
                   <label className="mb-2 block text-sm font-semibold text-slate-700">Email</label>
                   <input
                     type="email"
+                    value={customerEmail}
+                    onChange={(event) => setCustomerEmail(event.target.value)}
                     placeholder="john@example.com"
                     className="w-full rounded-md border border-slate-300 px-4 py-3 text-slate-900 outline-none transition focus:border-[#123A7A] focus:ring-2 focus:ring-[#123A7A]/20"
                   />
@@ -308,7 +508,7 @@ export default function CheckoutPage() {
             <div className="mt-6 border-t border-slate-200 pt-6">
               <div className="flex items-center justify-between">
                 <span className="text-base font-bold text-[#123A7A]">Total</span>
-                <span className="text-xl font-extrabold text-[#C61F2A]">{formatCurrency(subtotal)}</span>
+                <span className="text-xl font-extrabold text-[#C61F2A]">{formatCurrency(subtotal, checkoutCurrency)}</span>
               </div>
 
               <div className="mt-8 space-y-3">
@@ -327,16 +527,42 @@ export default function CheckoutPage() {
 
                 <button
                   type="button"
-                  onClick={handlePlaceOrder}
+                  onClick={handlePreparePayment}
                   disabled={
                     cartItems.length === 0 ||
                     isSubmitting ||
-                    Boolean(turnstileSiteKey && (!turnstileToken || turnstileLoadError))
+                    Boolean(turnstileSiteKey && (!turnstileToken || turnstileLoadError)) ||
+                    Boolean(clientSecret)
                   }
                   className="block w-full rounded-md bg-[#123A7A] px-6 py-3 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-[#0f3168] disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {isSubmitting ? 'Redirecting...' : 'Place Order'}
+                  {isSubmitting ? 'Preparing Payment...' : 'Prepare Secure Payment'}
                 </button>
+
+                {clientSecret && stripePromise && (
+                  <Elements stripe={stripePromise} options={{ clientSecret }}>
+                    {!isPaymentElementReady && (
+                      <p className="text-xs text-slate-500">Loading secure payment options...</p>
+                    )}
+                    {paymentElementLoadIssue && (
+                      <p className="text-xs text-red-700">{paymentElementLoadIssue}</p>
+                    )}
+                    <OnsitePaymentForm
+                      amountTotalCents={amountTotalCents}
+                      currency={checkoutCurrency}
+                      email={customerEmail}
+                      isPaymentElementReady={isPaymentElementReady}
+                      isSubmitting={isSubmitting}
+                      setIsSubmitting={setIsSubmitting}
+                      setErrorMessage={setErrorMessage}
+                      onPaymentElementReady={() => {
+                        setIsPaymentElementReady(true)
+                        setPaymentElementLoadIssue('')
+                      }}
+                      onPaymentSubmitted={handlePaymentSubmitted}
+                    />
+                  </Elements>
+                )}
 
                 <Link
                   to={shopRoutes.cart}

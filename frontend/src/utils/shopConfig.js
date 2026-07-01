@@ -4,26 +4,28 @@ export const shopRoutes = {
   product: '/shop/products/:handle',
   cart: '/cart',
   checkout: '/checkout',
+  orderConfirmed: '/order-confirmed',
 }
 
 const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').trim()
 const defaultApiBaseUrl = import.meta.env.PROD ? '/api' : 'http://localhost:8000/api'
 
-export const shopifyConfig = {
+export const shopConfig = {
   apiBaseUrl: configuredApiBaseUrl || defaultApiBaseUrl,
   currencyCode: 'EUR',
 }
 
 const CART_STORAGE_KEY = 'manley-shop-cart-v2'
 const PENDING_CHECKOUT_KEY = 'manley-shop-pending-checkout-v1'
+const COMPLETED_CHECKOUT_KEY = 'manley-shop-completed-checkout-v1'
 const PENDING_CHECKOUT_MAX_AGE_MS = 2 * 60 * 60 * 1000
 
 function apiUrl(path) {
-  const base = shopifyConfig.apiBaseUrl.replace(/\/+$/, '')
+  const base = shopConfig.apiBaseUrl.replace(/\/+$/, '')
   return base + path
 }
 
-function toFriendlyApiError(rawMessage, status, path) {
+function toFriendlyApiError(rawMessage, status) {
   const message = String(rawMessage || '').trim().toLowerCase()
 
   if (status === 429 || message === 'too many requests') {
@@ -40,6 +42,34 @@ function toFriendlyApiError(rawMessage, status, path) {
 
   if (message === 'checkout not found') {
     return 'Checkout not found'
+  }
+
+  if (message === 'valid customer email is required') {
+    return 'Please provide a valid email address to continue.'
+  }
+
+  if (message === 'customer name is required') {
+    return 'Please provide your full name to continue.'
+  }
+
+  if (message === 'could not load live product pricing') {
+    return 'We could not verify current pricing. Please refresh and try again.'
+  }
+
+  if (message === 'one or more checkout items are no longer available') {
+    return 'Some items in your cart changed. Please refresh your cart and try again.'
+  }
+
+  if (message === 'checkout currency mismatch') {
+    return 'Your cart has mixed currencies and cannot be checked out together.'
+  }
+
+  if (message === 'checkout total must be greater than zero') {
+    return 'Your order total must be greater than zero.'
+  }
+
+  if (message === 'payment provider is not configured right now.') {
+    return 'Payments are temporarily unavailable. Please try again shortly.'
   }
 
   if (message === 'valid statustoken is required') {
@@ -60,21 +90,6 @@ function toFriendlyApiError(rawMessage, status, path) {
 
   if (message === 'bot verification failed') {
     return 'We could not verify the security check. Please try again.'
-  }
-
-  if (path.includes('/shop/checkout-url/')) {
-    if (message === 'valid checkoutref is required') {
-      return 'We could not start checkout because your cart reference was invalid. Please refresh and try again.'
-    }
-    if (message === 'items are required' || message === 'no valid checkout lines provided') {
-      return 'Your cart appears to be empty or invalid. Please review your cart and try again.'
-    }
-    if (message === 'checkout validation failed') {
-      return 'We could not validate your checkout details. Please review your cart and try again.'
-    }
-    if (message === 'checkout url not returned') {
-      return 'Checkout could not be started right now. Please try again in a moment.'
-    }
   }
 
   if (message.startsWith('could not load')) {
@@ -181,12 +196,61 @@ export function clearPendingCheckout() {
   window.localStorage.removeItem(PENDING_CHECKOUT_KEY)
 }
 
+export function saveCompletedCheckout(checkoutRef, statusToken) {
+  if (typeof window === 'undefined') return
+  if (!checkoutRef || !statusToken) return
+
+  const payload = {
+    checkoutRef: String(checkoutRef),
+    statusToken: String(statusToken),
+    createdAt: safeNowIso(),
+  }
+
+  window.localStorage.setItem(COMPLETED_CHECKOUT_KEY, JSON.stringify(payload))
+}
+
+export function loadCompletedCheckout() {
+  if (typeof window === 'undefined') return null
+
+  try {
+    const raw = window.localStorage.getItem(COMPLETED_CHECKOUT_KEY)
+    if (!raw) return null
+
+    const parsed = JSON.parse(raw)
+    if (
+      !parsed ||
+      typeof parsed.checkoutRef !== 'string' ||
+      !parsed.checkoutRef ||
+      typeof parsed.statusToken !== 'string' ||
+      !parsed.statusToken
+    ) {
+      window.localStorage.removeItem(COMPLETED_CHECKOUT_KEY)
+      return null
+    }
+
+    if (createdAtIsStale(parsed.createdAt)) {
+      window.localStorage.removeItem(COMPLETED_CHECKOUT_KEY)
+      return null
+    }
+
+    return parsed
+  } catch {
+    window.localStorage.removeItem(COMPLETED_CHECKOUT_KEY)
+    return null
+  }
+}
+
+export function clearCompletedCheckout() {
+  if (typeof window === 'undefined') return
+  window.localStorage.removeItem(COMPLETED_CHECKOUT_KEY)
+}
+
 async function parseResponse(response, path = '') {
   const body = await response.json().catch(() => ({}))
 
   if (!response.ok) {
     const rawMessage = typeof body.error === 'string' ? body.error : 'Request failed'
-    const friendlyMessage = toFriendlyApiError(rawMessage, response.status, path)
+    const friendlyMessage = toFriendlyApiError(rawMessage, response.status)
 
     // Keep detailed context in logs while showing friendly messaging in the UI.
     console.error('API request failed', {
@@ -249,7 +313,7 @@ async function postJson(path, payload, options = {}) {
   return parseResponse(response, path)
 }
 
-export function formatCurrency(amount, currencyCode = shopifyConfig.currencyCode) {
+export function formatCurrency(amount, currencyCode = shopConfig.currencyCode) {
   return new Intl.NumberFormat('en-IE', {
     style: 'currency',
     currency: currencyCode || 'EUR',
@@ -276,22 +340,33 @@ export async function getProductByHandle(handle) {
   return body.product || null
 }
 
-export async function createCheckoutUrl(items, checkoutRef, options = {}) {
+export async function createOnsitePaymentIntent(items, checkoutRef, customer, options = {}) {
   const antiBotToken = String(options.antiBotToken || '').trim()
-  const payload = { items, checkoutRef }
+  const payload = {
+    items,
+    checkoutRef,
+    customer: {
+      name: String(customer?.name || '').trim(),
+      email: String(customer?.email || '').trim(),
+    },
+  }
 
   if (antiBotToken) {
     payload.antiBotToken = antiBotToken
   }
 
-  const body = await postJson('/shop/checkout-url/', payload, { requireCsrf: false })
+  const body = await postJson('/payments/onsite-intent/', payload)
   return {
-    checkoutUrl: body.checkoutUrl || '',
-    statusToken: body.statusToken || '',
+    checkoutRef: String(body.checkoutRef || ''),
+    statusToken: String(body.statusToken || ''),
+    clientSecret: String(body.clientSecret || ''),
+    paymentIntentId: String(body.paymentIntentId || ''),
+    amountTotalCents: Number(body.amountTotalCents || 0),
+    currency: String(body.currency || shopConfig.currencyCode),
   }
 }
 
-export async function getCheckoutStatus(checkoutRef, statusToken) {
+export async function getOnsiteCheckoutStatus(checkoutRef, statusToken) {
   const ref = String(checkoutRef || '').trim()
   const token = String(statusToken || '').trim()
   if (!ref) {
@@ -302,27 +377,48 @@ export async function getCheckoutStatus(checkoutRef, statusToken) {
   }
 
   const query =
-    '/shop/checkout-status/?checkoutRef=' +
+    '/payments/onsite-status/?checkoutRef=' +
     encodeURIComponent(ref) +
     '&statusToken=' +
     encodeURIComponent(token)
 
-  try {
-    const body = await getJson(query)
-    return {
-      checkoutRef: String(body.checkoutRef || ''),
-      status: String(body.status || ''),
-      confirmedAt: body.confirmedAt || null,
-    }
-  } catch (error) {
-    if (error?.status === 404 || error?.rawMessage === 'Checkout not found') {
-      return {
-        checkoutRef: ref,
-        status: 'missing',
-        confirmedAt: null,
-      }
-    }
-    throw error
+  const body = await getJson(query)
+  return {
+    checkoutRef: String(body.checkoutRef || ''),
+    status: String(body.status || ''),
+    paidAt: body.paidAt || null,
+    amountTotalCents: Number(body.amountTotalCents || 0),
+    currency: String(body.currency || shopConfig.currencyCode),
+  }
+}
+
+export async function getOnsiteOrderSummary(checkoutRef, statusToken) {
+  const ref = String(checkoutRef || '').trim()
+  const token = String(statusToken || '').trim()
+  if (!ref) {
+    throw new Error('checkoutRef is required')
+  }
+  if (!token) {
+    throw new Error('statusToken is required')
+  }
+
+  const query =
+    '/payments/onsite-order-summary/?checkoutRef=' +
+    encodeURIComponent(ref) +
+    '&statusToken=' +
+    encodeURIComponent(token)
+
+  const body = await getJson(query)
+  return {
+    checkoutRef: String(body.checkoutRef || ''),
+    status: String(body.status || ''),
+    customerName: String(body.customerName || ''),
+    customerEmail: String(body.customerEmail || ''),
+    lineItems: Array.isArray(body.lineItems) ? body.lineItems : [],
+    amountTotalCents: Number(body.amountTotalCents || 0),
+    currency: String(body.currency || shopConfig.currencyCode),
+    paidAt: body.paidAt || null,
+    createdAt: body.createdAt || null,
   }
 }
 
@@ -341,7 +437,7 @@ function normalizeCartItems(items) {
       title: String(item.title || ''),
       variantId: String(item.variantId || ''),
       price: Number(item.price || 0),
-      currency: String(item.currency || shopifyConfig.currencyCode),
+      currency: String(item.currency || shopConfig.currencyCode),
       imageUrl: String(item.imageUrl || ''),
       quantity: Number(item.quantity || 1),
     }))

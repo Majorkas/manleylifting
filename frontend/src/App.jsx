@@ -8,6 +8,7 @@ import ShopCollectionPage from './pages/ShopCollectionPage'
 import ShopProductPage from './pages/ShopProductPage'
 import CartPage from './pages/CartPage'
 import CheckoutPage from './pages/CheckoutPage'
+import OrderConfirmedPage from './pages/OrderConfirmedPage'
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
       <Route path="/shop/products/:handle" element={<ShopProductPage />} />
       <Route path="/cart" element={<CartPage />} />
       <Route path="/checkout" element={<CheckoutPage />} />
+      <Route path="/order-confirmed" element={<OrderConfirmedPage />} />
       <Route path="/contact" element={<ContactPage />} />
       <Route path="/privacy-policy" element={<LegalPage title="Privacy Policy" />} />
       <Route path="/cookie-policy" element={<LegalPage title="Cookie Policy" />} />

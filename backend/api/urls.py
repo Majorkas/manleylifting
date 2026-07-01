@@ -3,13 +3,14 @@ from django.urls import path
 from .views import (
   csrf_seed,
   hello,
-  shop_checkout_status,
-  shop_checkout_url,
+  onsite_checkout_intent,
+  onsite_checkout_status,
+  onsite_order_summary,
   shop_collection_detail,
   shop_collections,
   shop_featured_products,
   shop_product_detail,
-  shopify_orders_create_webhook,
+  stripe_webhook,
 )
 
 urlpatterns = [
@@ -19,7 +20,8 @@ urlpatterns = [
   path("shop/products/<str:handle>/", shop_product_detail),
   path("shop/collections/", shop_collections),
   path("shop/collections/<str:handle>/", shop_collection_detail),
-  path("shop/checkout-url/", shop_checkout_url),
-  path("shop/checkout-status/", shop_checkout_status),
-  path("shopify/webhooks/orders-create/", shopify_orders_create_webhook),
+  path("payments/onsite-intent/", onsite_checkout_intent),
+  path("payments/onsite-status/", onsite_checkout_status),
+  path("payments/onsite-order-summary/", onsite_order_summary),
+  path("payments/stripe/webhook/", stripe_webhook),
 ]
