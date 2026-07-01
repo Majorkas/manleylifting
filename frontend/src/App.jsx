@@ -9,6 +9,8 @@ import ShopProductPage from './pages/ShopProductPage'
 import CartPage from './pages/CartPage'
 import CheckoutPage from './pages/CheckoutPage'
 import OrderConfirmedPage from './pages/OrderConfirmedPage'
+import PortalDashboardPage from './pages/PortalDashboardPage'
+import PortalLoginPage from './pages/PortalLoginPage'
 
 export default function App() {
   return (
@@ -20,6 +22,8 @@ export default function App() {
       <Route path="/cart" element={<CartPage />} />
       <Route path="/checkout" element={<CheckoutPage />} />
       <Route path="/order-confirmed" element={<OrderConfirmedPage />} />
+      <Route path="/portal" element={<PortalDashboardPage />} />
+      <Route path="/portal/login" element={<PortalLoginPage />} />
       <Route path="/contact" element={<ContactPage />} />
       <Route path="/privacy-policy" element={<LegalPage title="Privacy Policy" />} />
       <Route path="/cookie-policy" element={<LegalPage title="Cookie Policy" />} />
