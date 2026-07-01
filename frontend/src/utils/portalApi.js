@@ -212,3 +212,41 @@ export async function getPortalEquipment({ companyId = '', search = '' } = {}) {
   const body = await parseResponse(response, path)
   return Array.isArray(body?.results) ? body.results : []
 }
+
+export async function getEquipmentReports(equipmentId) {
+  const path = '/portal/equipment/' + encodeURIComponent(String(equipmentId)) + '/reports/'
+  const response = await authFetch(path)
+  const body = await parseResponse(response, path)
+  return Array.isArray(body?.results) ? body.results : []
+}
+
+export async function createEquipmentReport(equipmentId, payload) {
+  const path = '/portal/equipment/' + encodeURIComponent(String(equipmentId)) + '/reports/'
+  const response = await authFetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  return parseResponse(response, path)
+}
+
+export async function updateReport(reportId, payload) {
+  const path = '/portal/reports/' + encodeURIComponent(String(reportId)) + '/'
+  const response = await authFetch(path, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  return parseResponse(response, path)
+}
+
+export async function getReportRevisions(reportId) {
+  const path = '/portal/reports/' + encodeURIComponent(String(reportId)) + '/revisions/'
+  const response = await authFetch(path)
+  const body = await parseResponse(response, path)
+  return Array.isArray(body?.results) ? body.results : []
+}

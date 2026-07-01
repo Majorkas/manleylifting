@@ -11,6 +11,7 @@ from .portal_views import (
   portal_logout,
   portal_me,
   portal_report_owner_edit,
+  portal_report_revisions,
   portal_staff_assignments,
 )
 from .views import (
@@ -36,6 +37,7 @@ urlpatterns = [
   path("portal/equipment/", portal_equipment_list),
   path("portal/equipment/<int:equipment_id>/reports/", portal_equipment_reports),
   path("portal/reports/<int:report_id>/", portal_report_owner_edit),
+  path("portal/reports/<int:report_id>/revisions/", portal_report_revisions),
   path("portal/equipment/<int:equipment_id>/certificates/", portal_equipment_certificates),
   path("portal/certificates/<int:certificate_id>/download/", portal_certificate_download),
   path("portal/staff-assignments/", portal_staff_assignments),

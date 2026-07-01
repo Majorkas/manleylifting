@@ -304,6 +304,49 @@ class PortalRBACTests(TestCase):
         self.assertEqual(report.edited_by_id, self.owner_user.id)
         self.assertEqual(ReportRevision.objects.filter(report=report).count(), 1)
 
+    def test_owner_can_view_report_revisions(self):
+        report = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Initial report",
+            summary="Initial summary",
+            findings="Initial findings",
+            recommendations="Initial recommendation",
+            report_date="2026-06-25",
+            status=InspectionReport.STATUS_SUBMITTED,
+        )
+        ReportRevision.objects.create(
+            report=report,
+            edited_by=self.owner_user,
+            previous_data={"title": "Initial report", "status": "submitted"},
+        )
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.get(f"/api/portal/reports/{report.id}/revisions/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()["results"]), 1)
+
+    def test_staff_cannot_view_report_revisions(self):
+        report = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Initial report",
+            summary="Initial summary",
+            findings="Initial findings",
+            recommendations="Initial recommendation",
+            report_date="2026-06-25",
+            status=InspectionReport.STATUS_SUBMITTED,
+        )
+        ReportRevision.objects.create(
+            report=report,
+            edited_by=self.owner_user,
+            previous_data={"title": "Initial report", "status": "submitted"},
+        )
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.get(f"/api/portal/reports/{report.id}/revisions/")
+        self.assertEqual(response.status_code, 403)
+
     def test_customer_cannot_upload_certificate(self):
         self.client.force_authenticate(user=self.customer_user)
         response = self.client.post(

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Certificate, Company, Equipment, InspectionReport, UserProfile
+from .models import Certificate, Company, Equipment, InspectionReport, ReportRevision, UserProfile
 
 
 class CompanyHeaderSerializer(serializers.ModelSerializer):
@@ -99,6 +99,19 @@ class InspectionReportOwnerEditSerializer(serializers.ModelSerializer):
             "report_date",
             "status",
         ]
+
+
+class ReportRevisionSerializer(serializers.ModelSerializer):
+    edited_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ReportRevision
+        fields = ["id", "report", "edited_by", "edited_by_name", "previous_data", "changed_at"]
+
+    def get_edited_by_name(self, obj):
+        if not obj.edited_by:
+            return ""
+        return obj.edited_by.get_full_name() or obj.edited_by.username
 
 
 class CertificateSerializer(serializers.ModelSerializer):

@@ -19,6 +19,7 @@ from .serializers import (
     InspectionReportOwnerEditSerializer,
     InspectionReportSerializer,
     PortalMeSerializer,
+    ReportRevisionSerializer,
     UserProfileAssignmentSerializer,
     UserProfileAssignmentUpdateSerializer,
 )
@@ -220,6 +221,24 @@ def portal_report_owner_edit(request, report_id):
     )
 
     return Response(InspectionReportSerializer(report).data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def portal_report_revisions(request, report_id):
+    report = InspectionReport.objects.select_related("equipment__company").filter(id=report_id).first()
+    if not report:
+        return Response({"detail": "Report not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if report.equipment.company_id not in _visible_company_ids(request.user):
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if not _is_owner(request.user):
+        return Response({"detail": "Only owner can view report revisions"}, status=status.HTTP_403_FORBIDDEN)
+
+    revisions = report.revisions.select_related("edited_by").all()
+    serializer = ReportRevisionSerializer(revisions, many=True)
+    return Response({"results": serializer.data})
 
 
 @api_view(["GET", "POST"])
