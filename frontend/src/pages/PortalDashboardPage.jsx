@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import PortalLayout from '../components/PortalLayout'
 import {
+  createPortalCustomer,
+  createPortalEquipment,
   clearPortalSession,
   createEquipmentReport,
   getEquipmentReports,
@@ -13,6 +15,7 @@ import {
   hasPortalSession,
   portalLogout,
   updateReport,
+  updatePortalEquipment,
 } from '../utils/portalApi'
 
 function roleLabel(role) {
@@ -34,6 +37,89 @@ function formatRevisionDateTime(value) {
   }).format(date)
 }
 
+function getInspectionDueSortValue(value) {
+  if (!value) return Number.POSITIVE_INFINITY
+
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed
+}
+
+function calculateNextInspectionDue(lastInspectedAt, inspectionIntervalDays) {
+  if (!lastInspectedAt) return ''
+
+  const intervalDays = Number(inspectionIntervalDays)
+  if (!Number.isFinite(intervalDays) || intervalDays < 1) return ''
+
+  const date = new Date(`${lastInspectedAt}T00:00:00Z`)
+  if (Number.isNaN(date.getTime())) return ''
+
+  date.setUTCDate(date.getUTCDate() + intervalDays)
+  return date.toISOString().slice(0, 10)
+}
+
+function getInspectionStatusBadge(nextInspectionDue) {
+  if (!nextInspectionDue) {
+    return { label: 'No Date', color: 'bg-slate-100 text-slate-700 border-slate-300' }
+  }
+
+  const dueDate = new Date(nextInspectionDue)
+  if (Number.isNaN(dueDate.getTime())) {
+    return { label: 'Invalid Date', color: 'bg-slate-100 text-slate-700 border-slate-300' }
+  }
+
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+
+  const daysUntilDue = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24))
+
+  if (daysUntilDue <= 0) {
+    return { label: 'Overdue', color: 'bg-red-100 text-red-700 border-red-300' }
+  } else if (daysUntilDue <= 20) {
+    return { label: 'Inspection Due', color: 'bg-amber-100 text-amber-700 border-amber-300' }
+  } else {
+    return { label: 'On Schedule', color: 'bg-emerald-100 text-emerald-700 border-emerald-300' }
+  }
+}
+
+function buildEmptyReportForm() {
+  return {
+    reportId: '',
+    title: '',
+    summary: '',
+    findings: '',
+    recommendations: '',
+    report_date: new Date().toISOString().slice(0, 10),
+    status: 'draft',
+  }
+}
+
+function buildEmptyCustomerForm() {
+  return {
+    company_name: '',
+    company_contact_email: '',
+    company_contact_phone: '',
+    company_address: '',
+    customer_username: '',
+    customer_email: '',
+    customer_password: '',
+    customer_first_name: '',
+    customer_last_name: '',
+  }
+}
+
+function buildEmptyEquipmentForm() {
+  return {
+    name: '',
+    asset_tag: '',
+    serial_number: '',
+    location: '',
+    status: 'active',
+    inspection_interval_days: 365,
+    last_inspected_at: '',
+    notes: '',
+  }
+}
+
 export default function PortalDashboardPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -53,18 +139,32 @@ export default function PortalDashboardPage() {
   const [reportError, setReportError] = useState('')
   const [creatingReport, setCreatingReport] = useState(false)
   const [savingReportEdit, setSavingReportEdit] = useState(false)
-  const [editingReportId, setEditingReportId] = useState('')
+  const [revisionReportId, setRevisionReportId] = useState('')
   const [reportRevisions, setReportRevisions] = useState([])
   const [revisionsLoading, setRevisionsLoading] = useState(false)
-  const [reportForm, setReportForm] = useState({
-    title: '',
-    summary: '',
-    findings: '',
-    recommendations: '',
-    report_date: new Date().toISOString().slice(0, 10),
-    status: 'submitted',
-  })
+  const [viewedReport, setViewedReport] = useState(null)
+  const [showEditReportModal, setShowEditReportModal] = useState(false)
+  const [showRevisionsModal, setShowRevisionsModal] = useState(false)
+  const [reportForm, setReportForm] = useState(buildEmptyReportForm())
+  const [showCreateReportForm, setShowCreateReportForm] = useState(false)
+  const [customerForm, setCustomerForm] = useState(buildEmptyCustomerForm())
+  const [creatingCustomer, setCreatingCustomer] = useState(false)
+  const [customerCreateError, setCustomerCreateError] = useState('')
+  const [customerCreateSuccess, setCustomerCreateSuccess] = useState('')
+  const [showCreateCustomerForm, setShowCreateCustomerForm] = useState(false)
+  const [showCreateEquipmentForm, setShowCreateEquipmentForm] = useState(false)
+  const [creatingEquipment, setCreatingEquipment] = useState(false)
+  const [equipmentCreateError, setEquipmentCreateError] = useState('')
+  const [equipmentCreateSuccess, setEquipmentCreateSuccess] = useState('')
+  const [equipmentForm, setEquipmentForm] = useState(buildEmptyEquipmentForm())
+  const [equipmentPage, setEquipmentPage] = useState(1)
+  const [updatingEquipmentStatus, setUpdatingEquipmentStatus] = useState(false)
+  const [equipmentStatusError, setEquipmentStatusError] = useState('')
+  const [equipmentStatusDraft, setEquipmentStatusDraft] = useState('active')
+  const [showDecommissionConfirm, setShowDecommissionConfirm] = useState(false)
+  const [equipmentTableTab, setEquipmentTableTab] = useState('active')
   const selectedCompanyId = searchParams.get('companyId') || ''
+  const equipmentPageSize = 10
 
   const canEditReports = useMemo(
     () => profile?.role === 'owner' || profile?.role === 'staff',
@@ -72,10 +172,147 @@ export default function PortalDashboardPage() {
   )
   const showsCustomerPicker = canEditReports && !selectedCompanyId
   const isOwner = profile?.role === 'owner'
+  const isStaff = profile?.role === 'staff'
   const activeSelectedEquipment = useMemo(() => {
     if (!selectedEquipment) return null
     return equipment.find((item) => String(item.id) === String(selectedEquipment.id)) || null
   }, [equipment, selectedEquipment])
+  const sortedEquipment = useMemo(() => {
+    const sorted = [...equipment].sort((left, right) => {
+      // Put decommissioned items at the end
+      const isLeftDecommissioned = left.status === 'decommissioned'
+      const isRightDecommissioned = right.status === 'decommissioned'
+      if (isLeftDecommissioned !== isRightDecommissioned) {
+        return isLeftDecommissioned ? 1 : -1
+      }
+
+      const leftDue = getInspectionDueSortValue(left.next_inspection_due)
+      const rightDue = getInspectionDueSortValue(right.next_inspection_due)
+
+      if (leftDue !== rightDue) return leftDue - rightDue
+
+      const nameComparison = String(left.name || '').localeCompare(String(right.name || ''))
+      if (nameComparison !== 0) return nameComparison
+
+      return Number(left.id) - Number(right.id)
+    })
+
+    // Split into active and decommissioned
+    return {
+      active: sorted.filter((item) => item.status !== 'decommissioned'),
+      decommissioned: sorted.filter((item) => item.status === 'decommissioned'),
+    }
+  }, [equipment])
+
+  const activeEquipment = sortedEquipment.active || []
+  const decommissionedEquipment = sortedEquipment.decommissioned || []
+  const currentTableEquipment = equipmentTableTab === 'active' ? activeEquipment : decommissionedEquipment
+
+  const equipmentTotalPages = Math.max(1, Math.ceil(currentTableEquipment.length / equipmentPageSize))
+  const equipmentStartIndex = (equipmentPage - 1) * equipmentPageSize
+  const visibleEquipment = currentTableEquipment.slice(equipmentStartIndex, equipmentStartIndex + equipmentPageSize)
+  const equipmentRangeStart = currentTableEquipment.length === 0 ? 0 : equipmentStartIndex + 1
+  const equipmentRangeEnd = Math.min(equipmentStartIndex + equipmentPageSize, currentTableEquipment.length)
+  const equipmentNextDuePreview = useMemo(
+    () => calculateNextInspectionDue(equipmentForm.last_inspected_at, equipmentForm.inspection_interval_days),
+    [equipmentForm.inspection_interval_days, equipmentForm.last_inspected_at],
+  )
+  const isEditingReport = Boolean(reportForm.reportId)
+
+  useEffect(() => {
+    if (equipmentPage > equipmentTotalPages) {
+      setEquipmentPage(equipmentTotalPages)
+    }
+  }, [equipmentPage, equipmentTotalPages])
+
+  useEffect(() => {
+    setEquipmentStatusDraft(activeSelectedEquipment?.status || 'active')
+    setShowDecommissionConfirm(false)
+  }, [activeSelectedEquipment?.id, activeSelectedEquipment?.status])
+
+  useEffect(() => {
+    if (!activeSelectedEquipment) {
+      setViewedReport(null)
+      setShowEditReportModal(false)
+      setShowRevisionsModal(false)
+    }
+  }, [activeSelectedEquipment])
+
+  useEffect(() => {
+    if (!viewedReport?.id) return
+    const updatedReport = reports.find((item) => String(item.id) === String(viewedReport.id))
+    if (updatedReport) {
+      setViewedReport(updatedReport)
+    }
+  }, [reports, viewedReport?.id])
+
+  useEffect(() => {
+    if (!showDecommissionConfirm) return
+
+    function handleEscapeClose(event) {
+      if (event.key === 'Escape') {
+        setShowDecommissionConfirm(false)
+      }
+    }
+
+    window.addEventListener('keydown', handleEscapeClose)
+    return () => window.removeEventListener('keydown', handleEscapeClose)
+  }, [showDecommissionConfirm])
+
+  useEffect(() => {
+    const isAnyReportModalOpen = Boolean(viewedReport || showEditReportModal || showRevisionsModal)
+    if (!isAnyReportModalOpen) return
+
+    function handleEscapeClose(event) {
+      if (event.key !== 'Escape') return
+
+      if (showEditReportModal) {
+        handleCancelEdit()
+        return
+      }
+
+      if (showRevisionsModal) {
+        setShowRevisionsModal(false)
+        setRevisionReportId('')
+        setReportRevisions([])
+        return
+      }
+
+      if (viewedReport) {
+        setViewedReport(null)
+      }
+    }
+
+    window.addEventListener('keydown', handleEscapeClose)
+    return () => window.removeEventListener('keydown', handleEscapeClose)
+  }, [viewedReport, showEditReportModal, showRevisionsModal])
+
+  useEffect(() => {
+    const isAnyCreateModalOpen = Boolean(
+      showCreateCustomerForm || showCreateEquipmentForm || showCreateReportForm
+    )
+    if (!isAnyCreateModalOpen) return
+
+    function handleEscapeClose(event) {
+      if (event.key !== 'Escape') return
+
+      if (showCreateReportForm) {
+        setShowCreateReportForm(false)
+        setReportForm(buildEmptyReportForm())
+      }
+
+      if (showCreateEquipmentForm) {
+        setShowCreateEquipmentForm(false)
+      }
+
+      if (showCreateCustomerForm) {
+        setShowCreateCustomerForm(false)
+      }
+    }
+
+    window.addEventListener('keydown', handleEscapeClose)
+    return () => window.removeEventListener('keydown', handleEscapeClose)
+  }, [showCreateCustomerForm, showCreateEquipmentForm, showCreateReportForm])
 
   useEffect(() => {
     let cancelled = false
@@ -149,6 +386,7 @@ export default function PortalDashboardPage() {
 
         setCompany(nextCompany)
         setEquipment(nextEquipment)
+        setEquipmentPage(1)
       } catch (error) {
         if (cancelled) return
 
@@ -185,7 +423,47 @@ export default function PortalDashboardPage() {
 
   async function handleCreateReport(event) {
     event.preventDefault()
-    if (!activeSelectedEquipment?.id || creatingReport) return
+    if (!activeSelectedEquipment?.id || creatingReport || savingReportEdit) return
+
+    const refreshEquipmentList = async () => {
+      const refreshedEquipment = await getPortalEquipment({
+        companyId: activeSelectedEquipment.company_id || selectedCompanyId,
+        search: searchQuery,
+      })
+      setEquipment(refreshedEquipment)
+      if (selectedEquipment) {
+        const nextSelectedEquipment = refreshedEquipment.find(
+          (item) => String(item.id) === String(selectedEquipment.id),
+        )
+        setSelectedEquipment(nextSelectedEquipment || null)
+      }
+      setEquipmentPage(1)
+    }
+
+    if (isEditingReport) {
+      setSavingReportEdit(true)
+      setReportError('')
+      try {
+        await updateReport(reportForm.reportId, {
+          title: reportForm.title,
+          summary: reportForm.summary,
+          findings: reportForm.findings,
+          recommendations: reportForm.recommendations,
+          report_date: reportForm.report_date,
+          status: reportForm.status,
+        })
+        const refreshed = await getEquipmentReports(activeSelectedEquipment.id)
+        setReports(refreshed)
+        await refreshEquipmentList()
+        setReportForm(buildEmptyReportForm())
+        setShowEditReportModal(false)
+      } catch (error) {
+        setReportError(String(error?.message || 'Unable to save report changes.'))
+      } finally {
+        setSavingReportEdit(false)
+      }
+      return
+    }
 
     setCreatingReport(true)
     setReportError('')
@@ -193,7 +471,9 @@ export default function PortalDashboardPage() {
       await createEquipmentReport(activeSelectedEquipment.id, reportForm)
       const refreshed = await getEquipmentReports(activeSelectedEquipment.id)
       setReports(refreshed)
-      setReportForm((current) => ({ ...current, title: '', summary: '', findings: '', recommendations: '' }))
+      await refreshEquipmentList()
+      setReportForm(buildEmptyReportForm())
+      setShowCreateReportForm(false)
     } catch (error) {
       setReportError(String(error?.message || 'Unable to create report.'))
     } finally {
@@ -201,54 +481,161 @@ export default function PortalDashboardPage() {
     }
   }
 
-  async function handleOwnerEdit(reportId) {
-    const report = reports.find((item) => String(item.id) === String(reportId))
-    if (!report || savingReportEdit) return
+  async function handleCreateCustomer(event) {
+    event.preventDefault()
+    if (!isOwner || creatingCustomer) return
 
-    setSavingReportEdit(true)
-    setReportError('')
+    setCreatingCustomer(true)
+    setCustomerCreateError('')
+    setCustomerCreateSuccess('')
     try {
-      await updateReport(reportId, {
-        title: report.title,
-        summary: report.summary,
-        findings: report.findings,
-        recommendations: report.recommendations,
-        report_date: report.report_date,
-        status: report.status,
-      })
-
-      const [refreshedReports, revisions] = await Promise.all([
-        getEquipmentReports(activeSelectedEquipment.id),
-        getReportRevisions(reportId),
-      ])
-      setReports(refreshedReports)
-      setReportRevisions(revisions)
-      setEditingReportId(String(reportId))
+      const created = await createPortalCustomer(customerForm)
+      const refreshedCompanies = await getPortalCompanies()
+      setCompanies(refreshedCompanies)
+      setCustomerForm(buildEmptyCustomerForm())
+      setShowCreateCustomerForm(false)
+      setCustomerCreateSuccess(
+        `Created customer ${created.customer.username} for ${created.company.name}.`,
+      )
     } catch (error) {
-      setReportError(String(error?.message || 'Unable to save report changes.'))
+      setCustomerCreateError(String(error?.message || 'Unable to create customer account.'))
     } finally {
-      setSavingReportEdit(false)
+      setCreatingCustomer(false)
     }
+  }
+
+  async function handleCreateEquipment(event) {
+    event.preventDefault()
+    if (!canEditReports || !selectedCompanyId || creatingEquipment) return
+
+    setCreatingEquipment(true)
+    setEquipmentCreateError('')
+    setEquipmentCreateSuccess('')
+    try {
+      const payload = {
+        ...equipmentForm,
+        company_id: Number(selectedCompanyId),
+        inspection_interval_days: Number(equipmentForm.inspection_interval_days || 365),
+        last_inspected_at: equipmentForm.last_inspected_at || null,
+      }
+      const created = await createPortalEquipment(payload)
+      const refreshedEquipment = await getPortalEquipment({
+        companyId: selectedCompanyId,
+        search: searchQuery,
+      })
+      setEquipment(refreshedEquipment)
+      setEquipmentPage(1)
+      setEquipmentForm(buildEmptyEquipmentForm())
+      setShowCreateEquipmentForm(false)
+      setEquipmentCreateSuccess(`Created equipment ${created.name}.`)
+    } catch (error) {
+      setEquipmentCreateError(String(error?.message || 'Unable to create equipment.'))
+    } finally {
+      setCreatingEquipment(false)
+    }
+  }
+
+  async function handleUpdateEquipmentStatus(newStatus, equipmentId = null) {
+    const targetEquipmentId = equipmentId || activeSelectedEquipment?.id
+    if (!targetEquipmentId || updatingEquipmentStatus) return
+    const companyIdForRefresh = activeSelectedEquipment?.company_id || selectedCompanyId
+    const selectedEquipmentIdToMaintain = selectedEquipment?.id || null
+
+    setUpdatingEquipmentStatus(true)
+    setEquipmentStatusError('')
+    try {
+      await updatePortalEquipment(targetEquipmentId, { status: newStatus })
+      const refreshedEquipment = await getPortalEquipment({
+        companyId: companyIdForRefresh,
+        search: searchQuery,
+      })
+      setEquipment(refreshedEquipment)
+      if (selectedEquipmentIdToMaintain) {
+        const nextSelectedEquipment = refreshedEquipment.find(
+          (item) => String(item.id) === String(selectedEquipmentIdToMaintain),
+        )
+        setSelectedEquipment(nextSelectedEquipment || null)
+      }
+      setEquipmentPage(1)
+    } catch (error) {
+      setEquipmentStatusError(String(error?.message || 'Unable to update equipment status.'))
+    } finally {
+      setUpdatingEquipmentStatus(false)
+    }
+  }
+
+  async function handleSubmitEquipmentStatusUpdate() {
+    if (!activeSelectedEquipment?.id || updatingEquipmentStatus) return
+    if (equipmentStatusDraft === (activeSelectedEquipment.status || 'active')) return
+
+    if (equipmentStatusDraft === 'decommissioned') {
+      setShowDecommissionConfirm(true)
+      return
+    }
+
+    await handleUpdateEquipmentStatus(equipmentStatusDraft, activeSelectedEquipment.id)
+  }
+
+  async function handleConfirmDecommission() {
+    if (!activeSelectedEquipment?.id || updatingEquipmentStatus) return
+    setShowDecommissionConfirm(false)
+    await handleUpdateEquipmentStatus('decommissioned', activeSelectedEquipment.id)
+  }
+
+  function handleStartEdit(report) {
+    setShowCreateReportForm(false)
+    setShowEditReportModal(true)
+    setReportForm({
+      reportId: String(report.id),
+      title: report.title || '',
+      summary: report.summary || '',
+      findings: report.findings || '',
+      recommendations: report.recommendations || '',
+      report_date: report.report_date || new Date().toISOString().slice(0, 10),
+      status: report.status || 'draft',
+    })
   }
 
   async function handleLoadRevisions(reportId) {
     if (!isOwner) return
-    if (editingReportId === String(reportId) && reportRevisions.length > 0) {
-      setEditingReportId('')
-      setReportRevisions([])
-      return
-    }
+    setShowRevisionsModal(true)
+    setRevisionReportId(String(reportId))
+    setReportRevisions([])
     setRevisionsLoading(true)
     setReportError('')
     try {
       const revisions = await getReportRevisions(reportId)
       setReportRevisions(revisions)
-      setEditingReportId(String(reportId))
     } catch (error) {
       setReportError(String(error?.message || 'Unable to load revision history.'))
     } finally {
       setRevisionsLoading(false)
     }
+  }
+
+  function handleCancelEdit() {
+    setReportForm(buildEmptyReportForm())
+    setShowEditReportModal(false)
+  }
+
+  function canEditReport(report) {
+    if (isOwner) return true
+    if (!isStaff) return false
+    return report.status === 'draft' && Number(report.submitted_by) === Number(profile?.id)
+  }
+
+  function reportStatusOptions() {
+    if (isEditingReport && isOwner) {
+      return [
+        { value: 'submitted', label: 'Submitted' },
+        { value: 'approved', label: 'Approved' },
+      ]
+    }
+
+    return [
+      { value: 'draft', label: 'Draft' },
+      { value: 'submitted', label: 'Submitted' },
+    ]
   }
 
   if (!isAuthenticated) {
@@ -314,16 +701,44 @@ export default function PortalDashboardPage() {
               </span>
             </div>
 
+            {customerCreateError && (
+              <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {customerCreateError}
+              </div>
+            )}
+            {customerCreateSuccess && (
+              <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                {customerCreateSuccess}
+              </div>
+            )}
+
             {loading ? (
               <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
                 Loading customers...
               </div>
-            ) : companies.length === 0 ? (
-              <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-                No customer companies are assigned to this account.
-              </div>
             ) : (
               <div className="mt-6 grid gap-4 md:grid-cols-2">
+                {isOwner && (
+                  <article className="rounded-xl border border-dashed border-[#123A7A] bg-slate-50 p-4">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowCreateCustomerForm(true)
+                        setCustomerCreateError('')
+                        setCustomerCreateSuccess('')
+                      }}
+                      className="flex h-full w-full flex-col items-center justify-center rounded-lg p-4 text-center transition hover:bg-white"
+                    >
+                      <span className="grid h-10 w-10 place-items-center rounded-full border border-[#123A7A] text-2xl font-bold text-[#123A7A]">
+                        +
+                      </span>
+                      <h3 className="mt-3 text-lg font-bold text-[#123A7A]">Add New Customer</h3>
+                      <p className="mt-1 text-sm text-slate-600">
+                        Create a company and portal login.
+                      </p>
+                    </button>
+                  </article>
+                )}
                 {companies.map((item) => (
                   <article key={item.id} className="rounded-xl border border-slate-200 p-4">
                     <h3 className="text-lg font-bold text-[#123A7A]">{item.name}</h3>
@@ -338,6 +753,11 @@ export default function PortalDashboardPage() {
                     </button>
                   </article>
                 ))}
+                {!isOwner && companies.length === 0 && (
+                  <div className="md:col-span-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                    No customer companies are assigned to this account.
+                  </div>
+                )}
               </div>
             )}
           </section>
@@ -431,6 +851,33 @@ export default function PortalDashboardPage() {
             </form>
           </div>
 
+          {canEditReports && (
+            <div className="mt-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCreateEquipmentForm(true)
+                  setEquipmentCreateError('')
+                }}
+                className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+              >
+                + Add Equipment
+              </button>
+            </div>
+          )}
+
+          {equipmentCreateError && (
+            <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {equipmentCreateError}
+            </div>
+          )}
+          {equipmentCreateSuccess && (
+            <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+              {equipmentCreateSuccess}
+            </div>
+          )}
+
+
           {loading ? (
             <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
               Loading equipment...
@@ -442,49 +889,148 @@ export default function PortalDashboardPage() {
           ) : (
             <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
               <div className="overflow-x-auto">
+                {/* Equipment Tabs */}
+                <div className="flex items-end gap-1 border-b border-slate-300 bg-slate-50 px-3 pt-2">
+                  <button
+                    onClick={() => {
+                      setEquipmentTableTab('active')
+                      setEquipmentPage(1)
+                    }}
+                    className={`-mb-px rounded-t-lg border px-4 py-2.5 text-sm font-semibold transition ${
+                      equipmentTableTab === 'active'
+                        ? 'border-slate-300 border-b-white bg-white text-[#123A7A] shadow-sm'
+                        : 'border-transparent bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800'
+                    }`}
+                  >
+                    Active Equipment ({activeEquipment.length})
+                  </button>
+                  <button
+                    onClick={() => {
+                      setEquipmentTableTab('decommissioned')
+                      setEquipmentPage(1)
+                    }}
+                    className={`-mb-px rounded-t-lg border px-4 py-2.5 text-sm font-semibold transition ${
+                      equipmentTableTab === 'decommissioned'
+                        ? 'border-slate-300 border-b-white bg-white text-[#123A7A] shadow-sm'
+                        : 'border-transparent bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800'
+                    }`}
+                  >
+                    Decommissioned Equipment ({decommissionedEquipment.length})
+                  </button>
+                </div>
+
+                {/* Equipment Table */}
                 <table className="w-full min-w-[920px] border-collapse text-left text-sm">
                   <thead className="bg-[#123A7A] text-white">
                     <tr>
                       <th className="px-4 py-3 font-semibold">Name</th>
                       <th className="px-4 py-3 font-semibold">Asset Tag</th>
                       <th className="px-4 py-3 font-semibold">Serial</th>
-                      <th className="px-4 py-3 font-semibold">Location</th>
+                      {equipmentTableTab === 'active' && <th className="px-4 py-3 font-semibold">Location</th>}
                       <th className="px-4 py-3 font-semibold">Status</th>
+                        {equipmentTableTab === 'active' && (
+                          <>
+                      <th className="px-4 py-3 font-semibold">Inspection Status</th>
                       <th className="px-4 py-3 font-semibold">Next Due</th>
-                      <th className="px-4 py-3 font-semibold">Reports</th>
+                          </>
+                        )}
+                        {equipmentTableTab === 'decommissioned' && (
+                          <th className="px-4 py-3 font-semibold">Decommissioned Date</th>
+                        )}
+                      {equipmentTableTab === 'active' && <th className="px-4 py-3 font-semibold">Reports</th>}
+                      {equipmentTableTab === 'decommissioned' && isOwner && <th className="px-4 py-3 font-semibold">Actions</th>}
                     </tr>
                   </thead>
                   <tbody>
-                    {equipment.map((item) => (
-                      <tr key={item.id} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
-                        <td className="px-4 py-3 font-semibold text-slate-800">{item.name}</td>
-                        <td className="px-4 py-3 text-slate-700">{item.asset_tag || '-'}</td>
-                        <td className="px-4 py-3 text-slate-700">{item.serial_number || '-'}</td>
-                        <td className="px-4 py-3 text-slate-700">{item.location || '-'}</td>
-                        <td className="px-4 py-3">
-                          <span className="rounded-full border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700">
-                            {item.status || 'unknown'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-slate-700">{item.next_inspection_due || '-'}</td>
-                        <td className="px-4 py-3 text-slate-700">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedEquipment(item)
-                              setEditingReportId('')
-                              setReportRevisions([])
-                            }}
-                            className="rounded border border-[#123A7A] px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
-                          >
-                            {canEditReports ? 'Create & View' : 'View'}
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {visibleEquipment.map((item) => {
+                      const inspectionStatus = getInspectionStatusBadge(item.next_inspection_due)
+                      return (
+                        <tr key={item.id} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
+                          <td className="px-4 py-3 font-semibold text-slate-800">{item.name}</td>
+                          <td className="px-4 py-3 text-slate-700">{item.asset_tag || '-'}</td>
+                          <td className="px-4 py-3 text-slate-700">{item.serial_number || '-'}</td>
+                          {equipmentTableTab === 'active' && <td className="px-4 py-3 text-slate-700">{item.location || '-'}</td>}
+                          <td className="px-4 py-3">
+                            <span className="rounded-full border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700">
+                              {item.status || 'unknown'}
+                            </span>
+                          </td>
+                            {equipmentTableTab === 'active' && (
+                              <>
+                                <td className="px-4 py-3">
+                                  <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold uppercase tracking-wide ${inspectionStatus.color}`}>
+                                    {inspectionStatus.label}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-slate-700">{item.next_inspection_due || '-'}</td>
+                              </>
+                            )}
+                            {equipmentTableTab === 'decommissioned' && (
+                              <td className="px-4 py-3 text-slate-700">{item.decommissioned_at || '-'}</td>
+                            )}
+                          {equipmentTableTab === 'decommissioned' && isOwner && (
+                            <td className="px-4 py-3 text-slate-700">
+                              <button
+                                type="button"
+                                onClick={() => handleUpdateEquipmentStatus('active', item.id)}
+                                disabled={updatingEquipmentStatus}
+                                className="rounded border border-emerald-600 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-700 transition hover:bg-emerald-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                Set Active
+                              </button>
+                            </td>
+                          )}
+                          {equipmentTableTab === 'active' && (
+                            <td className="px-4 py-3 text-slate-700">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedEquipment(item)
+                                  setReportForm(buildEmptyReportForm())
+                                  setShowCreateReportForm(false)
+                                  setRevisionReportId('')
+                                  setReportRevisions([])
+                                }}
+                                className="rounded border border-[#123A7A] px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                              >
+                                View
+                              </button>
+                            </td>
+                          )}
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
+                {currentTableEquipment.length > 0 && (
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                  <p>
+                      Showing {equipmentRangeStart}-{equipmentRangeEnd} of {currentTableEquipment.length} equipment items.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEquipmentPage((current) => Math.max(1, current - 1))}
+                      disabled={equipmentPage === 1}
+                      className="rounded-md border border-slate-300 bg-white px-3 py-1.5 font-semibold text-slate-700 transition hover:border-[#123A7A] hover:text-[#123A7A] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Previous
+                    </button>
+                    <span className="min-w-24 text-center font-semibold text-slate-700">
+                      Page {equipmentPage} of {equipmentTotalPages}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setEquipmentPage((current) => Math.min(equipmentTotalPages, current + 1))}
+                      disabled={equipmentPage === equipmentTotalPages}
+                      className="rounded-md border border-slate-300 bg-white px-3 py-1.5 font-semibold text-slate-700 transition hover:border-[#123A7A] hover:text-[#123A7A] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
           </section>
@@ -495,25 +1041,79 @@ export default function PortalDashboardPage() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-2xl font-extrabold text-[#123A7A]">
-                  Reports for {activeSelectedEquipment.name}
+                  Equipment Details: {activeSelectedEquipment.name}
                 </h2>
-                <p className="mt-1 text-sm text-slate-600">
-                  Asset tag: {activeSelectedEquipment.asset_tag || '-'} | Serial: {activeSelectedEquipment.serial_number || '-'}
-                </p>
               </div>
               <button
                 type="button"
                 onClick={() => {
                   setSelectedEquipment(null)
                   setReports([])
-                  setEditingReportId('')
+                  setViewedReport(null)
+                  setReportForm(buildEmptyReportForm())
+                  setShowCreateReportForm(false)
+                  setShowEditReportModal(false)
+                  setShowRevisionsModal(false)
+                  setRevisionReportId('')
                   setReportRevisions([])
                 }}
                 className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:border-[#123A7A]"
               >
-                Close Reports
+                Close Details
               </button>
             </div>
+
+            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <div className="grid gap-2 text-sm text-slate-700 md:grid-cols-2">
+                <p><span className="font-semibold">Name:</span> {activeSelectedEquipment.name || '-'}</p>
+                <div>
+                  <span className="font-semibold">Status:</span>{' '}
+                  {canEditReports ? (
+                    <div className="mt-1 flex gap-2">
+                      <select
+                        value={equipmentStatusDraft}
+                        onChange={(e) => setEquipmentStatusDraft(e.target.value)}
+                        disabled={updatingEquipmentStatus}
+                        className="rounded-md border border-slate-300 px-2 py-1 text-xs"
+                      >
+                        <option value="active">Active</option>
+                        <option value="decommissioned">Decommissioned</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={handleSubmitEquipmentStatusUpdate}
+                        disabled={
+                          updatingEquipmentStatus ||
+                          equipmentStatusDraft === (activeSelectedEquipment.status || 'active')
+                        }
+                        className="rounded border border-[#123A7A] bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Update Status
+                      </button>
+                      {updatingEquipmentStatus && <span className="text-xs text-slate-500">Updating...</span>}
+                    </div>
+                  ) : (
+                    <span>{activeSelectedEquipment.status || '-'}</span>
+                  )}
+                </div>
+                <p><span className="font-semibold">Asset Tag:</span> {activeSelectedEquipment.asset_tag || '-'}</p>
+                <p><span className="font-semibold">Serial Number:</span> {activeSelectedEquipment.serial_number || '-'}</p>
+                <p><span className="font-semibold">Location:</span> {activeSelectedEquipment.location || '-'}</p>
+                <p>
+                  <span className="font-semibold">Inspection Interval:</span>{' '}
+                  {activeSelectedEquipment.inspection_interval_days || '-'} days
+                </p>
+                <p><span className="font-semibold">Last Inspected:</span> {activeSelectedEquipment.last_inspected_at || '-'}</p>
+                <p><span className="font-semibold">Next Inspection Due:</span> {activeSelectedEquipment.next_inspection_due || '-'}</p>
+                <p className="md:col-span-2"><span className="font-semibold">Notes:</span> {activeSelectedEquipment.notes || '-'}</p>
+              </div>
+            </div>
+
+            {equipmentStatusError && (
+              <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {equipmentStatusError}
+              </div>
+            )}
 
             {reportError && (
               <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -522,9 +1122,529 @@ export default function PortalDashboardPage() {
             )}
 
             {canEditReports && (
-              <form className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4" onSubmit={handleCreateReport}>
+              <div className="mt-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setReportForm(buildEmptyReportForm())
+                    setShowCreateReportForm(true)
+                  }}
+                  className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                >
+                  Create New Report
+                </button>
+              </div>
+            )}
+
+
+            <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[980px] border-collapse text-left text-sm">
+                  <thead className="bg-[#123A7A] text-white">
+                    <tr>
+                      <th className="px-4 py-3 font-semibold">Title</th>
+                      <th className="px-4 py-3 font-semibold">Date</th>
+                      <th className="px-4 py-3 font-semibold">Status</th>
+                      <th className="px-4 py-3 font-semibold">Inspector</th>
+                      <th className="px-4 py-3 font-semibold">Summary</th>
+                      <th className="px-4 py-3 font-semibold">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {reportsLoading ? (
+                      <tr>
+                        <td className="px-4 py-4 text-slate-500" colSpan={6}>
+                          Loading reports...
+                        </td>
+                      </tr>
+                    ) : reports.length === 0 ? (
+                      <tr>
+                        <td className="px-4 py-4 text-slate-500" colSpan={6}>
+                          No reports have been submitted for this equipment.
+                        </td>
+                      </tr>
+                    ) : (
+                      reports.map((report) => (
+                        <tr key={report.id} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
+                          <td className="px-4 py-3 font-semibold text-slate-800">{report.title}</td>
+                          <td className="px-4 py-3 text-slate-700">{report.report_date}</td>
+                          <td className="px-4 py-3 text-slate-700">{report.status}</td>
+                          <td className="px-4 py-3 text-slate-700">{report.submitted_by_name || '-'}</td>
+                          <td className="px-4 py-3 text-slate-700">{report.summary || '-'}</td>
+                          <td className="px-4 py-3 text-slate-700">
+                            <button
+                              type="button"
+                              onClick={() => setViewedReport(report)}
+                              className="rounded border border-[#123A7A] px-2 py-1 text-xs font-semibold text-[#123A7A]"
+                            >
+                              View
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {isOwner && showCreateCustomerForm && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4"
+            onClick={() => setShowCreateCustomerForm(false)}
+          >
+            <form
+              className="w-full max-w-3xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+              onSubmit={handleCreateCustomer}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-bold text-[#123A7A]">Add New Customer</h3>
+                  <p className="mt-1 text-sm text-slate-600">
+                    Create a new customer company and their portal login.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateCustomerForm(false)}
+                  className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <label className="text-sm font-semibold text-slate-700">
+                  Company Name
+                  <input
+                    type="text"
+                    value={customerForm.company_name}
+                    onChange={(event) =>
+                      setCustomerForm((current) => ({ ...current, company_name: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    required
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Company Email
+                  <input
+                    type="email"
+                    value={customerForm.company_contact_email}
+                    onChange={(event) =>
+                      setCustomerForm((current) => ({ ...current, company_contact_email: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Company Phone
+                  <input
+                    type="text"
+                    value={customerForm.company_contact_phone}
+                    onChange={(event) =>
+                      setCustomerForm((current) => ({ ...current, company_contact_phone: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700 md:col-span-2">
+                  Company Address
+                  <input
+                    type="text"
+                    value={customerForm.company_address}
+                    onChange={(event) =>
+                      setCustomerForm((current) => ({ ...current, company_address: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Customer Username
+                  <input
+                    type="text"
+                    value={customerForm.customer_username}
+                    onChange={(event) =>
+                      setCustomerForm((current) => ({ ...current, customer_username: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    required
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Customer Email
+                  <input
+                    type="email"
+                    value={customerForm.customer_email}
+                    onChange={(event) =>
+                      setCustomerForm((current) => ({ ...current, customer_email: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    required
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Customer First Name
+                  <input
+                    type="text"
+                    value={customerForm.customer_first_name}
+                    onChange={(event) =>
+                      setCustomerForm((current) => ({ ...current, customer_first_name: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Customer Last Name
+                  <input
+                    type="text"
+                    value={customerForm.customer_last_name}
+                    onChange={(event) =>
+                      setCustomerForm((current) => ({ ...current, customer_last_name: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700 md:max-w-md">
+                  Temporary Password
+                  <input
+                    type="password"
+                    value={customerForm.customer_password}
+                    onChange={(event) =>
+                      setCustomerForm((current) => ({ ...current, customer_password: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    minLength={8}
+                    required
+                  />
+                </label>
+              </div>
+
+              <button
+                type="submit"
+                disabled={creatingCustomer}
+                className="mt-4 rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168] disabled:opacity-70"
+              >
+                {creatingCustomer ? 'Creating customer...' : 'Create Customer'}
+              </button>
+            </form>
+          </div>
+        )}
+
+        {canEditReports && showCreateEquipmentForm && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4"
+            onClick={() => setShowCreateEquipmentForm(false)}
+          >
+            <form
+              className="w-full max-w-3xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+              onSubmit={handleCreateEquipment}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-lg font-bold text-[#123A7A]">Add Equipment</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateEquipmentForm(false)}
+                  className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <label className="text-sm font-semibold text-slate-700">
+                  Name
+                  <input
+                    type="text"
+                    value={equipmentForm.name}
+                    onChange={(event) => setEquipmentForm((current) => ({ ...current, name: event.target.value }))}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    required
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Asset Tag
+                  <input
+                    type="text"
+                    value={equipmentForm.asset_tag}
+                    onChange={(event) =>
+                      setEquipmentForm((current) => ({ ...current, asset_tag: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Serial Number
+                  <input
+                    type="text"
+                    value={equipmentForm.serial_number}
+                    onChange={(event) =>
+                      setEquipmentForm((current) => ({ ...current, serial_number: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Location
+                  <input
+                    type="text"
+                    value={equipmentForm.location}
+                    onChange={(event) =>
+                      setEquipmentForm((current) => ({ ...current, location: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Status
+                  <select
+                    value={equipmentForm.status}
+                    onChange={(event) =>
+                      setEquipmentForm((current) => ({ ...current, status: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  >
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                    <option value="retired">Retired</option>
+                  </select>
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Inspection Interval (days)
+                  <input
+                    type="number"
+                    min={1}
+                    value={equipmentForm.inspection_interval_days}
+                    onChange={(event) =>
+                      setEquipmentForm((current) => ({ ...current, inspection_interval_days: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Last Inspected
+                  <input
+                    type="date"
+                    value={equipmentForm.last_inspected_at}
+                    onChange={(event) =>
+                      setEquipmentForm((current) => ({ ...current, last_inspected_at: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </label>
+                <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 md:col-span-2">
+                  <span className="font-semibold text-slate-800">Next Inspection Due Preview:</span>{' '}
+                  {equipmentNextDuePreview || 'Set a last inspected date to see the calculated due date.'}
+                </div>
+                <label className="text-sm font-semibold text-slate-700 md:col-span-2">
+                  Notes
+                  <textarea
+                    value={equipmentForm.notes}
+                    onChange={(event) => setEquipmentForm((current) => ({ ...current, notes: event.target.value }))}
+                    className="mt-1 min-h-20 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </label>
+              </div>
+
+              <button
+                type="submit"
+                disabled={creatingEquipment}
+                className="mt-4 rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168] disabled:opacity-70"
+              >
+                {creatingEquipment ? 'Creating equipment...' : 'Create Equipment'}
+              </button>
+            </form>
+          </div>
+        )}
+
+        {canEditReports && showCreateReportForm && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4"
+            onClick={() => {
+              setShowCreateReportForm(false)
+              setReportForm(buildEmptyReportForm())
+            }}
+          >
+            <form
+              className="w-full max-w-3xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+              onSubmit={handleCreateReport}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-3">
                 <h3 className="text-lg font-bold text-[#123A7A]">Create New Report</h3>
-                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowCreateReportForm(false)
+                    setReportForm(buildEmptyReportForm())
+                  }}
+                  className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <label className="text-sm font-semibold text-slate-700">
+                  Report Title
+                  <input
+                    type="text"
+                    value={reportForm.title}
+                    onChange={(event) => setReportForm((current) => ({ ...current, title: event.target.value }))}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    required
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Report Date
+                  <input
+                    type="date"
+                    value={reportForm.report_date}
+                    onChange={(event) =>
+                      setReportForm((current) => ({ ...current, report_date: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    required
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700 md:col-span-2">
+                  Summary
+                  <textarea
+                    value={reportForm.summary}
+                    onChange={(event) =>
+                      setReportForm((current) => ({ ...current, summary: event.target.value }))
+                    }
+                    className="mt-1 min-h-20 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Findings
+                  <textarea
+                    value={reportForm.findings}
+                    onChange={(event) =>
+                      setReportForm((current) => ({ ...current, findings: event.target.value }))
+                    }
+                    className="mt-1 min-h-20 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Recommendations
+                  <textarea
+                    value={reportForm.recommendations}
+                    onChange={(event) =>
+                      setReportForm((current) => ({ ...current, recommendations: event.target.value }))
+                    }
+                    className="mt-1 min-h-20 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700 md:max-w-xs">
+                  Status
+                  <select
+                    value={reportForm.status}
+                    onChange={(event) =>
+                      setReportForm((current) => ({ ...current, status: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  >
+                    {reportStatusOptions().map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <button
+                type="submit"
+                disabled={creatingReport}
+                className="mt-4 rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168] disabled:opacity-70"
+              >
+                {creatingReport ? 'Creating...' : 'Create Report'}
+              </button>
+            </form>
+          </div>
+        )}
+
+        {viewedReport && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4"
+            onClick={() => setViewedReport(null)}
+          >
+            <div
+              className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#C61F2A]">Report Details</p>
+                  <h3 className="mt-1 text-xl font-extrabold text-[#123A7A]">{viewedReport.title || 'Untitled Report'}</h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setViewedReport(null)}
+                  className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="mt-4 grid gap-2 text-sm text-slate-700 md:grid-cols-2">
+                <p><span className="font-semibold">Date:</span> {viewedReport.report_date || '-'}</p>
+                <p><span className="font-semibold">Status:</span> {viewedReport.status || '-'}</p>
+                <p><span className="font-semibold">Inspector:</span> {viewedReport.submitted_by_name || '-'}</p>
+                <p><span className="font-semibold">Report ID:</span> {viewedReport.id}</p>
+                <p className="md:col-span-2"><span className="font-semibold">Summary:</span> {viewedReport.summary || '-'}</p>
+                <p className="md:col-span-2"><span className="font-semibold">Findings:</span> {viewedReport.findings || '-'}</p>
+                <p className="md:col-span-2"><span className="font-semibold">Recommendations:</span> {viewedReport.recommendations || '-'}</p>
+              </div>
+
+              <div className="mt-5 flex flex-wrap justify-end gap-2">
+                {isOwner && (
+                  <button
+                    type="button"
+                    onClick={() => handleLoadRevisions(viewedReport.id)}
+                    className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 transition hover:bg-slate-100"
+                  >
+                    Revisions
+                  </button>
+                )}
+                {canEditReport(viewedReport) && (
+                  <button
+                    type="button"
+                    onClick={() => handleStartEdit(viewedReport)}
+                    className="rounded border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                  >
+                    Edit Report
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {showEditReportModal && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4"
+            onClick={handleCancelEdit}
+          >
+            <div
+              className="w-full max-w-3xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-lg font-bold text-[#123A7A]">Edit Report</h3>
+                <button
+                  type="button"
+                  onClick={handleCancelEdit}
+                  className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
+                >
+                  Close
+                </button>
+              </div>
+              <form className="mt-4" onSubmit={handleCreateReport}>
+                <div className="grid gap-3 md:grid-cols-2">
                   <label className="text-sm font-semibold text-slate-700">
                     Report Title
                     <input
@@ -586,154 +1706,121 @@ export default function PortalDashboardPage() {
                       }
                       className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                     >
-                      <option value="draft">Draft</option>
-                      <option value="submitted">Submitted</option>
-                      <option value="final">Final</option>
+                      {reportStatusOptions().map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
                     </select>
                   </label>
                 </div>
-                <button
-                  type="submit"
-                  disabled={creatingReport}
-                  className="mt-4 rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168] disabled:opacity-70"
-                >
-                  {creatingReport ? 'Creating...' : 'Create Report'}
-                </button>
-              </form>
-            )}
-
-            <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[980px] border-collapse text-left text-sm">
-                  <thead className="bg-[#123A7A] text-white">
-                    <tr>
-                      <th className="px-4 py-3 font-semibold">Title</th>
-                      <th className="px-4 py-3 font-semibold">Date</th>
-                      <th className="px-4 py-3 font-semibold">Status</th>
-                      <th className="px-4 py-3 font-semibold">Inspector</th>
-                      <th className="px-4 py-3 font-semibold">Summary</th>
-                      <th className="px-4 py-3 font-semibold">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {reportsLoading ? (
-                      <tr>
-                        <td className="px-4 py-4 text-slate-500" colSpan={6}>
-                          Loading reports...
-                        </td>
-                      </tr>
-                    ) : reports.length === 0 ? (
-                      <tr>
-                        <td className="px-4 py-4 text-slate-500" colSpan={6}>
-                          No reports have been submitted for this equipment.
-                        </td>
-                      </tr>
-                    ) : (
-                      reports.map((report) => (
-                        <tr key={report.id} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
-                          <td className="px-4 py-3 font-semibold text-slate-800">
-                            {isOwner && editingReportId === String(report.id) ? (
-                              <input
-                                type="text"
-                                value={report.title || ''}
-                                onChange={(event) =>
-                                  setReports((current) =>
-                                    current.map((item) =>
-                                      item.id === report.id ? { ...item, title: event.target.value } : item,
-                                    ),
-                                  )
-                                }
-                                className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
-                              />
-                            ) : (
-                              report.title
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-slate-700">{report.report_date}</td>
-                          <td className="px-4 py-3 text-slate-700">{report.status}</td>
-                          <td className="px-4 py-3 text-slate-700">{report.submitted_by_name || '-'}</td>
-                          <td className="px-4 py-3 text-slate-700">{report.summary || '-'}</td>
-                          <td className="px-4 py-3 text-slate-700">
-                            <div className="flex gap-2">
-                              {isOwner && (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={() => setEditingReportId(String(report.id))}
-                                    className="rounded border border-[#123A7A] px-2 py-1 text-xs font-semibold text-[#123A7A]"
-                                  >
-                                    Edit
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleOwnerEdit(report.id)}
-                                    disabled={savingReportEdit}
-                                    className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700"
-                                  >
-                                    Save
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleLoadRevisions(report.id)}
-                                    className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700"
-                                  >
-                                    Revisions
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {isOwner && editingReportId && (
-              <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <h3 className="text-lg font-bold text-[#123A7A]">Revision History</h3>
+                <div className="mt-4 flex justify-end">
                   <button
-                    type="button"
-                    onClick={() => {
-                      setEditingReportId('')
-                      setReportRevisions([])
-                    }}
-                    className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
+                    type="submit"
+                    disabled={savingReportEdit}
+                    className="rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168] disabled:opacity-70"
                   >
-                    Close
+                    {savingReportEdit ? 'Saving...' : 'Save Report'}
                   </button>
                 </div>
-                {revisionsLoading ? (
-                  <p className="mt-2 text-sm text-slate-500">Loading revisions...</p>
-                ) : reportRevisions.length === 0 ? (
-                  <p className="mt-2 text-sm text-slate-500">No revisions recorded yet for this report.</p>
-                ) : (
-                  <ul className="mt-3 space-y-2 text-sm text-slate-700">
-                    {reportRevisions.map((revision) => (
-                      <li key={revision.id} className="rounded border border-slate-200 bg-white p-3">
-                        <p className="font-semibold text-slate-800">
-                          {revision.edited_by_name || 'Unknown user'}
-                          {' '}
-                          <span className="text-slate-400">-</span>
-                          {' '}
-                          <span className="font-medium text-slate-600">
-                            {formatRevisionDateTime(revision.changed_at)}
-                          </span>
-                        </p>
-                        <p className="mt-1 text-slate-600">
-                          Previous title: {revision.previous_data?.title || '-'} | Status:{' '}
-                          {revision.previous_data?.status || '-'}
-                        </p>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+              </form>
+            </div>
+          </div>
+        )}
+
+        {showRevisionsModal && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4"
+            onClick={() => {
+              setShowRevisionsModal(false)
+              setRevisionReportId('')
+              setReportRevisions([])
+            }}
+          >
+            <div
+              className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-lg font-bold text-[#123A7A]">Revision History</h3>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowRevisionsModal(false)
+                    setRevisionReportId('')
+                    setReportRevisions([])
+                  }}
+                  className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
+                >
+                  Close
+                </button>
               </div>
-            )}
-          </section>
+              {revisionsLoading ? (
+                <p className="mt-2 text-sm text-slate-500">Loading revisions...</p>
+              ) : reportRevisions.length === 0 ? (
+                <p className="mt-2 text-sm text-slate-500">No revisions recorded yet for this report.</p>
+              ) : (
+                <ul className="mt-3 space-y-2 text-sm text-slate-700">
+                  {reportRevisions.map((revision) => (
+                    <li key={revision.id} className="rounded border border-slate-200 bg-white p-3">
+                      <p className="font-semibold text-slate-800">
+                        {revision.edited_by_name || 'Unknown user'}
+                        {' '}
+                        <span className="text-slate-400">-</span>
+                        {' '}
+                        <span className="font-medium text-slate-600">
+                          {formatRevisionDateTime(revision.changed_at)}
+                        </span>
+                      </p>
+                      <p className="mt-1 text-slate-600">
+                        Previous title: {revision.previous_data?.title || '-'} | Status:{' '}
+                        {revision.previous_data?.status || '-'}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        )}
+
+        {showDecommissionConfirm && activeSelectedEquipment && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4"
+            onClick={() => setShowDecommissionConfirm(false)}
+          >
+            <div
+              className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#C61F2A]">Confirm Action</p>
+              <h3 className="mt-2 text-xl font-extrabold text-[#123A7A]">Decommission Equipment?</h3>
+              <p className="mt-3 text-sm text-slate-600">
+                This will move
+                {' '}
+                <span className="font-semibold text-slate-800">{activeSelectedEquipment.name}</span>
+                {' '}
+                into the decommissioned tab. You can reactivate it later from that tab if this was accidental.
+              </p>
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowDecommissionConfirm(false)}
+                  className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 transition hover:bg-slate-100"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmDecommission}
+                  disabled={updatingEquipmentStatus}
+                  className="rounded border border-[#C61F2A] bg-[#C61F2A] px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-[#a91923] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Yes, Decommission
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </section>
     </PortalLayout>
