@@ -21,6 +21,19 @@ function roleLabel(role) {
   return 'Customer'
 }
 
+function formatRevisionDateTime(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value || '-')
+
+  return new Intl.DateTimeFormat('en-IE', {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)
+}
+
 export default function PortalDashboardPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -220,6 +233,11 @@ export default function PortalDashboardPage() {
 
   async function handleLoadRevisions(reportId) {
     if (!isOwner) return
+    if (editingReportId === String(reportId) && reportRevisions.length > 0) {
+      setEditingReportId('')
+      setReportRevisions([])
+      return
+    }
     setRevisionsLoading(true)
     setReportError('')
     try {
@@ -675,7 +693,19 @@ export default function PortalDashboardPage() {
 
             {isOwner && editingReportId && (
               <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4">
-                <h3 className="text-lg font-bold text-[#123A7A]">Revision History</h3>
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-lg font-bold text-[#123A7A]">Revision History</h3>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingReportId('')
+                      setReportRevisions([])
+                    }}
+                    className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
+                  >
+                    Close
+                  </button>
+                </div>
                 {revisionsLoading ? (
                   <p className="mt-2 text-sm text-slate-500">Loading revisions...</p>
                 ) : reportRevisions.length === 0 ? (
@@ -684,8 +714,14 @@ export default function PortalDashboardPage() {
                   <ul className="mt-3 space-y-2 text-sm text-slate-700">
                     {reportRevisions.map((revision) => (
                       <li key={revision.id} className="rounded border border-slate-200 bg-white p-3">
-                        <p className="font-semibold">
-                          {revision.edited_by_name || 'Unknown user'} at {revision.changed_at}
+                        <p className="font-semibold text-slate-800">
+                          {revision.edited_by_name || 'Unknown user'}
+                          {' '}
+                          <span className="text-slate-400">-</span>
+                          {' '}
+                          <span className="font-medium text-slate-600">
+                            {formatRevisionDateTime(revision.changed_at)}
+                          </span>
                         </p>
                         <p className="mt-1 text-slate-600">
                           Previous title: {revision.previous_data?.title || '-'} | Status:{' '}

@@ -227,6 +227,20 @@
   animation: cartToastOut 0.2s ease-in forwards;
 }
 
+button {
+  transition: transform 0.16s ease, box-shadow 0.2s ease, filter 0.2s ease;
+}
+
+button:not(:disabled) {
+  cursor: pointer;
+}
+
+button:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.14);
+  filter: saturate(1.04);
+}
+
 @keyframes cartToastIn {
   from {
     opacity: 0;
