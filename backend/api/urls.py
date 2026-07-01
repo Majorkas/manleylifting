@@ -2,11 +2,13 @@ from django.urls import path
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from .portal_views import (
+  portal_create_customer,
   portal_certificate_download,
   portal_companies,
   portal_company_header,
   portal_equipment_certificates,
   portal_equipment_list,
+  portal_equipment_update,
   portal_equipment_reports,
   portal_logout,
   portal_me,
@@ -33,8 +35,10 @@ urlpatterns = [
   path("auth/logout/", portal_logout),
   path("portal/me/", portal_me),
   path("portal/companies/", portal_companies),
+  path("portal/customers/", portal_create_customer),
   path("portal/company-header/", portal_company_header),
   path("portal/equipment/", portal_equipment_list),
+  path("portal/equipment/<int:equipment_id>/", portal_equipment_update),
   path("portal/equipment/<int:equipment_id>/reports/", portal_equipment_reports),
   path("portal/reports/<int:report_id>/", portal_report_owner_edit),
   path("portal/reports/<int:report_id>/revisions/", portal_report_revisions),

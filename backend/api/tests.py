@@ -266,6 +266,8 @@ class PortalRBACTests(TestCase):
             format="json",
         )
         self.assertEqual(allowed_response.status_code, 201)
+        self.equipment_a.refresh_from_db()
+        self.assertEqual(self.equipment_a.next_inspection_due.isoformat(), "2027-06-30")
 
         blocked_response = self.client.post(
             f"/api/portal/equipment/{self.equipment_b.id}/reports/",
@@ -293,16 +295,86 @@ class PortalRBACTests(TestCase):
         self.client.force_authenticate(user=self.owner_user)
         response = self.client.patch(
             f"/api/portal/reports/{report.id}/",
-            data={"summary": "Owner updated summary", "status": InspectionReport.STATUS_FINAL},
+            data={"summary": "Owner updated summary", "status": InspectionReport.STATUS_APPROVED},
             format="json",
         )
         self.assertEqual(response.status_code, 200)
 
         report.refresh_from_db()
         self.assertEqual(report.summary, "Owner updated summary")
-        self.assertEqual(report.status, InspectionReport.STATUS_FINAL)
+        self.assertEqual(report.status, InspectionReport.STATUS_APPROVED)
         self.assertEqual(report.edited_by_id, self.owner_user.id)
         self.assertEqual(ReportRevision.objects.filter(report=report).count(), 1)
+
+    def test_staff_can_edit_own_draft_report(self):
+        report = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Draft report",
+            summary="Draft summary",
+            findings="Draft findings",
+            recommendations="Draft recommendations",
+            report_date="2026-06-25",
+            status=InspectionReport.STATUS_DRAFT,
+        )
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.patch(
+            f"/api/portal/reports/{report.id}/",
+            data={"summary": "Updated draft summary", "status": InspectionReport.STATUS_SUBMITTED},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        report.refresh_from_db()
+        self.assertEqual(report.summary, "Updated draft summary")
+        self.assertEqual(report.status, InspectionReport.STATUS_SUBMITTED)
+        self.equipment_a.refresh_from_db()
+        self.assertEqual(self.equipment_a.next_inspection_due.isoformat(), "2027-06-25")
+
+    def test_staff_cannot_edit_submitted_report(self):
+        report = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Submitted report",
+            summary="Submitted summary",
+            findings="Submitted findings",
+            recommendations="Submitted recommendations",
+            report_date="2026-06-25",
+            status=InspectionReport.STATUS_SUBMITTED,
+        )
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.patch(
+            f"/api/portal/reports/{report.id}/",
+            data={"summary": "Attempted edit"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_staff_cannot_edit_another_users_draft_report(self):
+        other_staff = get_user_model().objects.create_user(username="staff2", password="testpass123")
+        other_profile = UserProfile.objects.create(user=other_staff, role=UserProfile.ROLE_STAFF)
+        other_profile.allowed_companies.add(self.company_a)
+
+        report = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=other_staff,
+            title="Other draft",
+            summary="Draft summary",
+            findings="Draft findings",
+            recommendations="Draft recommendations",
+            report_date="2026-06-25",
+            status=InspectionReport.STATUS_DRAFT,
+        )
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.patch(
+            f"/api/portal/reports/{report.id}/",
+            data={"summary": "Attempted edit"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
 
     def test_owner_can_view_report_revisions(self):
         report = InspectionReport.objects.create(
@@ -390,6 +462,100 @@ class PortalRBACTests(TestCase):
 
         updated_profile = UserProfile.objects.get(user=self.staff_user)
         self.assertEqual(list(updated_profile.allowed_companies.values_list("id", flat=True)), [self.company_b.id])
+
+    def test_staff_can_create_equipment_for_allowed_company(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            "/api/portal/equipment/",
+            data={
+                "company_id": self.company_a.id,
+                "name": "New Demo Hoist",
+                "asset_tag": "NEW-101",
+                "serial_number": "SER-NEW-101",
+                "location": "Bay 3",
+                "status": Equipment.STATUS_ACTIVE,
+                "inspection_interval_days": 180,
+                "last_inspected_at": "2026-06-01",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["name"], "New Demo Hoist")
+        self.assertEqual(response.json()["next_inspection_due"], "2026-11-28")
+        self.assertTrue(Equipment.objects.filter(name="New Demo Hoist", company=self.company_a).exists())
+
+    def test_customer_cannot_create_equipment(self):
+        self.client.force_authenticate(user=self.customer_user)
+        response = self.client.post(
+            "/api/portal/equipment/",
+            data={
+                "company_id": self.company_a.id,
+                "name": "Blocked Equipment",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_owner_can_create_customer_company_and_login(self):
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.post(
+            "/api/portal/customers/",
+            data={
+                "company_name": "Gamma Lifts",
+                "company_contact_email": "ops@gammalifts.test",
+                "company_contact_phone": "+353 1 555 0001",
+                "company_address": "Dublin Industrial Estate",
+                "customer_username": "gamma_customer",
+                "customer_email": "customer@gammalifts.test",
+                "customer_password": "StrongPass!234",
+                "customer_first_name": "Gamma",
+                "customer_last_name": "Manager",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        self.assertEqual(body["company"]["name"], "Gamma Lifts")
+        self.assertEqual(body["customer"]["username"], "gamma_customer")
+        self.assertEqual(body["customer"]["email"], "customer@gammalifts.test")
+        self.assertEqual(body["customer"]["role"], UserProfile.ROLE_CUSTOMER)
+
+        company = Company.objects.get(name="Gamma Lifts")
+        created_user = get_user_model().objects.get(username="gamma_customer")
+        self.assertTrue(created_user.check_password("StrongPass!234"))
+        profile = UserProfile.objects.get(user=created_user)
+        self.assertEqual(profile.role, UserProfile.ROLE_CUSTOMER)
+        self.assertEqual(list(profile.allowed_companies.values_list("id", flat=True)), [company.id])
+
+    def test_staff_cannot_create_customer_company_and_login(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            "/api/portal/customers/",
+            data={
+                "company_name": "Delta Lifts",
+                "customer_username": "delta_customer",
+                "customer_email": "customer@deltalifts.test",
+                "customer_password": "StrongPass!234",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_owner_cannot_create_customer_with_duplicate_username(self):
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.post(
+            "/api/portal/customers/",
+            data={
+                "company_name": "Duplicate Username Co",
+                "customer_username": self.customer_user.username,
+                "customer_email": "newcustomer@example.com",
+                "customer_password": "StrongPass!234",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
 
     def test_logout_blacklists_refresh_token(self):
         self.client.force_authenticate(user=self.owner_user)

@@ -181,11 +181,13 @@ class Equipment(models.Model):
     STATUS_ACTIVE = "active"
     STATUS_INACTIVE = "inactive"
     STATUS_RETIRED = "retired"
+    STATUS_DECOMMISSIONED = "decommissioned"
 
     STATUS_CHOICES = [
         (STATUS_ACTIVE, "Active"),
         (STATUS_INACTIVE, "Inactive"),
         (STATUS_RETIRED, "Retired"),
+        (STATUS_DECOMMISSIONED, "Decommissioned"),
     ]
 
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="equipment")
@@ -197,6 +199,7 @@ class Equipment(models.Model):
     inspection_interval_days = models.PositiveIntegerField(default=365)
     next_inspection_due = models.DateField(null=True, blank=True)
     last_inspected_at = models.DateField(null=True, blank=True)
+    decommissioned_at = models.DateField(null=True, blank=True)
     notes = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -216,12 +219,12 @@ class Equipment(models.Model):
 class InspectionReport(models.Model):
     STATUS_DRAFT = "draft"
     STATUS_SUBMITTED = "submitted"
-    STATUS_FINAL = "final"
+    STATUS_APPROVED = "approved"
 
     STATUS_CHOICES = [
         (STATUS_DRAFT, "Draft"),
         (STATUS_SUBMITTED, "Submitted"),
-        (STATUS_FINAL, "Final"),
+        (STATUS_APPROVED, "Approved"),
     ]
 
     equipment = models.ForeignKey(Equipment, on_delete=models.CASCADE, related_name="reports")
@@ -237,7 +240,7 @@ class InspectionReport(models.Model):
     findings = models.TextField(blank=True, default="")
     recommendations = models.TextField(blank=True, default="")
     report_date = models.DateField()
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_SUBMITTED)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT)
     edited_by = models.ForeignKey(
         "auth.User",
         on_delete=models.SET_NULL,

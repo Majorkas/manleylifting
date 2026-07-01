@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from rest_framework import serializers
 
 from .models import Certificate, Company, Equipment, InspectionReport, ReportRevision, UserProfile
@@ -35,8 +37,37 @@ class EquipmentSerializer(serializers.ModelSerializer):
             "inspection_interval_days",
             "next_inspection_due",
             "last_inspected_at",
+            "decommissioned_at",
             "notes",
         ]
+
+
+class EquipmentCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Equipment
+        fields = [
+            "name",
+            "asset_tag",
+            "serial_number",
+            "location",
+            "status",
+            "inspection_interval_days",
+            "last_inspected_at",
+            "notes",
+        ]
+
+    def create(self, validated_data):
+        last_inspected_at = validated_data.get("last_inspected_at")
+        inspection_interval_days = validated_data.get("inspection_interval_days") or 365
+
+        if last_inspected_at:
+            validated_data["next_inspection_due"] = last_inspected_at + timedelta(
+                days=inspection_interval_days,
+            )
+        else:
+            validated_data["next_inspection_due"] = None
+
+        return super().create(validated_data)
 
 
 class InspectionReportSerializer(serializers.ModelSerializer):
@@ -76,6 +107,19 @@ class InspectionReportSerializer(serializers.ModelSerializer):
 
 
 class InspectionReportCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = InspectionReport
+        fields = [
+            "title",
+            "summary",
+            "findings",
+            "recommendations",
+            "report_date",
+            "status",
+        ]
+
+
+class InspectionReportUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = InspectionReport
         fields = [
@@ -174,3 +218,20 @@ class UserProfileAssignmentUpdateSerializer(serializers.Serializer):
         child=serializers.IntegerField(min_value=1),
         required=False,
     )
+
+
+class PortalCustomerCreateSerializer(serializers.Serializer):
+    company_name = serializers.CharField(max_length=200)
+    company_contact_email = serializers.EmailField(required=False, allow_blank=True)
+    company_contact_phone = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    company_address = serializers.CharField(required=False, allow_blank=True)
+    customer_username = serializers.CharField(max_length=150)
+    customer_email = serializers.EmailField()
+    customer_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
+    customer_first_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    customer_last_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+
+
+class PortalCustomerCreateResponseSerializer(serializers.Serializer):
+    company = CompanyHeaderSerializer()
+    customer = serializers.DictField()

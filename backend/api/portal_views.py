@@ -1,8 +1,12 @@
 import os
+from datetime import timedelta
 
+from django.contrib.auth import get_user_model
+from django.db import transaction
 from django.http import FileResponse
 from django.db.models import Q
 from django.utils.dateparse import parse_date
+from django.utils.text import slugify
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -13,12 +17,16 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from .models import Certificate, Company, Equipment, InspectionReport, ReportRevision, UserProfile
 from .serializers import (
     CertificateSerializer,
+    EquipmentCreateSerializer,
     CompanyHeaderSerializer,
     EquipmentSerializer,
     InspectionReportCreateSerializer,
     InspectionReportOwnerEditSerializer,
     InspectionReportSerializer,
+    InspectionReportUpdateSerializer,
     PortalMeSerializer,
+    PortalCustomerCreateResponseSerializer,
+    PortalCustomerCreateSerializer,
     ReportRevisionSerializer,
     UserProfileAssignmentSerializer,
     UserProfileAssignmentUpdateSerializer,
@@ -85,6 +93,29 @@ def _validate_certificate_upload(uploaded_file):
     return ""
 
 
+def _report_snapshot(report):
+    return {
+        "title": report.title,
+        "summary": report.summary,
+        "findings": report.findings,
+        "recommendations": report.recommendations,
+        "report_date": report.report_date.isoformat() if report.report_date else None,
+        "status": report.status,
+    }
+
+
+def _update_equipment_next_due_from_report(report):
+    if report.status != InspectionReport.STATUS_SUBMITTED:
+        return
+
+    inspection_interval_days = report.equipment.inspection_interval_days or 365
+    if not report.report_date:
+        report.equipment.next_inspection_due = None
+    else:
+        report.equipment.next_inspection_due = report.report_date + timedelta(days=inspection_interval_days)
+    report.equipment.save(update_fields=["next_inspection_due", "updated_at"])
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def portal_me(request):
@@ -137,9 +168,107 @@ def portal_companies(request):
     return Response({"results": serializer.data})
 
 
-@api_view(["GET"])
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def portal_create_customer(request):
+    if not _is_owner(request.user):
+        return Response({"detail": "Only owner can create customers"}, status=status.HTTP_403_FORBIDDEN)
+
+    serializer = PortalCustomerCreateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    payload = serializer.validated_data
+
+    user_model = get_user_model()
+    username = payload["customer_username"].strip()
+    email = payload["customer_email"].strip().lower()
+    company_name = payload["company_name"].strip()
+
+    if user_model.objects.filter(username=username).exists():
+        return Response({"detail": "customer_username already exists"}, status=status.HTTP_400_BAD_REQUEST)
+
+    if user_model.objects.filter(email__iexact=email).exists():
+        return Response({"detail": "customer_email already exists"}, status=status.HTTP_400_BAD_REQUEST)
+
+    base_slug = slugify(company_name)[:200] or "company"
+    slug = base_slug
+    counter = 2
+    while Company.objects.filter(slug=slug).exists():
+        suffix = f"-{counter}"
+        slug = f"{base_slug[: max(1, 200 - len(suffix))]}{suffix}"
+        counter += 1
+
+    with transaction.atomic():
+        company = Company.objects.create(
+            name=company_name,
+            slug=slug,
+            contact_email=payload.get("company_contact_email", "").strip(),
+            contact_phone=payload.get("company_contact_phone", "").strip(),
+            address=payload.get("company_address", "").strip(),
+            is_active=True,
+        )
+
+        customer_user = user_model.objects.create_user(
+            username=username,
+            email=email,
+            password=payload["customer_password"],
+            first_name=payload.get("customer_first_name", "").strip(),
+            last_name=payload.get("customer_last_name", "").strip(),
+            is_active=True,
+        )
+
+        profile, _ = UserProfile.objects.get_or_create(
+            user=customer_user,
+            defaults={"role": UserProfile.ROLE_CUSTOMER},
+        )
+        profile.role = UserProfile.ROLE_CUSTOMER
+        profile.save(update_fields=["role", "updated_at"])
+        profile.allowed_companies.set([company])
+
+    body = {
+        "company": CompanyHeaderSerializer(company, context={"request": request}).data,
+        "customer": {
+            "id": customer_user.id,
+            "username": customer_user.username,
+            "email": customer_user.email,
+            "full_name": customer_user.get_full_name() or "",
+            "role": profile.role,
+            "allowed_company_ids": [company.id],
+        },
+    }
+
+    output = PortalCustomerCreateResponseSerializer(body)
+    return Response(output.data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def portal_equipment_list(request):
+    if request.method == "POST":
+        if not _is_staff_or_owner(request.user):
+            return Response({"detail": "Insufficient permissions"}, status=status.HTTP_403_FORBIDDEN)
+
+        company_id_raw = request.data.get("company_id")
+        company_id = str(company_id_raw or "").strip()
+        if not company_id:
+            return Response({"detail": "company_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            company_id_int = int(company_id)
+        except (TypeError, ValueError):
+            return Response({"detail": "company_id must be a valid integer"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if company_id_int not in _visible_company_ids(request.user):
+            return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        company = Company.objects.filter(id=company_id_int, is_active=True).first()
+        if not company:
+            return Response({"detail": "Company not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = EquipmentCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        equipment = serializer.save(company=company)
+        return Response(EquipmentSerializer(equipment).data, status=status.HTTP_201_CREATED)
+
     company_id = request.GET.get("companyId")
     search = (request.GET.get("search") or "").strip()
 
@@ -164,6 +293,40 @@ def portal_equipment_list(request):
     return Response({"results": serializer.data})
 
 
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def portal_equipment_update(request, equipment_id):
+    equipment = Equipment.objects.select_related("company").filter(id=equipment_id).first()
+    if not equipment:
+        return Response({"detail": "Equipment not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if equipment.company_id not in _visible_company_ids(request.user):
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if not _is_staff_or_owner(request.user):
+        return Response({"detail": "Insufficient permissions"}, status=status.HTTP_403_FORBIDDEN)
+
+    # Only allow updating status for now
+    if "status" in request.data:
+        from django.utils import timezone
+        new_status = request.data.get("status", "").strip().lower()
+        if new_status not in {"active", "inactive", "retired", "decommissioned"}:
+            return Response(
+                {"detail": "Invalid status value"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        equipment.status = new_status
+        # Set decommissioned_at when marking as decommissioned
+        if new_status == "decommissioned":
+            equipment.decommissioned_at = timezone.now().date()
+        elif new_status != "decommissioned":
+            # Clear decommissioned_at if changing back to active
+            equipment.decommissioned_at = None
+        equipment.save()
+
+    return Response(EquipmentSerializer(equipment).data)
+
+
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def portal_equipment_reports(request, equipment_id):
@@ -182,9 +345,19 @@ def portal_equipment_reports(request, equipment_id):
     if not _is_staff_or_owner(request.user):
         return Response({"detail": "Insufficient permissions"}, status=status.HTTP_403_FORBIDDEN)
 
+    previous_status = None
     serializer = InspectionReportCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
+    status_value = serializer.validated_data.get("status", InspectionReport.STATUS_DRAFT)
+    if status_value not in {InspectionReport.STATUS_DRAFT, InspectionReport.STATUS_SUBMITTED}:
+        return Response(
+            {"detail": "Staff reports can only be saved as draft or submitted"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     report = serializer.save(equipment=equipment, submitted_by=request.user)
+    if report.status == InspectionReport.STATUS_SUBMITTED:
+        _update_equipment_next_due_from_report(report)
     return Response(InspectionReportSerializer(report).data, status=status.HTTP_201_CREATED)
 
 
@@ -198,28 +371,58 @@ def portal_report_owner_edit(request, report_id):
     if report.equipment.company_id not in _visible_company_ids(request.user):
         return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    if not _is_owner(request.user):
-        return Response({"detail": "Only owner can edit reports"}, status=status.HTTP_403_FORBIDDEN)
+    if _is_owner(request.user):
+        previous_data = _report_snapshot(report)
 
-    previous_data = {
-        "title": report.title,
-        "summary": report.summary,
-        "findings": report.findings,
-        "recommendations": report.recommendations,
-        "report_date": report.report_date.isoformat() if report.report_date else None,
-        "status": report.status,
-    }
+        serializer = InspectionReportOwnerEditSerializer(report, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
 
-    serializer = InspectionReportOwnerEditSerializer(report, data=request.data, partial=True)
+        status_value = serializer.validated_data.get("status", report.status)
+        if status_value not in {InspectionReport.STATUS_SUBMITTED, InspectionReport.STATUS_APPROVED}:
+            return Response(
+                {"detail": "Owner reports can only be marked as submitted or approved"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        previous_status = report.status
+        serializer.save(edited_by=request.user)
+
+        if previous_status != InspectionReport.STATUS_SUBMITTED and report.status == InspectionReport.STATUS_SUBMITTED:
+            _update_equipment_next_due_from_report(report)
+
+        ReportRevision.objects.create(
+            report=report,
+            edited_by=request.user,
+            previous_data=previous_data,
+        )
+
+        return Response(InspectionReportSerializer(report).data)
+
+    profile = _profile_for_user(request.user)
+    if profile.role != UserProfile.ROLE_STAFF:
+        return Response({"detail": "Only staff or owner can edit reports"}, status=status.HTTP_403_FORBIDDEN)
+
+    if report.status != InspectionReport.STATUS_DRAFT:
+        return Response({"detail": "Staff can only edit draft reports"}, status=status.HTTP_403_FORBIDDEN)
+
+    if report.submitted_by_id != request.user.id:
+        return Response({"detail": "Staff can only edit their own draft reports"}, status=status.HTTP_403_FORBIDDEN)
+
+    serializer = InspectionReportUpdateSerializer(report, data=request.data, partial=True)
     serializer.is_valid(raise_exception=True)
+
+    status_value = serializer.validated_data.get("status", report.status)
+    if status_value not in {InspectionReport.STATUS_DRAFT, InspectionReport.STATUS_SUBMITTED}:
+        return Response(
+            {"detail": "Staff draft reports can only be saved as draft or submitted"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    previous_status = report.status
     serializer.save(edited_by=request.user)
 
-    ReportRevision.objects.create(
-        report=report,
-        edited_by=request.user,
-        previous_data=previous_data,
-    )
-
+    if previous_status != InspectionReport.STATUS_SUBMITTED and report.status == InspectionReport.STATUS_SUBMITTED:
+        _update_equipment_next_due_from_report(report)
     return Response(InspectionReportSerializer(report).data)
 
 
