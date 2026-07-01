@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import PortalLayout from '../components/PortalLayout'
 import {
@@ -11,6 +11,7 @@ import {
   getPortalCompanyHeader,
   getPortalEquipment,
   getPortalMe,
+  getPendingReportApprovals,
   getReportRevisions,
   hasPortalSession,
   portalLogout,
@@ -81,6 +82,30 @@ function getInspectionStatusBadge(nextInspectionDue) {
   }
 }
 
+function getReportStatusBadge(status) {
+  const normalized = String(status || '').trim().toLowerCase()
+
+  if (normalized === 'draft') {
+    return { label: 'Draft', color: 'bg-blue-100 text-blue-700 border-blue-300' }
+  }
+
+  if (normalized === 'submitted') {
+    return { label: 'Submitted', color: 'bg-yellow-100 text-yellow-700 border-yellow-300' }
+  }
+
+  if (normalized === 'approved') {
+    return { label: 'Approved', color: 'bg-emerald-100 text-emerald-700 border-emerald-300' }
+  }
+
+  const fallbackLabel = normalized
+    ? normalized
+        .replace(/[_-]+/g, ' ')
+        .replace(/\b\w/g, (char) => char.toUpperCase())
+    : 'Unknown'
+
+  return { label: fallbackLabel, color: 'bg-slate-100 text-slate-700 border-slate-300' }
+}
+
 function buildEmptyReportForm() {
   return {
     reportId: '',
@@ -90,6 +115,9 @@ function buildEmptyReportForm() {
     recommendations: '',
     report_date: new Date().toISOString().slice(0, 10),
     status: 'draft',
+    images: [],
+    existingImages: [],
+    removedImageIds: [],
   }
 }
 
@@ -139,10 +167,15 @@ export default function PortalDashboardPage() {
   const [reportError, setReportError] = useState('')
   const [creatingReport, setCreatingReport] = useState(false)
   const [savingReportEdit, setSavingReportEdit] = useState(false)
+  const [approvingReport, setApprovingReport] = useState(false)
   const [revisionReportId, setRevisionReportId] = useState('')
   const [reportRevisions, setReportRevisions] = useState([])
   const [revisionsLoading, setRevisionsLoading] = useState(false)
+  const [pendingReportApprovals, setPendingReportApprovals] = useState([])
+  const [pendingApprovalsLoading, setPendingApprovalsLoading] = useState(false)
+  const [pendingApprovalsError, setPendingApprovalsError] = useState('')
   const [viewedReport, setViewedReport] = useState(null)
+  const [selectedReportImage, setSelectedReportImage] = useState(null)
   const [showEditReportModal, setShowEditReportModal] = useState(false)
   const [showRevisionsModal, setShowRevisionsModal] = useState(false)
   const [reportForm, setReportForm] = useState(buildEmptyReportForm())
@@ -163,6 +196,9 @@ export default function PortalDashboardPage() {
   const [equipmentStatusDraft, setEquipmentStatusDraft] = useState('active')
   const [showDecommissionConfirm, setShowDecommissionConfirm] = useState(false)
   const [equipmentTableTab, setEquipmentTableTab] = useState('active')
+  const [expandedEquipmentCardId, setExpandedEquipmentCardId] = useState('')
+  const [expandedReportCardId, setExpandedReportCardId] = useState('')
+  const previousSelectedEquipmentIdRef = useRef('')
   const selectedCompanyId = searchParams.get('companyId') || ''
   const equipmentPageSize = 10
 
@@ -218,12 +254,69 @@ export default function PortalDashboardPage() {
     [equipmentForm.inspection_interval_days, equipmentForm.last_inspected_at],
   )
   const isEditingReport = Boolean(reportForm.reportId)
+  const isAnyModalOpen = Boolean(
+    viewedReport ||
+      showEditReportModal ||
+      showRevisionsModal ||
+      showCreateReportForm ||
+      showCreateCustomerForm ||
+      showCreateEquipmentForm ||
+      showDecommissionConfirm,
+  )
+  const [isMobileViewport, setIsMobileViewport] = useState(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+    return window.matchMedia('(max-width: 767px)').matches
+  })
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+
+    const mediaQuery = window.matchMedia('(max-width: 767px)')
+    const updateViewport = (event) => setIsMobileViewport(Boolean(event.matches))
+    setIsMobileViewport(mediaQuery.matches)
+
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', updateViewport)
+      return () => mediaQuery.removeEventListener('change', updateViewport)
+    }
+
+    mediaQuery.addListener(updateViewport)
+    return () => mediaQuery.removeListener(updateViewport)
+  }, [])
 
   useEffect(() => {
     if (equipmentPage > equipmentTotalPages) {
       setEquipmentPage(equipmentTotalPages)
     }
   }, [equipmentPage, equipmentTotalPages])
+
+  useEffect(() => {
+    setExpandedEquipmentCardId('')
+  }, [equipmentTableTab, equipmentPage])
+
+  useEffect(() => {
+    setExpandedReportCardId('')
+  }, [activeSelectedEquipment?.id])
+
+  useEffect(() => {
+    if (!isMobileViewport) {
+      previousSelectedEquipmentIdRef.current = ''
+      return
+    }
+
+    const nextSelectedId = String(selectedEquipment?.id || '')
+    const previousSelectedId = previousSelectedEquipmentIdRef.current
+    previousSelectedEquipmentIdRef.current = nextSelectedId
+
+    if (!nextSelectedId || nextSelectedId === previousSelectedId) return
+
+    const frameId = window.requestAnimationFrame(() => {
+      const cardElement = document.getElementById(`equipment-card-${nextSelectedId}`)
+      cardElement?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+
+    return () => window.cancelAnimationFrame(frameId)
+  }, [isMobileViewport, selectedEquipment?.id])
 
   useEffect(() => {
     setEquipmentStatusDraft(activeSelectedEquipment?.status || 'active')
@@ -314,6 +407,61 @@ export default function PortalDashboardPage() {
     return () => window.removeEventListener('keydown', handleEscapeClose)
   }, [showCreateCustomerForm, showCreateEquipmentForm, showCreateReportForm])
 
+  async function refreshPendingReportApprovals(force = false) {
+    if (!isAuthenticated) return
+    if (!force && profile?.role !== 'owner') return
+
+    setPendingApprovalsLoading(true)
+    setPendingApprovalsError('')
+
+    try {
+      const nextReports = await getPendingReportApprovals()
+      setPendingReportApprovals(nextReports)
+    } catch (error) {
+      if (Number(error?.status || 0) !== 403) {
+        setPendingApprovalsError(String(error?.message || 'Unable to load pending approvals.'))
+      }
+      setPendingReportApprovals([])
+    } finally {
+      setPendingApprovalsLoading(false)
+    }
+  }
+
+  async function handleApproveViewedReport() {
+    if (!viewedReport?.id || !isOwner || approvingReport) return
+
+    setApprovingReport(true)
+    setReportError('')
+
+    try {
+      const updatedReport = await updateReport(viewedReport.id, { status: 'approved' })
+      const refreshedReports = reports.map((report) =>
+        String(report.id) === String(updatedReport.id) ? updatedReport : report,
+      )
+      setReports(refreshedReports)
+      setViewedReport(updatedReport)
+      if (!selectedCompanyId) {
+        await refreshPendingReportApprovals()
+      }
+      await getPortalEquipment({
+        companyId: activeSelectedEquipment?.company_id || selectedCompanyId,
+        search: searchQuery,
+      }).then((refreshedEquipment) => {
+        setEquipment(refreshedEquipment)
+        if (selectedEquipment) {
+          const nextSelectedEquipment = refreshedEquipment.find(
+            (item) => String(item.id) === String(selectedEquipment.id),
+          )
+          setSelectedEquipment(nextSelectedEquipment || null)
+        }
+      })
+    } catch (error) {
+      setReportError(String(error?.message || 'Unable to approve report.'))
+    } finally {
+      setApprovingReport(false)
+    }
+  }
+
   useEffect(() => {
     let cancelled = false
 
@@ -358,6 +506,7 @@ export default function PortalDashboardPage() {
 
         setProfile(nextProfile)
         const isStaffOrOwner = nextProfile.role === 'staff' || nextProfile.role === 'owner'
+        const isOwnerUser = nextProfile.role === 'owner'
 
         let activeCompanyId = nextProfile.allowedCompanyIds[0] || ''
 
@@ -371,10 +520,15 @@ export default function PortalDashboardPage() {
           } else {
             setCompany(null)
             setEquipment([])
-            return
           }
         } else {
           setCompanies([])
+        }
+
+        if (isOwnerUser) {
+          await refreshPendingReportApprovals(true)
+        } else {
+          setPendingReportApprovals([])
         }
 
         if (!activeCompanyId) {
@@ -456,9 +610,15 @@ export default function PortalDashboardPage() {
           recommendations: reportForm.recommendations,
           report_date: reportForm.report_date,
           status: reportForm.status,
+          images: reportForm.images,
+          removed_image_ids: reportForm.removedImageIds,
         })
         const refreshed = await getEquipmentReports(activeSelectedEquipment.id)
         setReports(refreshed)
+        setViewedReport(refreshed.find((item) => String(item.id) === String(reportForm.reportId)) || null)
+        if (isOwner && !selectedCompanyId) {
+          await refreshPendingReportApprovals()
+        }
         await refreshEquipmentList()
         setReportForm(buildEmptyReportForm())
         setShowEditReportModal(false)
@@ -598,6 +758,59 @@ export default function PortalDashboardPage() {
       recommendations: report.recommendations || '',
       report_date: report.report_date || new Date().toISOString().slice(0, 10),
       status: report.status || 'draft',
+      images: [],
+      existingImages: Array.isArray(report.images) ? report.images : [],
+      removedImageIds: [],
+    })
+  }
+
+  function handleOpenReportImage(image, images = []) {
+    setSelectedReportImage({
+      image,
+      images: Array.isArray(images) ? images : [],
+    })
+  }
+
+  function handleCloseReportImage() {
+    setSelectedReportImage(null)
+  }
+
+  function handleMoveReportImage(direction) {
+    if (!selectedReportImage) return
+
+    const currentImages = Array.isArray(selectedReportImage.images) ? selectedReportImage.images : []
+    const currentIndex = currentImages.findIndex(
+      (image) => String(image.id) === String(selectedReportImage.image?.id),
+    )
+    if (currentIndex < 0) return
+
+    const nextIndex = currentIndex + direction
+    if (nextIndex < 0 || nextIndex >= currentImages.length) return
+
+    setSelectedReportImage({
+      image: currentImages[nextIndex],
+      images: currentImages,
+    })
+  }
+
+  function handleRemoveReportImage(imageId) {
+    setReportForm((current) => {
+      const nextExistingImages = (current.existingImages || []).filter(
+        (image) => String(image.id) !== String(imageId),
+      )
+      const nextRemovedImageIds = current.removedImageIds || []
+      if (nextRemovedImageIds.some((value) => String(value) === String(imageId))) {
+        return {
+          ...current,
+          existingImages: nextExistingImages,
+        }
+      }
+
+      return {
+        ...current,
+        existingImages: nextExistingImages,
+        removedImageIds: [...nextRemovedImageIds, imageId],
+      }
     })
   }
 
@@ -643,12 +856,25 @@ export default function PortalDashboardPage() {
     ]
   }
 
+  function handleCloseEquipmentDetails() {
+    setSelectedEquipment(null)
+    setReports([])
+    setViewedReport(null)
+    setSelectedReportImage(null)
+    setReportForm(buildEmptyReportForm())
+    setShowCreateReportForm(false)
+    setShowEditReportModal(false)
+    setShowRevisionsModal(false)
+    setRevisionReportId('')
+    setReportRevisions([])
+  }
+
   if (!isAuthenticated) {
     return <Navigate to="/portal/login" replace />
   }
 
   return (
-    <PortalLayout>
+    <PortalLayout hideNavbar={isAnyModalOpen}>
       <section className="mx-auto w-full max-w-7xl px-6 py-10 md:py-12">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -763,6 +989,92 @@ export default function PortalDashboardPage() {
                     No customer companies are assigned to this account.
                   </div>
                 )}
+              </div>
+            )}
+          </section>
+        )}
+
+        {showsCustomerPicker && isOwner && (
+          <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-2xl font-extrabold text-[#123A7A]">Pending Report Approvals</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  Submitted reports waiting for owner approval across all visible customers.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="rounded-full border border-slate-300 bg-slate-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700">
+                  {pendingReportApprovals.length} pending
+                </span>
+                <button
+                  type="button"
+                  onClick={refreshPendingReportApprovals}
+                  disabled={pendingApprovalsLoading}
+                  className="rounded-md border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {pendingApprovalsLoading ? 'Refreshing...' : 'Refresh'}
+                </button>
+              </div>
+            </div>
+
+            {pendingApprovalsError && (
+              <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {pendingApprovalsError}
+              </div>
+            )}
+
+            {pendingApprovalsLoading ? (
+              <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                Loading pending approvals...
+              </div>
+            ) : pendingReportApprovals.length === 0 ? (
+              <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                No submitted reports are waiting for approval.
+              </div>
+            ) : (
+              <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {pendingReportApprovals.map((report) => (
+                  <article key={report.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-lg font-bold text-[#123A7A]">{report.title || 'Untitled Report'}</h3>
+                        <p className="mt-1 text-sm text-slate-600">
+                          {report.company_name || 'Unknown Company'} · {report.equipment_name || 'Unknown Equipment'}
+                        </p>
+                      </div>
+                      <span
+                        className={
+                          'rounded-full border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide ' +
+                          getReportStatusBadge(report.status).color
+                        }
+                      >
+                        {getReportStatusBadge(report.status).label}
+                      </span>
+                    </div>
+                    <div className="mt-3 grid gap-1 text-sm text-slate-600">
+                      <p>
+                        <span className="font-semibold text-slate-700">Date:</span> {report.report_date || '-'}
+                      </p>
+                      <p>
+                        <span className="font-semibold text-slate-700">Inspector:</span>{' '}
+                        {report.submitted_by_name || '-'}
+                      </p>
+                      <p className="max-h-10 overflow-hidden text-ellipsis">
+                        <span className="font-semibold text-slate-700">Summary:</span> {report.summary || '-'}
+                      </p>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setViewedReport(report)}
+                        className="rounded-md bg-[#123A7A] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-[#0f3168]"
+                      >
+                        Review Report
+                      </button>
+                    </div>
+                  </article>
+                ))}
               </div>
             )}
           </section>
@@ -893,38 +1205,263 @@ export default function PortalDashboardPage() {
             </div>
           ) : (
             <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
-              <div className="overflow-x-auto">
-                {/* Equipment Tabs */}
-                <div className="flex items-end gap-1 border-b border-slate-300 bg-slate-50 px-3 pt-2">
-                  <button
-                    onClick={() => {
-                      setEquipmentTableTab('active')
-                      setEquipmentPage(1)
-                    }}
-                    className={`-mb-px rounded-t-lg border px-4 py-2.5 text-sm font-semibold transition ${
-                      equipmentTableTab === 'active'
-                        ? 'border-slate-300 border-b-white bg-white text-[#123A7A] shadow-sm'
-                        : 'border-transparent bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800'
-                    }`}
-                  >
-                    Active Equipment ({activeEquipment.length})
-                  </button>
-                  <button
-                    onClick={() => {
-                      setEquipmentTableTab('decommissioned')
-                      setEquipmentPage(1)
-                    }}
-                    className={`-mb-px rounded-t-lg border px-4 py-2.5 text-sm font-semibold transition ${
-                      equipmentTableTab === 'decommissioned'
-                        ? 'border-slate-300 border-b-white bg-white text-[#123A7A] shadow-sm'
-                        : 'border-transparent bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800'
-                    }`}
-                  >
-                    Decommissioned Equipment ({decommissionedEquipment.length})
-                  </button>
-                </div>
+              {/* Equipment Tabs */}
+              <div className="flex items-end gap-1 border-b border-slate-300 bg-slate-50 px-3 pt-2">
+                <button
+                  onClick={() => {
+                    setEquipmentTableTab('active')
+                    setEquipmentPage(1)
+                  }}
+                  className={`-mb-px rounded-t-lg border px-4 py-2.5 text-sm font-semibold transition ${
+                    equipmentTableTab === 'active'
+                      ? 'border-slate-300 border-b-white bg-white text-[#123A7A] shadow-sm'
+                      : 'border-transparent bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800'
+                  }`}
+                >
+                  Active Equipment ({activeEquipment.length})
+                </button>
+                <button
+                  onClick={() => {
+                    setEquipmentTableTab('decommissioned')
+                    setEquipmentPage(1)
+                  }}
+                  className={`-mb-px rounded-t-lg border px-4 py-2.5 text-sm font-semibold transition ${
+                    equipmentTableTab === 'decommissioned'
+                      ? 'border-slate-300 border-b-white bg-white text-[#123A7A] shadow-sm'
+                      : 'border-transparent bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800'
+                  }`}
+                >
+                  Decommissioned Equipment ({decommissionedEquipment.length})
+                </button>
+              </div>
 
-                {/* Equipment Table */}
+              {isMobileViewport && (
+                <div className="space-y-3 p-3">
+                {visibleEquipment.map((item) => {
+                  const inspectionStatus = getInspectionStatusBadge(item.next_inspection_due)
+                  const isExpandedEquipmentCard = String(expandedEquipmentCardId) === String(item.id)
+                  const isInlineSelectedEquipment =
+                    equipmentTableTab === 'active' &&
+                    activeSelectedEquipment &&
+                    String(activeSelectedEquipment.id) === String(item.id)
+                  return (
+                    <article id={`equipment-card-${item.id}`} key={item.id} className="rounded-lg border border-slate-200 bg-white p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <h3 className="text-sm font-bold text-slate-800">{item.name}</h3>
+                        <span className="rounded-full border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-700">
+                          {item.status || 'unknown'}
+                        </span>
+                      </div>
+                      <div className="mt-2 grid gap-1 text-xs text-slate-600">
+                        <p><span className="font-semibold text-slate-700">Asset Tag:</span> {item.asset_tag || '-'}</p>
+                        {equipmentTableTab === 'active' && (
+                          <>
+                            <p>
+                              <span className="font-semibold text-slate-700">Inspection:</span>{' '}
+                              <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${inspectionStatus.color}`}>
+                                {inspectionStatus.label}
+                              </span>
+                            </p>
+                            <p><span className="font-semibold text-slate-700">Next Due:</span> {item.next_inspection_due || '-'}</p>
+                          </>
+                        )}
+                        {equipmentTableTab === 'decommissioned' && !isExpandedEquipmentCard && (
+                          <p><span className="font-semibold text-slate-700">Decommissioned:</span> {item.decommissioned_at || '-'}</p>
+                        )}
+                        <div
+                          className={`overflow-hidden transition-all duration-300 ease-out ${
+                            isExpandedEquipmentCard ? 'max-h-32 opacity-100' : 'max-h-0 opacity-0'
+                          }`}
+                          aria-hidden={!isExpandedEquipmentCard}
+                        >
+                          <div className="grid gap-1 pt-1">
+                            <p><span className="font-semibold text-slate-700">Serial:</span> {item.serial_number || '-'}</p>
+                            {equipmentTableTab === 'active' && (
+                              <p><span className="font-semibold text-slate-700">Location:</span> {item.location || '-'}</p>
+                            )}
+                            {equipmentTableTab === 'decommissioned' && (
+                              <p><span className="font-semibold text-slate-700">Decommissioned:</span> {item.decommissioned_at || '-'}</p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedEquipmentCardId((current) =>
+                              String(current) === String(item.id) ? '' : String(item.id)
+                            )
+                          }
+                          className="inline-flex items-center gap-1 rounded border border-slate-300 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700 transition hover:border-slate-400"
+                        >
+                          <span
+                            className={`transition-transform duration-300 ease-out ${
+                              isExpandedEquipmentCard ? 'rotate-180' : 'rotate-0'
+                            }`}
+                            aria-hidden="true"
+                          >
+                            ▾
+                          </span>
+                          {isExpandedEquipmentCard ? 'Less details' : 'More details'}
+                        </button>
+                        <div className="flex gap-2">
+                        {equipmentTableTab === 'decommissioned' && isOwner && (
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateEquipmentStatus('active', item.id)}
+                            disabled={updatingEquipmentStatus}
+                            className="rounded border border-emerald-600 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-700 transition hover:bg-emerald-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Set Active
+                          </button>
+                        )}
+                        {equipmentTableTab === 'active' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (isInlineSelectedEquipment) {
+                                handleCloseEquipmentDetails()
+                                return
+                              }
+                              setSelectedEquipment(item)
+                              setReportForm(buildEmptyReportForm())
+                              setShowCreateReportForm(false)
+                              setRevisionReportId('')
+                              setReportRevisions([])
+                            }}
+                            className="rounded border border-[#123A7A] px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                          >
+                            {isInlineSelectedEquipment ? 'Hide' : 'View'}
+                          </button>
+                        )}
+                        </div>
+                      </div>
+
+                      {isInlineSelectedEquipment && (
+                        <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-sm font-bold text-[#123A7A]">Equipment Details</p>
+                            <button
+                              type="button"
+                              onClick={handleCloseEquipmentDetails}
+                              className="rounded border border-slate-300 bg-white px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-700"
+                            >
+                              Close
+                            </button>
+                          </div>
+
+                          <div className="mt-2 grid gap-1 text-xs text-slate-700">
+                            {canEditReports && (
+                              <div>
+                                <p><span className="font-semibold">Status:</span></p>
+                                <div className="mt-1 flex flex-wrap items-center gap-2">
+                                  <select
+                                    value={equipmentStatusDraft}
+                                    onChange={(event) => setEquipmentStatusDraft(event.target.value)}
+                                    disabled={updatingEquipmentStatus}
+                                    className="rounded-md border border-slate-300 px-2 py-1 text-[11px]"
+                                  >
+                                    <option value="active">Active</option>
+                                    <option value="decommissioned">Decommissioned</option>
+                                  </select>
+                                  <button
+                                    type="button"
+                                    onClick={handleSubmitEquipmentStatusUpdate}
+                                    disabled={
+                                      updatingEquipmentStatus ||
+                                      equipmentStatusDraft === (activeSelectedEquipment.status || 'active')
+                                    }
+                                    className="rounded border border-[#123A7A] bg-white px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    Update Status
+                                  </button>
+                                  {updatingEquipmentStatus && <span className="text-[11px] text-slate-500">Updating...</span>}
+                                </div>
+                              </div>
+                            )}
+                            <p><span className="font-semibold">Asset Tag:</span> {activeSelectedEquipment.asset_tag || '-'}</p>
+                            <p><span className="font-semibold">Serial:</span> {activeSelectedEquipment.serial_number || '-'}</p>
+                            <p><span className="font-semibold">Location:</span> {activeSelectedEquipment.location || '-'}</p>
+                            <p><span className="font-semibold">Interval:</span> {activeSelectedEquipment.inspection_interval_days || '-'} days</p>
+                            <p><span className="font-semibold">Last Inspected:</span> {activeSelectedEquipment.last_inspected_at || '-'}</p>
+                            <p><span className="font-semibold">Next Due:</span> {activeSelectedEquipment.next_inspection_due || '-'}</p>
+                          </div>
+
+                          {equipmentStatusError && (
+                            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                              {equipmentStatusError}
+                            </div>
+                          )}
+
+                          {reportError && (
+                            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                              {reportError}
+                            </div>
+                          )}
+
+                          {canEditReports && (
+                            <div className="mt-3">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setReportForm(buildEmptyReportForm())
+                                  setShowCreateReportForm(true)
+                                }}
+                                className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-xs font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                              >
+                                Create New Report
+                              </button>
+                            </div>
+                          )}
+
+                          <div className="mt-3 space-y-2">
+                            {reportsLoading ? (
+                              <p className="text-xs text-slate-500">Loading reports...</p>
+                            ) : reports.length === 0 ? (
+                              <p className="text-xs text-slate-500">No reports have been submitted for this equipment.</p>
+                            ) : (
+                              reports.map((report) => (
+                                <article key={report.id} className="rounded border border-slate-200 bg-white p-2.5">
+                                  {(() => {
+                                    const statusBadge = getReportStatusBadge(report.status)
+                                    return (
+                                      <>
+                                  <div className="flex items-start justify-between gap-2">
+                                    <p className="text-xs font-semibold text-slate-800">{report.title || 'Untitled report'}</p>
+                                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusBadge.color}`}>
+                                      {statusBadge.label}
+                                    </span>
+                                  </div>
+                                  <p className="mt-1 text-[11px] text-slate-600">
+                                    <span className="font-semibold text-slate-700">Date:</span> {report.report_date || '-'}
+                                  </p>
+                                  <div className="mt-2 flex justify-end">
+                                    <button
+                                      type="button"
+                                      onClick={() => setViewedReport(report)}
+                                      className="rounded border border-[#123A7A] px-2 py-1 text-[10px] font-semibold text-[#123A7A]"
+                                    >
+                                      View
+                                    </button>
+                                  </div>
+                                      </>
+                                    )
+                                  })()}
+                                </article>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </article>
+                  )
+                })}
+                </div>
+              )}
+
+              {!isMobileViewport && (
+                <div className="overflow-x-auto">
                 <table className="w-full min-w-[920px] border-collapse text-left text-sm">
                   <thead className="bg-[#123A7A] text-white">
                     <tr>
@@ -933,15 +1470,15 @@ export default function PortalDashboardPage() {
                       <th className="px-4 py-3 font-semibold">Serial</th>
                       {equipmentTableTab === 'active' && <th className="px-4 py-3 font-semibold">Location</th>}
                       <th className="px-4 py-3 font-semibold">Status</th>
-                        {equipmentTableTab === 'active' && (
-                          <>
-                      <th className="px-4 py-3 font-semibold">Inspection Status</th>
-                      <th className="px-4 py-3 font-semibold">Next Due</th>
-                          </>
-                        )}
-                        {equipmentTableTab === 'decommissioned' && (
-                          <th className="px-4 py-3 font-semibold">Decommissioned Date</th>
-                        )}
+                      {equipmentTableTab === 'active' && (
+                        <>
+                          <th className="px-4 py-3 font-semibold">Inspection Status</th>
+                          <th className="px-4 py-3 font-semibold">Next Due</th>
+                        </>
+                      )}
+                      {equipmentTableTab === 'decommissioned' && (
+                        <th className="px-4 py-3 font-semibold">Decommissioned Date</th>
+                      )}
                       {equipmentTableTab === 'active' && <th className="px-4 py-3 font-semibold">Reports</th>}
                       {equipmentTableTab === 'decommissioned' && isOwner && <th className="px-4 py-3 font-semibold">Actions</th>}
                     </tr>
@@ -960,19 +1497,19 @@ export default function PortalDashboardPage() {
                               {item.status || 'unknown'}
                             </span>
                           </td>
-                            {equipmentTableTab === 'active' && (
-                              <>
-                                <td className="px-4 py-3">
-                                  <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold uppercase tracking-wide ${inspectionStatus.color}`}>
-                                    {inspectionStatus.label}
-                                  </span>
-                                </td>
-                                <td className="px-4 py-3 text-slate-700">{item.next_inspection_due || '-'}</td>
-                              </>
-                            )}
-                            {equipmentTableTab === 'decommissioned' && (
-                              <td className="px-4 py-3 text-slate-700">{item.decommissioned_at || '-'}</td>
-                            )}
+                          {equipmentTableTab === 'active' && (
+                            <>
+                              <td className="px-4 py-3">
+                                <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold uppercase tracking-wide ${inspectionStatus.color}`}>
+                                  {inspectionStatus.label}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-slate-700">{item.next_inspection_due || '-'}</td>
+                            </>
+                          )}
+                          {equipmentTableTab === 'decommissioned' && (
+                            <td className="px-4 py-3 text-slate-700">{item.decommissioned_at || '-'}</td>
+                          )}
                           {equipmentTableTab === 'decommissioned' && isOwner && (
                             <td className="px-4 py-3 text-slate-700">
                               <button
@@ -1007,7 +1544,8 @@ export default function PortalDashboardPage() {
                     })}
                   </tbody>
                 </table>
-              </div>
+                </div>
+              )}
                 {currentTableEquipment.length > 0 && (
                 <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
                   <p>
@@ -1041,7 +1579,7 @@ export default function PortalDashboardPage() {
           </section>
         )}
 
-        {!showsCustomerPicker && activeSelectedEquipment && (
+        {!showsCustomerPicker && activeSelectedEquipment && !isMobileViewport && (
           <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -1051,17 +1589,7 @@ export default function PortalDashboardPage() {
               </div>
               <button
                 type="button"
-                onClick={() => {
-                  setSelectedEquipment(null)
-                  setReports([])
-                  setViewedReport(null)
-                  setReportForm(buildEmptyReportForm())
-                  setShowCreateReportForm(false)
-                  setShowEditReportModal(false)
-                  setShowRevisionsModal(false)
-                  setRevisionReportId('')
-                  setReportRevisions([])
-                }}
+                onClick={handleCloseEquipmentDetails}
                 className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:border-[#123A7A]"
               >
                 Close Details
@@ -1143,7 +1671,80 @@ export default function PortalDashboardPage() {
 
 
             <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
-              <div className="overflow-x-auto">
+              {isMobileViewport && (
+                <div className="space-y-3 p-3">
+                {reportsLoading ? (
+                  <p className="text-sm text-slate-500">Loading reports...</p>
+                ) : reports.length === 0 ? (
+                  <p className="text-sm text-slate-500">No reports have been submitted for this equipment.</p>
+                ) : (
+                  reports.map((report) => (
+                    <article key={report.id} className="rounded-lg border border-slate-200 bg-white p-3">
+                      {(() => {
+                        const isExpandedReportCard = String(expandedReportCardId) === String(report.id)
+                        return (
+                          <>
+                      <div className="flex items-start justify-between gap-2">
+                        <h3 className="text-sm font-bold text-slate-800">{report.title || 'Untitled report'}</h3>
+                        <span className="rounded-full border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-700">
+                          {report.status || '-'}
+                        </span>
+                      </div>
+                      <div className="mt-2 grid gap-1 text-xs text-slate-600">
+                        <p><span className="font-semibold text-slate-700">Date:</span> {report.report_date || '-'}</p>
+                        <div
+                          className={`overflow-hidden transition-all duration-300 ease-out ${
+                            isExpandedReportCard ? 'max-h-32 opacity-100' : 'max-h-0 opacity-0'
+                          }`}
+                          aria-hidden={!isExpandedReportCard}
+                        >
+                          <div className="grid gap-1 pt-1">
+                            <p><span className="font-semibold text-slate-700">Inspector:</span> {report.submitted_by_name || '-'}</p>
+                            <p><span className="font-semibold text-slate-700">Summary:</span> {report.summary || '-'}</p>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedReportCardId((current) =>
+                              String(current) === String(report.id) ? '' : String(report.id)
+                            )
+                          }
+                          className="inline-flex items-center gap-1 rounded border border-slate-300 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700 transition hover:border-slate-400"
+                        >
+                          <span
+                            className={`transition-transform duration-300 ease-out ${
+                              isExpandedReportCard ? 'rotate-180' : 'rotate-0'
+                            }`}
+                            aria-hidden="true"
+                          >
+                            ▾
+                          </span>
+                          {isExpandedReportCard ? 'Less details' : 'More details'}
+                        </button>
+                        <div className="flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => setViewedReport(report)}
+                          className="rounded border border-[#123A7A] px-2 py-1 text-xs font-semibold text-[#123A7A]"
+                        >
+                          View
+                        </button>
+                        </div>
+                      </div>
+                          </>
+                        )
+                      })()}
+                    </article>
+                  ))
+                )}
+                </div>
+              )}
+
+              {!isMobileViewport && (
+                <div className="overflow-x-auto">
                 <table className="w-full min-w-[980px] border-collapse text-left text-sm">
                   <thead className="bg-[#123A7A] text-white">
                     <tr>
@@ -1169,28 +1770,36 @@ export default function PortalDashboardPage() {
                         </td>
                       </tr>
                     ) : (
-                      reports.map((report) => (
-                        <tr key={report.id} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
-                          <td className="px-4 py-3 font-semibold text-slate-800">{report.title}</td>
-                          <td className="px-4 py-3 text-slate-700">{report.report_date}</td>
-                          <td className="px-4 py-3 text-slate-700">{report.status}</td>
-                          <td className="px-4 py-3 text-slate-700">{report.submitted_by_name || '-'}</td>
-                          <td className="px-4 py-3 text-slate-700">{report.summary || '-'}</td>
-                          <td className="px-4 py-3 text-slate-700">
-                            <button
-                              type="button"
-                              onClick={() => setViewedReport(report)}
-                              className="rounded border border-[#123A7A] px-2 py-1 text-xs font-semibold text-[#123A7A]"
-                            >
-                              View
-                            </button>
-                          </td>
-                        </tr>
-                      ))
+                      reports.map((report) => {
+                        const statusBadge = getReportStatusBadge(report.status)
+                        return (
+                          <tr key={report.id} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
+                            <td className="px-4 py-3 font-semibold text-slate-800">{report.title}</td>
+                            <td className="px-4 py-3 text-slate-700">{report.report_date}</td>
+                            <td className="px-4 py-3">
+                              <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold uppercase tracking-wide ${statusBadge.color}`}>
+                                {statusBadge.label}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-slate-700">{report.submitted_by_name || '-'}</td>
+                            <td className="px-4 py-3 text-slate-700">{report.summary || '-'}</td>
+                            <td className="px-4 py-3 text-slate-700">
+                              <button
+                                type="button"
+                                onClick={() => setViewedReport(report)}
+                                className="rounded border border-[#123A7A] px-2 py-1 text-xs font-semibold text-[#123A7A]"
+                              >
+                                View
+                              </button>
+                            </td>
+                          </tr>
+                        )
+                      })
                     )}
                   </tbody>
                 </table>
-              </div>
+                </div>
+              )}
             </div>
           </section>
         )}
@@ -1560,6 +2169,24 @@ export default function PortalDashboardPage() {
                     ))}
                   </select>
                 </label>
+                <label className="text-sm font-semibold text-slate-700 md:col-span-2">
+                  Images
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={(event) =>
+                      setReportForm((current) => ({
+                        ...current,
+                        images: Array.from(event.target.files || []),
+                      }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                  {reportForm.images.length > 0 && (
+                    <p className="mt-1 text-xs text-slate-500">{reportForm.images.length} image(s) selected</p>
+                  )}
+                </label>
               </div>
               <button
                 type="submit"
@@ -1605,7 +2232,40 @@ export default function PortalDashboardPage() {
                 <p className="md:col-span-2"><span className="font-semibold">Recommendations:</span> {viewedReport.recommendations || '-'}</p>
               </div>
 
+              {Array.isArray(viewedReport.images) && viewedReport.images.length > 0 && (
+                <div className="mt-5">
+                  <p className="text-sm font-semibold text-slate-700">Images</p>
+                  <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                    {viewedReport.images.map((image) => (
+                      <button
+                        key={image.id}
+                        type="button"
+                        onClick={() => handleOpenReportImage(image, viewedReport.images)}
+                        className="group block overflow-hidden rounded-md border border-slate-200 text-left"
+                      >
+                        <img
+                          src={image.image_url}
+                          alt="Report attachment"
+                          className="h-24 w-full object-cover transition group-hover:scale-105"
+                          loading="lazy"
+                        />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="mt-5 flex flex-wrap justify-end gap-2">
+                {isOwner && viewedReport.status === 'submitted' && (
+                  <button
+                    type="button"
+                    onClick={handleApproveViewedReport}
+                    disabled={approvingReport}
+                    className="rounded border border-emerald-300 bg-emerald-600 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    {approvingReport ? 'Approving...' : 'Approve Report'}
+                  </button>
+                )}
                 {isOwner && (
                   <button
                     type="button"
@@ -1624,6 +2284,75 @@ export default function PortalDashboardPage() {
                     Edit Report
                   </button>
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {selectedReportImage && (
+          <div
+            className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/80 px-4 py-6"
+            onClick={handleCloseReportImage}
+          >
+            <div
+              className="w-full max-w-5xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 sm:px-5">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#C61F2A]">Image Preview</p>
+                  <p className="text-sm text-slate-600">
+                    {Array.isArray(selectedReportImage.images) && selectedReportImage.images.length > 0
+                      ? `Image ${selectedReportImage.images.findIndex(
+                          (image) => String(image.id) === String(selectedReportImage.image?.id),
+                        ) + 1} of ${selectedReportImage.images.length}`
+                      : 'Image preview'}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleMoveReportImage(-1)}
+                    disabled={
+                      !selectedReportImage ||
+                      !Array.isArray(selectedReportImage.images) ||
+                      selectedReportImage.images.findIndex(
+                        (image) => String(image.id) === String(selectedReportImage.image?.id),
+                      ) <= 0
+                    }
+                    className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleMoveReportImage(1)}
+                    disabled={
+                      !selectedReportImage ||
+                      !Array.isArray(selectedReportImage.images) ||
+                      selectedReportImage.images.findIndex(
+                        (image) => String(image.id) === String(selectedReportImage.image?.id),
+                      ) >= selectedReportImage.images.length - 1
+                    }
+                    className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCloseReportImage}
+                    className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+              <div className="bg-slate-100">
+                <img
+                  src={selectedReportImage.image?.image_url}
+                  alt="Report preview"
+                  className="max-h-[75vh] w-full object-contain"
+                />
               </div>
             </div>
           </div>
@@ -1718,6 +2447,62 @@ export default function PortalDashboardPage() {
                       ))}
                     </select>
                   </label>
+                  <label className="text-sm font-semibold text-slate-700 md:col-span-2">
+                    Add Images
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={(event) =>
+                        setReportForm((current) => ({
+                          ...current,
+                          images: Array.from(event.target.files || []),
+                        }))
+                      }
+                      className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    />
+                    {reportForm.images.length > 0 && (
+                      <p className="mt-1 text-xs text-slate-500">{reportForm.images.length} image(s) selected</p>
+                    )}
+                  </label>
+                  {reportForm.existingImages.length > 0 && (
+                    <div className="md:col-span-2">
+                      <p className="text-sm font-semibold text-slate-700">Current Images</p>
+                      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                        {reportForm.existingImages.map((image) => (
+                          <div
+                            key={image.id}
+                            className="group relative overflow-hidden rounded-md border border-slate-200 bg-slate-50"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => handleOpenReportImage(image, reportForm.existingImages)}
+                              className="block w-full"
+                            >
+                              <img
+                                src={image.image_url}
+                                alt="Report attachment"
+                                className="h-24 w-full object-cover transition group-hover:scale-105"
+                                loading="lazy"
+                              />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveReportImage(image.id)}
+                              className="absolute right-2 top-2 rounded-full bg-white/95 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-rose-700 shadow-sm transition hover:bg-white"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      {reportForm.removedImageIds.length > 0 && (
+                        <p className="mt-2 text-xs text-slate-500">
+                          {reportForm.removedImageIds.length} image(s) marked for removal.
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="mt-4 flex justify-end">
                   <button

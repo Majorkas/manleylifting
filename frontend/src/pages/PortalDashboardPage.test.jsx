@@ -16,6 +16,7 @@ vi.mock('../utils/portalApi', () => ({
   getPortalCompanyHeader: vi.fn(),
   getPortalEquipment: vi.fn(),
   getPortalMe: vi.fn(),
+  getPendingReportApprovals: vi.fn(),
   getReportRevisions: vi.fn(),
   hasPortalSession: vi.fn(),
   portalLogout: vi.fn(),
@@ -29,7 +30,9 @@ import {
   getPortalCompanyHeader,
   getPortalEquipment,
   getPortalMe,
+  getPendingReportApprovals,
   hasPortalSession,
+  updateReport,
 } from '../utils/portalApi'
 
 function renderDashboardPage(initialEntry = '/portal') {
@@ -81,6 +84,8 @@ describe('PortalDashboardPage', () => {
     getEquipmentReports.mockResolvedValue([])
     getPortalCompanyHeader.mockResolvedValue({})
     getPortalEquipment.mockResolvedValue([])
+    getPendingReportApprovals.mockResolvedValue([])
+    updateReport.mockResolvedValue({})
   })
 
   it('redirects signed-out users to the portal login route', () => {
@@ -373,5 +378,150 @@ describe('PortalDashboardPage', () => {
     expect(screen.getByRole('option', { name: 'Submitted' })).toBeInTheDocument()
     expect(screen.getByRole('option', { name: 'Approved' })).toBeInTheDocument()
     expect(screen.queryByRole('option', { name: 'Draft' })).not.toBeInTheDocument()
+  })
+
+  it('lets owners approve submitted reports directly from the review modal', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 31,
+      username: 'demo_owner',
+      email: 'owner@example.com',
+      fullName: 'Demo Owner',
+      role: 'owner',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 101,
+        name: 'Warehouse Hoist',
+        asset_tag: 'WH-1',
+        serial_number: 'SN-101',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-09-01',
+      },
+    ])
+    getEquipmentReports.mockResolvedValue([
+      {
+        id: 2,
+        title: 'Submitted Hoist Inspection',
+        report_date: '2026-07-02',
+        status: 'submitted',
+        submitted_by: 21,
+        submitted_by_name: 'Demo Staff',
+        summary: 'Submitted summary',
+        findings: 'Findings',
+        recommendations: 'Recommendations',
+      },
+    ])
+    updateReport.mockResolvedValue({
+      id: 2,
+      title: 'Submitted Hoist Inspection',
+      report_date: '2026-07-02',
+      status: 'approved',
+      submitted_by: 21,
+      submitted_by_name: 'Demo Staff',
+      summary: 'Submitted summary',
+      findings: 'Findings',
+      recommendations: 'Recommendations',
+    })
+
+    renderDashboardPage('/portal?companyId=1')
+
+    await user.click(await screen.findByRole('button', { name: 'View' }))
+
+    const tables = screen.getAllByRole('table')
+    const reportsTable = tables[tables.length - 1]
+    await user.click(within(reportsTable).getByRole('button', { name: 'View' }))
+
+    expect(await screen.findByRole('heading', { name: 'Submitted Hoist Inspection' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Approve Report' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Approve Report' }))
+
+    expect(updateReport).toHaveBeenCalledWith(2, { status: 'approved' })
+  })
+
+  it('refreshes the pending approvals list when the owner clicks refresh', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 31,
+      username: 'demo_owner',
+      email: 'owner@example.com',
+      fullName: 'Demo Owner',
+      role: 'owner',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 101,
+        name: 'Warehouse Hoist',
+        asset_tag: 'WH-1',
+        serial_number: 'SN-101',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-09-01',
+      },
+    ])
+    getPendingReportApprovals
+      .mockResolvedValueOnce([
+        {
+          id: 2,
+          title: 'Submitted Hoist Inspection',
+          report_date: '2026-07-02',
+          status: 'submitted',
+          submitted_by: 21,
+          submitted_by_name: 'Demo Staff',
+          summary: 'Submitted summary',
+          company_name: 'Acme Lifts',
+          equipment_name: 'Warehouse Hoist',
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 2,
+          title: 'Submitted Hoist Inspection',
+          report_date: '2026-07-02',
+          status: 'submitted',
+          submitted_by: 21,
+          submitted_by_name: 'Demo Staff',
+          summary: 'Submitted summary',
+          company_name: 'Acme Lifts',
+          equipment_name: 'Warehouse Hoist',
+        },
+      ])
+
+    renderDashboardPage('/portal')
+
+    expect(await screen.findByRole('heading', { name: 'Customer List' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+
+    expect(getPendingReportApprovals).toHaveBeenCalledTimes(2)
   })
 })

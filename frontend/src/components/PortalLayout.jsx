@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import SiteFooter from './SiteFooter'
 import SiteHeader from './SiteHeader'
 
@@ -19,19 +19,27 @@ const portalNavItems = [
   { label: 'Contact', to: '/contact' },
 ]
 
-export default function PortalLayout({ children }) {
+export default function PortalLayout({ children, hideNavbar = false }) {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
+
+  useEffect(() => {
+    if (hideNavbar) {
+      setIsMobileMenuOpen(false)
+    }
+  }, [hideNavbar])
 
   return (
     <div className="min-h-screen bg-white text-slate-900">
-      <SiteHeader
-        navbarLogo={navbarLogo}
-        variant="shop"
-        isMobileMenuOpen={isMobileMenuOpen}
-        onToggleMobileMenu={() => setIsMobileMenuOpen((prev) => !prev)}
-        onCloseMobileMenu={() => setIsMobileMenuOpen(false)}
-        navItems={portalNavItems}
-      />
+      {!hideNavbar && (
+        <SiteHeader
+          navbarLogo={navbarLogo}
+          variant="shop"
+          isMobileMenuOpen={isMobileMenuOpen}
+          onToggleMobileMenu={() => setIsMobileMenuOpen((prev) => !prev)}
+          onCloseMobileMenu={() => setIsMobileMenuOpen(false)}
+          navItems={portalNavItems}
+        />
+      )}
 
       <main className="bg-[#f8fafc] pt-6">{children}</main>
 

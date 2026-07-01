@@ -201,6 +201,13 @@ export async function getPortalCompanies() {
   return Array.isArray(body?.results) ? body.results : []
 }
 
+export async function getPendingReportApprovals() {
+  const path = '/portal/pending-report-approvals/'
+  const response = await authFetch(path)
+  const body = await parseResponse(response, path)
+  return Array.isArray(body?.results) ? body.results : []
+}
+
 export async function createPortalCustomer(payload) {
   const path = '/portal/customers/'
   const response = await authFetch(path, {
@@ -258,6 +265,27 @@ export async function getEquipmentReports(equipmentId) {
 
 export async function createEquipmentReport(equipmentId, payload) {
   const path = '/portal/equipment/' + encodeURIComponent(String(equipmentId)) + '/reports/'
+  const imageFiles = Array.isArray(payload?.images) ? payload.images.filter(Boolean) : []
+
+  if (imageFiles.length > 0) {
+    const formData = new FormData()
+    formData.set('title', String(payload?.title || ''))
+    formData.set('summary', String(payload?.summary || ''))
+    formData.set('findings', String(payload?.findings || ''))
+    formData.set('recommendations', String(payload?.recommendations || ''))
+    formData.set('report_date', String(payload?.report_date || ''))
+    formData.set('status', String(payload?.status || 'draft'))
+    imageFiles.forEach((file) => {
+      formData.append('images', file)
+    })
+
+    const response = await authFetch(path, {
+      method: 'POST',
+      body: formData,
+    })
+    return parseResponse(response, path)
+  }
+
   const response = await authFetch(path, {
     method: 'POST',
     headers: {
@@ -270,6 +298,35 @@ export async function createEquipmentReport(equipmentId, payload) {
 
 export async function updateReport(reportId, payload) {
   const path = '/portal/reports/' + encodeURIComponent(String(reportId)) + '/'
+  const imageFiles = Array.isArray(payload?.images) ? payload.images.filter(Boolean) : []
+  const removedImageIds = Array.isArray(payload?.removed_image_ids)
+    ? payload.removed_image_ids.filter(Boolean)
+    : Array.isArray(payload?.removedImageIds)
+      ? payload.removedImageIds.filter(Boolean)
+      : []
+
+  if (imageFiles.length > 0 || removedImageIds.length > 0) {
+    const formData = new FormData()
+    formData.set('title', String(payload?.title || ''))
+    formData.set('summary', String(payload?.summary || ''))
+    formData.set('findings', String(payload?.findings || ''))
+    formData.set('recommendations', String(payload?.recommendations || ''))
+    formData.set('report_date', String(payload?.report_date || ''))
+    formData.set('status', String(payload?.status || 'draft'))
+    imageFiles.forEach((file) => {
+      formData.append('images', file)
+    })
+    if (removedImageIds.length > 0) {
+      formData.set('removed_image_ids', JSON.stringify(removedImageIds))
+    }
+
+    const response = await authFetch(path, {
+      method: 'PATCH',
+      body: formData,
+    })
+    return parseResponse(response, path)
+  }
+
   const response = await authFetch(path, {
     method: 'PATCH',
     headers: {
