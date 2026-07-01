@@ -133,3 +133,168 @@ class CatalogProduct(models.Model):
 
     def __str__(self):
         return self.title or self.handle
+
+
+class Company(models.Model):
+    name = models.CharField(max_length=200, unique=True)
+    slug = models.SlugField(max_length=220, unique=True)
+    logo = models.ImageField(upload_to="company-logos/", blank=True, null=True)
+    contact_email = models.EmailField(blank=True, default="")
+    contact_phone = models.CharField(max_length=50, blank=True, default="")
+    address = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
+class UserProfile(models.Model):
+    ROLE_CUSTOMER = "customer"
+    ROLE_STAFF = "staff"
+    ROLE_OWNER = "owner"
+
+    ROLE_CHOICES = [
+        (ROLE_CUSTOMER, "Customer"),
+        (ROLE_STAFF, "Staff"),
+        (ROLE_OWNER, "Owner"),
+    ]
+
+    user = models.OneToOneField("auth.User", on_delete=models.CASCADE, related_name="profile")
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ROLE_CUSTOMER)
+    allowed_companies = models.ManyToManyField(Company, blank=True, related_name="members")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["user__username"]
+
+    def __str__(self):
+        return f"{self.user.username} ({self.role})"
+
+
+class Equipment(models.Model):
+    STATUS_ACTIVE = "active"
+    STATUS_INACTIVE = "inactive"
+    STATUS_RETIRED = "retired"
+
+    STATUS_CHOICES = [
+        (STATUS_ACTIVE, "Active"),
+        (STATUS_INACTIVE, "Inactive"),
+        (STATUS_RETIRED, "Retired"),
+    ]
+
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="equipment")
+    name = models.CharField(max_length=200)
+    asset_tag = models.CharField(max_length=120, blank=True, default="")
+    serial_number = models.CharField(max_length=120, blank=True, default="")
+    location = models.CharField(max_length=200, blank=True, default="")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
+    inspection_interval_days = models.PositiveIntegerField(default=365)
+    next_inspection_due = models.DateField(null=True, blank=True)
+    last_inspected_at = models.DateField(null=True, blank=True)
+    notes = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["company__name", "name", "asset_tag"]
+        indexes = [
+            models.Index(fields=["company", "status"]),
+            models.Index(fields=["asset_tag"]),
+            models.Index(fields=["serial_number"]),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.company.name})"
+
+
+class InspectionReport(models.Model):
+    STATUS_DRAFT = "draft"
+    STATUS_SUBMITTED = "submitted"
+    STATUS_FINAL = "final"
+
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, "Draft"),
+        (STATUS_SUBMITTED, "Submitted"),
+        (STATUS_FINAL, "Final"),
+    ]
+
+    equipment = models.ForeignKey(Equipment, on_delete=models.CASCADE, related_name="reports")
+    submitted_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="submitted_reports",
+    )
+    title = models.CharField(max_length=220)
+    summary = models.TextField(blank=True, default="")
+    findings = models.TextField(blank=True, default="")
+    recommendations = models.TextField(blank=True, default="")
+    report_date = models.DateField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_SUBMITTED)
+    edited_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="edited_reports",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-report_date", "-created_at"]
+        indexes = [models.Index(fields=["equipment", "report_date"])]
+
+    def __str__(self):
+        return f"{self.title} - {self.equipment.name}"
+
+
+class ReportRevision(models.Model):
+    report = models.ForeignKey(InspectionReport, on_delete=models.CASCADE, related_name="revisions")
+    edited_by = models.ForeignKey("auth.User", on_delete=models.SET_NULL, null=True, blank=True)
+    previous_data = models.JSONField(default=dict, blank=True)
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-changed_at"]
+
+    def __str__(self):
+        return f"Revision {self.id} for report {self.report_id}"
+
+
+class Certificate(models.Model):
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="certificates")
+    equipment = models.ForeignKey(
+        Equipment,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="certificates",
+    )
+    report = models.ForeignKey(
+        InspectionReport,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="certificates",
+    )
+    title = models.CharField(max_length=220)
+    file = models.FileField(upload_to="certificates/")
+    issue_date = models.DateField(null=True, blank=True)
+    expiry_date = models.DateField(null=True, blank=True)
+    uploaded_by = models.ForeignKey("auth.User", on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["company", "expiry_date"])]
+
+    def __str__(self):
+        return self.title

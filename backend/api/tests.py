@@ -1,10 +1,22 @@
 import json
 from unittest.mock import patch
 
+from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import Client, TestCase, override_settings
+from rest_framework.test import APIClient
 
-from .models import CatalogCollection, CatalogProduct, OnsiteOrder, ProcessedStripeEvent
+from .models import (
+    CatalogCollection,
+    CatalogProduct,
+    Company,
+    Equipment,
+    InspectionReport,
+    OnsiteOrder,
+    ProcessedStripeEvent,
+    ReportRevision,
+    UserProfile,
+)
 
 
 TEST_CACHES = {
@@ -186,3 +198,106 @@ class StripeWebhookTests(BaseApiTestCase):
         self.assertEqual(order.status, OnsiteOrder.STATUS_PAID)
         self.assertIsNotNone(order.paid_at)
         self.assertTrue(ProcessedStripeEvent.objects.filter(event_id="evt_1").exists())
+
+
+@override_settings(
+    CACHES=TEST_CACHES,
+    SECURE_SSL_REDIRECT=False,
+    ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"],
+)
+class PortalRBACTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        user_model = get_user_model()
+
+        self.company_a = Company.objects.create(name="Acme Lifts", slug="acme-lifts")
+        self.company_b = Company.objects.create(name="Beta Lifts", slug="beta-lifts")
+
+        self.equipment_a = Equipment.objects.create(
+            company=self.company_a,
+            name="Chain Block A",
+            asset_tag="AC-001",
+            serial_number="SER-AC-001",
+        )
+        self.equipment_b = Equipment.objects.create(
+            company=self.company_b,
+            name="Hoist B",
+            asset_tag="BE-001",
+            serial_number="SER-BE-001",
+        )
+
+        self.customer_user = user_model.objects.create_user(username="customer", password="testpass123")
+        self.staff_user = user_model.objects.create_user(username="staff", password="testpass123")
+        self.owner_user = user_model.objects.create_user(username="owner", password="testpass123")
+
+        customer_profile = UserProfile.objects.create(user=self.customer_user, role=UserProfile.ROLE_CUSTOMER)
+        customer_profile.allowed_companies.add(self.company_a)
+
+        staff_profile = UserProfile.objects.create(user=self.staff_user, role=UserProfile.ROLE_STAFF)
+        staff_profile.allowed_companies.add(self.company_a)
+
+        owner_profile = UserProfile.objects.create(user=self.owner_user, role=UserProfile.ROLE_OWNER)
+        owner_profile.allowed_companies.add(self.company_a, self.company_b)
+
+    def test_customer_only_sees_allowed_company_equipment(self):
+        self.client.force_authenticate(user=self.customer_user)
+        response = self.client.get("/api/portal/equipment/")
+        self.assertEqual(response.status_code, 200)
+
+        results = response.json()["results"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["company_id"], self.company_a.id)
+
+    def test_staff_can_submit_report_for_allowed_company_only(self):
+        self.client.force_authenticate(user=self.staff_user)
+
+        allowed_response = self.client.post(
+            f"/api/portal/equipment/{self.equipment_a.id}/reports/",
+            data={
+                "title": "Monthly inspection",
+                "summary": "All checks completed",
+                "findings": "No defects",
+                "recommendations": "Continue normal operation",
+                "report_date": "2026-06-30",
+                "status": InspectionReport.STATUS_SUBMITTED,
+            },
+            format="json",
+        )
+        self.assertEqual(allowed_response.status_code, 201)
+
+        blocked_response = self.client.post(
+            f"/api/portal/equipment/{self.equipment_b.id}/reports/",
+            data={
+                "title": "Unauthorized inspection",
+                "report_date": "2026-06-30",
+                "status": InspectionReport.STATUS_SUBMITTED,
+            },
+            format="json",
+        )
+        self.assertEqual(blocked_response.status_code, 404)
+
+    def test_owner_can_edit_report_and_revision_is_recorded(self):
+        report = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Initial report",
+            summary="Initial summary",
+            findings="Initial findings",
+            recommendations="Initial recommendation",
+            report_date="2026-06-25",
+            status=InspectionReport.STATUS_SUBMITTED,
+        )
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.patch(
+            f"/api/portal/reports/{report.id}/",
+            data={"summary": "Owner updated summary", "status": InspectionReport.STATUS_FINAL},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        report.refresh_from_db()
+        self.assertEqual(report.summary, "Owner updated summary")
+        self.assertEqual(report.status, InspectionReport.STATUS_FINAL)
+        self.assertEqual(report.edited_by_id, self.owner_user.id)
+        self.assertEqual(ReportRevision.objects.filter(report=report).count(), 1)
