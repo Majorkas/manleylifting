@@ -1,8 +1,14 @@
+import os
+
+from django.http import FileResponse
 from django.db.models import Q
+from django.utils.dateparse import parse_date
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import Certificate, Company, Equipment, InspectionReport, ReportRevision, UserProfile
 from .serializers import (
@@ -13,7 +19,13 @@ from .serializers import (
     InspectionReportOwnerEditSerializer,
     InspectionReportSerializer,
     PortalMeSerializer,
+    UserProfileAssignmentSerializer,
+    UserProfileAssignmentUpdateSerializer,
 )
+
+
+CERTIFICATE_ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
+CERTIFICATE_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 
 
 def _profile_for_user(user):
@@ -58,6 +70,20 @@ def _selected_company(user, company_id):
     return companies.order_by("name").first()
 
 
+def _validate_certificate_upload(uploaded_file):
+    if not uploaded_file:
+        return "Certificate file is required"
+
+    if uploaded_file.size > CERTIFICATE_MAX_FILE_SIZE_BYTES:
+        return "Certificate file must be 10MB or smaller"
+
+    extension = os.path.splitext(uploaded_file.name or "")[1].lower()
+    if extension not in CERTIFICATE_ALLOWED_EXTENSIONS:
+        return "Certificate file type must be PDF, PNG, JPG, or JPEG"
+
+    return ""
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def portal_me(request):
@@ -72,6 +98,22 @@ def portal_me(request):
     }
     serializer = PortalMeSerializer(payload)
     return Response(serializer.data)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def portal_logout(request):
+    refresh = str(request.data.get("refresh") or "").strip()
+    if not refresh:
+        return Response({"detail": "refresh token is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        token = RefreshToken(refresh)
+        token.blacklist()
+    except TokenError:
+        return Response({"detail": "invalid refresh token"}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response({"ok": True})
 
 
 @api_view(["GET"])
@@ -172,7 +214,7 @@ def portal_report_owner_edit(request, report_id):
     return Response(InspectionReportSerializer(report).data)
 
 
-@api_view(["GET"])
+@api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def portal_equipment_certificates(request, equipment_id):
     equipment = Equipment.objects.select_related("company").filter(id=equipment_id).first()
@@ -182,6 +224,98 @@ def portal_equipment_certificates(request, equipment_id):
     if equipment.company_id not in _visible_company_ids(request.user):
         return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
 
-    certificates = Certificate.objects.filter(equipment_id=equipment.id).order_by("-created_at")
-    serializer = CertificateSerializer(certificates, many=True, context={"request": request})
-    return Response({"results": serializer.data})
+    if request.method == "GET":
+        certificates = Certificate.objects.filter(equipment_id=equipment.id).order_by("-created_at")
+        serializer = CertificateSerializer(certificates, many=True, context={"request": request})
+        return Response({"results": serializer.data})
+
+    if not _is_staff_or_owner(request.user):
+        return Response({"detail": "Insufficient permissions"}, status=status.HTTP_403_FORBIDDEN)
+
+    upload_error = _validate_certificate_upload(request.FILES.get("file"))
+    if upload_error:
+        return Response({"detail": upload_error}, status=status.HTTP_400_BAD_REQUEST)
+
+    title = str(request.data.get("title") or "").strip()
+    if not title:
+        return Response({"detail": "title is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    report_id = request.data.get("report")
+    report = None
+    if report_id:
+        report = InspectionReport.objects.filter(id=report_id, equipment_id=equipment.id).first()
+        if not report:
+            return Response({"detail": "report is invalid for equipment"}, status=status.HTTP_400_BAD_REQUEST)
+
+    issue_date_raw = request.data.get("issue_date")
+    expiry_date_raw = request.data.get("expiry_date")
+    issue_date = parse_date(str(issue_date_raw)) if issue_date_raw else None
+    expiry_date = parse_date(str(expiry_date_raw)) if expiry_date_raw else None
+    if issue_date_raw and issue_date is None:
+        return Response({"detail": "issue_date must be YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
+    if expiry_date_raw and expiry_date is None:
+        return Response({"detail": "expiry_date must be YYYY-MM-DD"}, status=status.HTTP_400_BAD_REQUEST)
+
+    certificate = Certificate.objects.create(
+        company=equipment.company,
+        equipment=equipment,
+        report=report,
+        title=title,
+        file=request.FILES["file"],
+        issue_date=issue_date,
+        expiry_date=expiry_date,
+        uploaded_by=request.user,
+    )
+    serializer = CertificateSerializer(certificate, context={"request": request})
+    return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def portal_certificate_download(request, certificate_id):
+    certificate = Certificate.objects.select_related("company").filter(id=certificate_id).first()
+    if not certificate:
+        return Response({"detail": "Certificate not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if certificate.company_id not in _visible_company_ids(request.user):
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if not certificate.file:
+        return Response({"detail": "Certificate file not available"}, status=status.HTTP_404_NOT_FOUND)
+
+    filename = os.path.basename(certificate.file.name)
+    response = FileResponse(certificate.file.open("rb"), as_attachment=True, filename=filename)
+    return response
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([IsAuthenticated])
+def portal_staff_assignments(request):
+    if not _is_owner(request.user):
+        return Response({"detail": "Only owner can manage assignments"}, status=status.HTTP_403_FORBIDDEN)
+
+    if request.method == "GET":
+        profiles = UserProfile.objects.select_related("user").prefetch_related("allowed_companies")
+        serializer = UserProfileAssignmentSerializer(profiles, many=True)
+        return Response({"results": serializer.data})
+
+    serializer = UserProfileAssignmentUpdateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    payload = serializer.validated_data
+
+    profile = UserProfile.objects.select_related("user").filter(user_id=payload["user_id"]).first()
+    if not profile:
+        return Response({"detail": "User profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if "role" in payload:
+        profile.role = payload["role"]
+        profile.save(update_fields=["role", "updated_at"])
+
+    if "allowed_company_ids" in payload:
+        visible_ids = _visible_company_ids(request.user)
+        allowed_ids = list(set(payload["allowed_company_ids"]) & set(visible_ids))
+        companies = Company.objects.filter(id__in=allowed_ids, is_active=True)
+        profile.allowed_companies.set(companies)
+
+    output = UserProfileAssignmentSerializer(profile)
+    return Response(output.data)

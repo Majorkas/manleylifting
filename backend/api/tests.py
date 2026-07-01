@@ -3,8 +3,10 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
 from rest_framework.test import APIClient
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import (
     CatalogCollection,
@@ -301,3 +303,65 @@ class PortalRBACTests(TestCase):
         self.assertEqual(report.status, InspectionReport.STATUS_FINAL)
         self.assertEqual(report.edited_by_id, self.owner_user.id)
         self.assertEqual(ReportRevision.objects.filter(report=report).count(), 1)
+
+    def test_customer_cannot_upload_certificate(self):
+        self.client.force_authenticate(user=self.customer_user)
+        response = self.client.post(
+            f"/api/portal/equipment/{self.equipment_a.id}/certificates/",
+            data={
+                "title": "Cert",
+                "file": SimpleUploadedFile("cert.pdf", b"%PDF-1.4\ncontent", content_type="application/pdf"),
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_staff_can_upload_certificate(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            f"/api/portal/equipment/{self.equipment_a.id}/certificates/",
+            data={
+                "title": "Inspection Certificate",
+                "file": SimpleUploadedFile("cert.pdf", b"%PDF-1.4\ncontent", content_type="application/pdf"),
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 201)
+
+    def test_owner_can_manage_staff_assignments(self):
+        self.client.force_authenticate(user=self.owner_user)
+
+        list_response = self.client.get("/api/portal/staff-assignments/")
+        self.assertEqual(list_response.status_code, 200)
+
+        update_response = self.client.patch(
+            "/api/portal/staff-assignments/",
+            data={
+                "user_id": self.staff_user.id,
+                "role": UserProfile.ROLE_STAFF,
+                "allowed_company_ids": [self.company_b.id],
+            },
+            format="json",
+        )
+        self.assertEqual(update_response.status_code, 200)
+
+        updated_profile = UserProfile.objects.get(user=self.staff_user)
+        self.assertEqual(list(updated_profile.allowed_companies.values_list("id", flat=True)), [self.company_b.id])
+
+    def test_logout_blacklists_refresh_token(self):
+        self.client.force_authenticate(user=self.owner_user)
+        refresh = RefreshToken.for_user(self.owner_user)
+
+        response = self.client.post(
+            "/api/auth/logout/",
+            data={"refresh": str(refresh)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        reuse_response = self.client.post(
+            "/api/auth/token/refresh/",
+            data={"refresh": str(refresh)},
+            format="json",
+        )
+        self.assertEqual(reuse_response.status_code, 401)

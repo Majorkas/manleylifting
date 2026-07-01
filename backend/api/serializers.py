@@ -127,3 +127,37 @@ class PortalMeSerializer(serializers.Serializer):
     full_name = serializers.CharField(allow_blank=True)
     role = serializers.ChoiceField(choices=UserProfile.ROLE_CHOICES)
     allowed_company_ids = serializers.ListField(child=serializers.IntegerField())
+
+
+class UserProfileAssignmentSerializer(serializers.ModelSerializer):
+    user_id = serializers.IntegerField(source="user.id", read_only=True)
+    username = serializers.CharField(source="user.username", read_only=True)
+    email = serializers.EmailField(source="user.email", read_only=True)
+    full_name = serializers.SerializerMethodField()
+    allowed_company_ids = serializers.SerializerMethodField()
+
+    class Meta:
+        model = UserProfile
+        fields = [
+            "user_id",
+            "username",
+            "email",
+            "full_name",
+            "role",
+            "allowed_company_ids",
+        ]
+
+    def get_full_name(self, obj):
+        return obj.user.get_full_name() or ""
+
+    def get_allowed_company_ids(self, obj):
+        return list(obj.allowed_companies.values_list("id", flat=True))
+
+
+class UserProfileAssignmentUpdateSerializer(serializers.Serializer):
+    user_id = serializers.IntegerField()
+    role = serializers.ChoiceField(choices=UserProfile.ROLE_CHOICES, required=False)
+    allowed_company_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+    )
