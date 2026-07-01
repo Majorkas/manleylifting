@@ -524,4 +524,79 @@ describe('PortalDashboardPage', () => {
 
     expect(getPendingReportApprovals).toHaveBeenCalledTimes(2)
   })
+
+  it('saves owner edits from the pending approvals modal without selecting equipment first', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 31,
+      username: 'demo_owner',
+      email: 'owner@example.com',
+      fullName: 'Demo Owner',
+      role: 'owner',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getPortalEquipment.mockResolvedValue([])
+    getPendingReportApprovals.mockResolvedValue([
+      {
+        id: 2,
+        equipment_id: 101,
+        company_id: 1,
+        title: 'Submitted Hoist Inspection',
+        report_date: '2026-07-02',
+        status: 'submitted',
+        submitted_by: 21,
+        submitted_by_name: 'Demo Staff',
+        summary: 'Submitted summary',
+        findings: 'Findings',
+        recommendations: 'Recommendations',
+        company_name: 'Acme Lifts',
+        equipment_name: 'Warehouse Hoist',
+        images: [],
+      },
+    ])
+    updateReport.mockResolvedValue({
+      id: 2,
+      equipment_id: 101,
+      company_id: 1,
+      title: 'Updated Submitted Hoist Inspection',
+      report_date: '2026-07-03',
+      status: 'approved',
+      submitted_by: 21,
+      submitted_by_name: 'Demo Staff',
+      summary: 'Updated summary',
+      findings: 'Updated findings',
+      recommendations: 'Updated recommendations',
+      images: [],
+    })
+
+    renderDashboardPage('/portal')
+
+    expect(await screen.findByRole('heading', { name: 'Customer List' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Review Report' }))
+    await user.click(await screen.findByRole('button', { name: 'Edit Report' }))
+
+    await user.clear(screen.getByLabelText('Report Title'))
+    await user.type(screen.getByLabelText('Report Title'), 'Updated Submitted Hoist Inspection')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Status' }), 'approved')
+    await user.click(screen.getByRole('button', { name: 'Save Report' }))
+
+    await waitFor(() => {
+      expect(updateReport).toHaveBeenCalledWith('2', {
+        title: 'Updated Submitted Hoist Inspection',
+        summary: 'Submitted summary',
+        findings: 'Findings',
+        recommendations: 'Recommendations',
+        report_date: '2026-07-02',
+        status: 'approved',
+        images: [],
+        removed_image_ids: [],
+      })
+    })
+
+    expect(getEquipmentReports).not.toHaveBeenCalled()
+  })
 })

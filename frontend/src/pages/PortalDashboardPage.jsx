@@ -582,11 +582,14 @@ export default function PortalDashboardPage() {
 
   async function handleCreateReport(event) {
     event.preventDefault()
-    if (!activeSelectedEquipment?.id || creatingReport || savingReportEdit) return
+    if (creatingReport || savingReportEdit) return
 
     const refreshEquipmentList = async () => {
+      const companyIdForRefresh = activeSelectedEquipment?.company_id || selectedCompanyId
+      if (!companyIdForRefresh) return
+
       const refreshedEquipment = await getPortalEquipment({
-        companyId: activeSelectedEquipment.company_id || selectedCompanyId,
+        companyId: companyIdForRefresh,
         search: searchQuery,
       })
       setEquipment(refreshedEquipment)
@@ -603,7 +606,7 @@ export default function PortalDashboardPage() {
       setSavingReportEdit(true)
       setReportError('')
       try {
-        await updateReport(reportForm.reportId, {
+        const updatedReport = await updateReport(reportForm.reportId, {
           title: reportForm.title,
           summary: reportForm.summary,
           findings: reportForm.findings,
@@ -613,9 +616,17 @@ export default function PortalDashboardPage() {
           images: reportForm.images,
           removed_image_ids: reportForm.removedImageIds,
         })
-        const refreshed = await getEquipmentReports(activeSelectedEquipment.id)
-        setReports(refreshed)
-        setViewedReport(refreshed.find((item) => String(item.id) === String(reportForm.reportId)) || null)
+
+        if (activeSelectedEquipment?.id) {
+          const refreshed = await getEquipmentReports(activeSelectedEquipment.id)
+          setReports(refreshed)
+          setViewedReport(
+            refreshed.find((item) => String(item.id) === String(reportForm.reportId)) || updatedReport,
+          )
+        } else {
+          setViewedReport(updatedReport)
+        }
+
         if (isOwner && !selectedCompanyId) {
           await refreshPendingReportApprovals()
         }
@@ -629,6 +640,8 @@ export default function PortalDashboardPage() {
       }
       return
     }
+
+    if (!activeSelectedEquipment?.id) return
 
     setCreatingReport(true)
     setReportError('')
