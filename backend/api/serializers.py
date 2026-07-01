@@ -2,7 +2,7 @@ from datetime import timedelta
 
 from rest_framework import serializers
 
-from .models import Certificate, Company, Equipment, InspectionReport, ReportRevision, UserProfile
+from .models import Certificate, Company, Equipment, InspectionReport, ReportImage, ReportRevision, UserProfile
 
 
 class CompanyHeaderSerializer(serializers.ModelSerializer):
@@ -72,14 +72,21 @@ class EquipmentCreateSerializer(serializers.ModelSerializer):
 
 class InspectionReportSerializer(serializers.ModelSerializer):
     equipment_id = serializers.IntegerField(source="equipment.id", read_only=True)
+    equipment_name = serializers.CharField(source="equipment.name", read_only=True)
+    company_id = serializers.IntegerField(source="equipment.company.id", read_only=True)
+    company_name = serializers.CharField(source="equipment.company.name", read_only=True)
     submitted_by_name = serializers.SerializerMethodField()
     edited_by_name = serializers.SerializerMethodField()
+    images = serializers.SerializerMethodField()
 
     class Meta:
         model = InspectionReport
         fields = [
             "id",
             "equipment_id",
+            "equipment_name",
+            "company_id",
+            "company_name",
             "title",
             "summary",
             "findings",
@@ -90,6 +97,7 @@ class InspectionReportSerializer(serializers.ModelSerializer):
             "submitted_by_name",
             "edited_by",
             "edited_by_name",
+            "images",
             "created_at",
             "updated_at",
         ]
@@ -104,6 +112,15 @@ class InspectionReportSerializer(serializers.ModelSerializer):
         if not obj.edited_by:
             return ""
         return obj.edited_by.get_full_name() or obj.edited_by.username
+
+    def get_images(self, obj):
+        return ReportImageSerializer(obj.images.all(), many=True).data
+
+
+class ReportImageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ReportImage
+        fields = ["id", "image_url", "public_id", "created_at"]
 
 
 class InspectionReportCreateSerializer(serializers.ModelSerializer):

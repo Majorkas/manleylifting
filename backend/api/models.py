@@ -259,6 +259,20 @@ class InspectionReport(models.Model):
         return f"{self.title} - {self.equipment.name}"
 
 
+class ReportImage(models.Model):
+    report = models.ForeignKey(InspectionReport, on_delete=models.CASCADE, related_name="images")
+    image_url = models.URLField(max_length=500)
+    public_id = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    uploaded_by = models.ForeignKey("auth.User", on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Image {self.id} for report {self.report_id}"
+
+
 class ReportRevision(models.Model):
     report = models.ForeignKey(InspectionReport, on_delete=models.CASCADE, related_name="revisions")
     edited_by = models.ForeignKey("auth.User", on_delete=models.SET_NULL, null=True, blank=True)

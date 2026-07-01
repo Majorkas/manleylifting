@@ -5,6 +5,7 @@ from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
+from datetime import date
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -16,6 +17,7 @@ from .models import (
     InspectionReport,
     OnsiteOrder,
     ProcessedStripeEvent,
+    ReportImage,
     ReportRevision,
     UserProfile,
 )
@@ -241,6 +243,57 @@ class PortalRBACTests(TestCase):
         owner_profile = UserProfile.objects.create(user=self.owner_user, role=UserProfile.ROLE_OWNER)
         owner_profile.allowed_companies.add(self.company_a, self.company_b)
 
+    def test_authenticate_with_case_insensitive_username(self):
+        user_model = get_user_model()
+        user = user_model.objects.create_user(username="MixedCaseUser", password="testpass123")
+
+        response = self.client.post(
+            "/api/auth/token/",
+            data={"username": "mixedcaseuser", "password": "testpass123"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("access", response.json())
+        self.assertIn("refresh", response.json())
+        self.assertEqual(user.username, "MixedCaseUser")
+
+    def test_owner_sees_pending_report_approvals_only(self):
+        submitted_a = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Submitted A",
+            summary="Needs approval",
+            report_date="2026-06-20",
+            status=InspectionReport.STATUS_SUBMITTED,
+        )
+        InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Approved A",
+            summary="Already approved",
+            report_date="2026-06-21",
+            status=InspectionReport.STATUS_APPROVED,
+        )
+        submitted_b = InspectionReport.objects.create(
+            equipment=self.equipment_b,
+            submitted_by=self.staff_user,
+            title="Submitted B",
+            summary="Needs approval too",
+            report_date="2026-06-22",
+            status=InspectionReport.STATUS_SUBMITTED,
+        )
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.get("/api/portal/pending-report-approvals/")
+
+        self.assertEqual(response.status_code, 200)
+        results = response.json()["results"]
+        self.assertEqual([item["id"] for item in results], [submitted_b.id, submitted_a.id])
+        self.assertTrue(all(item["status"] == InspectionReport.STATUS_SUBMITTED for item in results))
+        self.assertEqual(results[0]["company_name"], self.company_b.name)
+        self.assertEqual(results[1]["equipment_name"], self.equipment_a.name)
+
     def test_customer_only_sees_allowed_company_equipment(self):
         self.client.force_authenticate(user=self.customer_user)
         response = self.client.get("/api/portal/equipment/")
@@ -249,6 +302,111 @@ class PortalRBACTests(TestCase):
         results = response.json()["results"]
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["company_id"], self.company_a.id)
+
+    def test_customer_only_sees_approved_reports(self):
+        InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Draft report",
+            report_date="2026-06-10",
+            status=InspectionReport.STATUS_DRAFT,
+        )
+        InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Submitted report",
+            report_date="2026-06-11",
+            status=InspectionReport.STATUS_SUBMITTED,
+        )
+        approved = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Approved report",
+            report_date="2026-06-12",
+            status=InspectionReport.STATUS_APPROVED,
+        )
+
+        self.client.force_authenticate(user=self.customer_user)
+        response = self.client.get(f"/api/portal/equipment/{self.equipment_a.id}/reports/")
+        self.assertEqual(response.status_code, 200)
+
+        results = response.json()["results"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["id"], approved.id)
+        self.assertEqual(results[0]["status"], InspectionReport.STATUS_APPROVED)
+
+    @patch("api.portal_views.cloudinary_uploader.upload")
+    @patch.dict(
+        "os.environ",
+        {
+            "CLOUDINARY_CLOUD_NAME": "demo",
+            "CLOUDINARY_API_KEY": "key",
+            "CLOUDINARY_API_SECRET": "secret",
+        },
+        clear=False,
+    )
+    def test_staff_can_upload_report_images(self, mock_upload):
+        mock_upload.return_value = {
+            "secure_url": "https://res.cloudinary.com/demo/image/upload/v1/report-image.jpg",
+            "public_id": "manleylifting/reports/report-image",
+        }
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            f"/api/portal/equipment/{self.equipment_a.id}/reports/",
+            data={
+                "title": "Report with image",
+                "report_date": "2026-06-30",
+                "status": InspectionReport.STATUS_DRAFT,
+                "images": [
+                    SimpleUploadedFile("damage.jpg", b"fake-image-bytes", content_type="image/jpeg")
+                ],
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(len(response.json().get("images", [])), 1)
+        self.assertEqual(ReportImage.objects.count(), 1)
+
+    @patch("api.portal_views.cloudinary_uploader.destroy")
+    @patch("api.portal_views._cloudinary_is_configured", return_value=True)
+    def test_owner_can_remove_report_images(self, mock_cloudinary_ready, mock_destroy):
+        report = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Report with image",
+            summary="Summary",
+            findings="Findings",
+            recommendations="Recommendations",
+            report_date="2026-06-25",
+            status=InspectionReport.STATUS_SUBMITTED,
+        )
+        image = ReportImage.objects.create(
+            report=report,
+            image_url="https://res.cloudinary.com/demo/image/upload/v1/report-image.jpg",
+            public_id="manleylifting/reports/report-image",
+            uploaded_by=self.staff_user,
+        )
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.patch(
+            f"/api/portal/reports/{report.id}/",
+            data={
+                "summary": "Owner removed image",
+                "status": InspectionReport.STATUS_APPROVED,
+                "removed_image_ids": [image.id],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(ReportImage.objects.filter(report=report).count(), 0)
+        mock_destroy.assert_called_once_with(
+            "manleylifting/reports/report-image",
+            resource_type="image",
+            invalidate=True,
+        )
 
     def test_staff_can_submit_report_for_allowed_company_only(self):
         self.client.force_authenticate(user=self.staff_user)
@@ -267,7 +425,7 @@ class PortalRBACTests(TestCase):
         )
         self.assertEqual(allowed_response.status_code, 201)
         self.equipment_a.refresh_from_db()
-        self.assertEqual(self.equipment_a.next_inspection_due.isoformat(), "2027-06-30")
+        self.assertIsNone(self.equipment_a.next_inspection_due)
 
         blocked_response = self.client.post(
             f"/api/portal/equipment/{self.equipment_b.id}/reports/",
@@ -279,6 +437,26 @@ class PortalRBACTests(TestCase):
             format="json",
         )
         self.assertEqual(blocked_response.status_code, 404)
+
+    def test_draft_report_does_not_clear_existing_next_due_date(self):
+        self.equipment_a.next_inspection_due = date(2027, 1, 15)
+        self.equipment_a.save(update_fields=["next_inspection_due", "updated_at"])
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            f"/api/portal/equipment/{self.equipment_a.id}/reports/",
+            data={
+                "title": "Draft inspection",
+                "summary": "Work in progress",
+                "report_date": "2026-06-30",
+                "status": InspectionReport.STATUS_DRAFT,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+
+        self.equipment_a.refresh_from_db()
+        self.assertEqual(self.equipment_a.next_inspection_due.isoformat(), "2027-01-15")
 
     def test_owner_can_edit_report_and_revision_is_recorded(self):
         report = InspectionReport.objects.create(
@@ -304,6 +482,8 @@ class PortalRBACTests(TestCase):
         self.assertEqual(report.summary, "Owner updated summary")
         self.assertEqual(report.status, InspectionReport.STATUS_APPROVED)
         self.assertEqual(report.edited_by_id, self.owner_user.id)
+        self.equipment_a.refresh_from_db()
+        self.assertEqual(self.equipment_a.next_inspection_due.isoformat(), "2027-06-25")
         self.assertEqual(ReportRevision.objects.filter(report=report).count(), 1)
 
     def test_staff_can_edit_own_draft_report(self):
@@ -330,7 +510,7 @@ class PortalRBACTests(TestCase):
         self.assertEqual(report.summary, "Updated draft summary")
         self.assertEqual(report.status, InspectionReport.STATUS_SUBMITTED)
         self.equipment_a.refresh_from_db()
-        self.assertEqual(self.equipment_a.next_inspection_due.isoformat(), "2027-06-25")
+        self.assertIsNone(self.equipment_a.next_inspection_due)
 
     def test_staff_cannot_edit_submitted_report(self):
         report = InspectionReport.objects.create(

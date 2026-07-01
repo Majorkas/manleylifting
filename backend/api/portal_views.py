@@ -1,6 +1,11 @@
+import json
 import os
 from datetime import timedelta
 
+try:
+    import cloudinary.uploader as cloudinary_uploader
+except ImportError:
+    cloudinary_uploader = None
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.http import FileResponse
@@ -14,7 +19,7 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import Certificate, Company, Equipment, InspectionReport, ReportRevision, UserProfile
+from .models import Certificate, Company, Equipment, InspectionReport, ReportImage, ReportRevision, UserProfile
 from .serializers import (
     CertificateSerializer,
     EquipmentCreateSerializer,
@@ -35,6 +40,19 @@ from .serializers import (
 
 CERTIFICATE_ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
 CERTIFICATE_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+REPORT_IMAGE_ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+REPORT_IMAGE_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+
+
+def _cloudinary_is_configured():
+    return bool(
+        os.getenv("CLOUDINARY_URL", "").strip()
+        or (
+            os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
+            and os.getenv("CLOUDINARY_API_KEY", "").strip()
+            and os.getenv("CLOUDINARY_API_SECRET", "").strip()
+        )
+    )
 
 
 def _profile_for_user(user):
@@ -93,6 +111,90 @@ def _validate_certificate_upload(uploaded_file):
     return ""
 
 
+def _validate_report_images(report_images):
+    for uploaded_file in report_images:
+        if uploaded_file.size > REPORT_IMAGE_MAX_FILE_SIZE_BYTES:
+            return "Each report image must be 10MB or smaller"
+
+        extension = os.path.splitext(uploaded_file.name or "")[1].lower()
+        if extension not in REPORT_IMAGE_ALLOWED_EXTENSIONS:
+            return "Report images must be PNG, JPG, JPEG, or WEBP"
+
+    return ""
+
+
+def _upload_report_images(report, report_images, uploaded_by=None):
+    if cloudinary_uploader is None:
+        raise ValueError("Cloudinary Python SDK is not installed")
+
+    if not _cloudinary_is_configured():
+        raise ValueError("Cloudinary is not configured")
+
+    for uploaded_file in report_images:
+        upload_result = cloudinary_uploader.upload(
+            uploaded_file,
+            folder="manleylifting/reports",
+            resource_type="image",
+            overwrite=False,
+        )
+
+        ReportImage.objects.create(
+            report=report,
+            image_url=str(upload_result.get("secure_url") or upload_result.get("url") or ""),
+            public_id=str(upload_result.get("public_id") or ""),
+            uploaded_by=uploaded_by,
+        )
+
+
+def _remove_report_images(report, removed_image_ids):
+    removed_ids = [image_id for image_id in removed_image_ids if image_id is not None]
+    if not removed_ids:
+        return
+
+    images_to_remove = list(report.images.filter(id__in=removed_ids))
+    if not images_to_remove:
+        return
+
+    if cloudinary_uploader is not None and _cloudinary_is_configured():
+        for image in images_to_remove:
+            if not image.public_id:
+                continue
+            try:
+                cloudinary_uploader.destroy(image.public_id, resource_type="image", invalidate=True)
+            except Exception:
+                pass
+
+    report.images.filter(id__in=[image.id for image in images_to_remove]).delete()
+
+
+def _parse_removed_report_image_ids(request_data):
+    raw_value = request_data.get("removed_image_ids")
+    if raw_value in (None, ""):
+        return []
+
+    if isinstance(raw_value, list):
+        raw_items = raw_value
+    else:
+        try:
+            parsed = json.loads(raw_value)
+        except (TypeError, ValueError):
+            parsed = raw_value
+
+        if isinstance(parsed, list):
+            raw_items = parsed
+        else:
+            raw_items = [item.strip() for item in str(parsed).split(",") if item.strip()]
+
+    removed_ids = []
+    for raw_item in raw_items:
+        try:
+            removed_ids.append(int(raw_item))
+        except (TypeError, ValueError):
+            continue
+
+    return removed_ids
+
+
 def _report_snapshot(report):
     return {
         "title": report.title,
@@ -104,16 +206,21 @@ def _report_snapshot(report):
     }
 
 
-def _update_equipment_next_due_from_report(report):
-    if report.status != InspectionReport.STATUS_SUBMITTED:
-        return
+def _refresh_equipment_next_due_from_approved_reports(equipment):
+    latest_approved_report = (
+        equipment.reports.filter(status=InspectionReport.STATUS_APPROVED)
+        .exclude(report_date__isnull=True)
+        .order_by("-report_date", "-id")
+        .first()
+    )
 
-    inspection_interval_days = report.equipment.inspection_interval_days or 365
-    if not report.report_date:
-        report.equipment.next_inspection_due = None
+    inspection_interval_days = equipment.inspection_interval_days or 365
+    if latest_approved_report and latest_approved_report.report_date:
+        equipment.next_inspection_due = latest_approved_report.report_date + timedelta(days=inspection_interval_days)
     else:
-        report.equipment.next_inspection_due = report.report_date + timedelta(days=inspection_interval_days)
-    report.equipment.save(update_fields=["next_inspection_due", "updated_at"])
+        equipment.next_inspection_due = None
+
+    equipment.save(update_fields=["next_inspection_due", "updated_at"])
 
 
 @api_view(["GET"])
@@ -179,11 +286,11 @@ def portal_create_customer(request):
     payload = serializer.validated_data
 
     user_model = get_user_model()
-    username = payload["customer_username"].strip()
+    username = payload["customer_username"].strip().lower()
     email = payload["customer_email"].strip().lower()
     company_name = payload["company_name"].strip()
 
-    if user_model.objects.filter(username=username).exists():
+    if user_model.objects.filter(username__iexact=username).exists():
         return Response({"detail": "customer_username already exists"}, status=status.HTTP_400_BAD_REQUEST)
 
     if user_model.objects.filter(email__iexact=email).exists():
@@ -339,13 +446,19 @@ def portal_equipment_reports(request, equipment_id):
 
     if request.method == "GET":
         reports = equipment.reports.select_related("submitted_by", "edited_by").all()
+        if not _is_staff_or_owner(request.user):
+            reports = reports.filter(status=InspectionReport.STATUS_APPROVED)
         serializer = InspectionReportSerializer(reports, many=True)
         return Response({"results": serializer.data})
 
     if not _is_staff_or_owner(request.user):
         return Response({"detail": "Insufficient permissions"}, status=status.HTTP_403_FORBIDDEN)
 
-    previous_status = None
+    report_images = request.FILES.getlist("images")
+    upload_error = _validate_report_images(report_images)
+    if upload_error:
+        return Response({"detail": upload_error}, status=status.HTTP_400_BAD_REQUEST)
+
     serializer = InspectionReportCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     status_value = serializer.validated_data.get("status", InspectionReport.STATUS_DRAFT)
@@ -355,10 +468,30 @@ def portal_equipment_reports(request, equipment_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    report = serializer.save(equipment=equipment, submitted_by=request.user)
-    if report.status == InspectionReport.STATUS_SUBMITTED:
-        _update_equipment_next_due_from_report(report)
+    try:
+        with transaction.atomic():
+            report = serializer.save(equipment=equipment, submitted_by=request.user)
+            if report_images:
+                _upload_report_images(report, report_images, request.user)
+    except ValueError as error:
+        return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
+
     return Response(InspectionReportSerializer(report).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def portal_pending_report_approvals(request):
+    if not _is_owner(request.user):
+        return Response({"detail": "Only owner can view pending approvals"}, status=status.HTTP_403_FORBIDDEN)
+
+    reports = (
+        InspectionReport.objects.select_related("submitted_by", "equipment__company")
+        .filter(status=InspectionReport.STATUS_SUBMITTED, equipment__company_id__in=_visible_company_ids(request.user))
+        .order_by("-updated_at", "-report_date", "-id")
+    )
+    serializer = InspectionReportSerializer(reports, many=True)
+    return Response({"results": serializer.data})
 
 
 @api_view(["PATCH"])
@@ -372,6 +505,12 @@ def portal_report_owner_edit(request, report_id):
         return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
 
     if _is_owner(request.user):
+        report_images = request.FILES.getlist("images")
+        removed_image_ids = _parse_removed_report_image_ids(request.data)
+        upload_error = _validate_report_images(report_images)
+        if upload_error:
+            return Response({"detail": upload_error}, status=status.HTTP_400_BAD_REQUEST)
+
         previous_data = _report_snapshot(report)
 
         serializer = InspectionReportOwnerEditSerializer(report, data=request.data, partial=True)
@@ -385,16 +524,28 @@ def portal_report_owner_edit(request, report_id):
             )
 
         previous_status = report.status
-        serializer.save(edited_by=request.user)
+        try:
+            with transaction.atomic():
+                serializer.save(edited_by=request.user)
+                if (
+                    previous_status == InspectionReport.STATUS_APPROVED
+                    or report.status == InspectionReport.STATUS_APPROVED
+                ):
+                    _refresh_equipment_next_due_from_approved_reports(report.equipment)
 
-        if previous_status != InspectionReport.STATUS_SUBMITTED and report.status == InspectionReport.STATUS_SUBMITTED:
-            _update_equipment_next_due_from_report(report)
+                if removed_image_ids:
+                    _remove_report_images(report, removed_image_ids)
 
-        ReportRevision.objects.create(
-            report=report,
-            edited_by=request.user,
-            previous_data=previous_data,
-        )
+                if report_images:
+                    _upload_report_images(report, report_images, request.user)
+
+                ReportRevision.objects.create(
+                    report=report,
+                    edited_by=request.user,
+                    previous_data=previous_data,
+                )
+        except ValueError as error:
+            return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(InspectionReportSerializer(report).data)
 
@@ -408,6 +559,12 @@ def portal_report_owner_edit(request, report_id):
     if report.submitted_by_id != request.user.id:
         return Response({"detail": "Staff can only edit their own draft reports"}, status=status.HTTP_403_FORBIDDEN)
 
+    report_images = request.FILES.getlist("images")
+    removed_image_ids = _parse_removed_report_image_ids(request.data)
+    upload_error = _validate_report_images(report_images)
+    if upload_error:
+        return Response({"detail": upload_error}, status=status.HTTP_400_BAD_REQUEST)
+
     serializer = InspectionReportUpdateSerializer(report, data=request.data, partial=True)
     serializer.is_valid(raise_exception=True)
 
@@ -418,11 +575,16 @@ def portal_report_owner_edit(request, report_id):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    previous_status = report.status
-    serializer.save(edited_by=request.user)
+    try:
+        with transaction.atomic():
+            serializer.save(edited_by=request.user)
+            if removed_image_ids:
+                _remove_report_images(report, removed_image_ids)
+            if report_images:
+                _upload_report_images(report, report_images, request.user)
+    except ValueError as error:
+        return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
 
-    if previous_status != InspectionReport.STATUS_SUBMITTED and report.status == InspectionReport.STATUS_SUBMITTED:
-        _update_equipment_next_due_from_report(report)
     return Response(InspectionReportSerializer(report).data)
 
 
