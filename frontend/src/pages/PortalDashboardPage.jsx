@@ -344,6 +344,11 @@ export default function PortalDashboardPage() {
     let cancelled = false
 
     async function loadPortalData() {
+      if (!isAuthenticated) {
+        setLoading(false)
+        return
+      }
+
       setLoading(true)
       setErrorMessage('')
 
@@ -408,7 +413,7 @@ export default function PortalDashboardPage() {
     return () => {
       cancelled = true
     }
-  }, [navigate, searchQuery, selectedCompanyId])
+  }, [isAuthenticated, navigate, searchQuery, selectedCompanyId])
 
   async function handleLogout() {
     if (loggingOut) return
@@ -1192,11 +1197,11 @@ export default function PortalDashboardPage() {
 
         {isOwner && showCreateCustomerForm && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4"
+            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
             onClick={() => setShowCreateCustomerForm(false)}
           >
             <form
-              className="w-full max-w-3xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+              className="max-h-[calc(100vh-7rem)] w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
               onSubmit={handleCreateCustomer}
               onClick={(event) => event.stopPropagation()}
             >
@@ -1336,11 +1341,11 @@ export default function PortalDashboardPage() {
 
         {canEditReports && showCreateEquipmentForm && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4"
+            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
             onClick={() => setShowCreateEquipmentForm(false)}
           >
             <form
-              className="w-full max-w-3xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+              className="max-h-[calc(100vh-7rem)] w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
               onSubmit={handleCreateEquipment}
               onClick={(event) => event.stopPropagation()}
             >
@@ -1462,14 +1467,14 @@ export default function PortalDashboardPage() {
 
         {canEditReports && showCreateReportForm && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4"
+            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
             onClick={() => {
               setShowCreateReportForm(false)
               setReportForm(buildEmptyReportForm())
             }}
           >
             <form
-              className="w-full max-w-3xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+              className="max-h-[calc(100vh-7rem)] w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
               onSubmit={handleCreateReport}
               onClick={(event) => event.stopPropagation()}
             >
@@ -1569,11 +1574,11 @@ export default function PortalDashboardPage() {
 
         {viewedReport && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4"
+            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
             onClick={() => setViewedReport(null)}
           >
             <div
-              className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+              className="max-h-[calc(100vh-7rem)] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-start justify-between gap-3">
@@ -1626,11 +1631,11 @@ export default function PortalDashboardPage() {
 
         {showEditReportModal && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4"
+            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
             onClick={handleCancelEdit}
           >
             <div
-              className="w-full max-w-3xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+              className="max-h-[calc(100vh-7rem)] w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-center justify-between gap-3">
@@ -1730,7 +1735,7 @@ export default function PortalDashboardPage() {
 
         {showRevisionsModal && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4"
+            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
             onClick={() => {
               setShowRevisionsModal(false)
               setRevisionReportId('')
@@ -1738,7 +1743,7 @@ export default function PortalDashboardPage() {
             }}
           >
             <div
-              className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+              className="max-h-[calc(100vh-7rem)] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-center justify-between gap-3">
@@ -1786,11 +1791,11 @@ export default function PortalDashboardPage() {
 
         {showDecommissionConfirm && activeSelectedEquipment && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 px-4"
+            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
             onClick={() => setShowDecommissionConfirm(false)}
           >
             <div
-              className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+              className="max-h-[calc(100vh-7rem)] w-full max-w-md overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
               onClick={(event) => event.stopPropagation()}
             >
               <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#C61F2A]">Confirm Action</p>
