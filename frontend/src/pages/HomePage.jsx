@@ -40,6 +40,7 @@ export default function HomePage() {
     { label: 'Services', href: '#services' },
     { label: 'Certification', href: '#trust' },
     { label: 'Contact', href: '#contact' },
+    { label: 'Portal', to: '/portal/login' },
     { label: 'Shop', to: '/shop' },
   ]
 

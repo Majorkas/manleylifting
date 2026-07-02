@@ -19,12 +19,6 @@ import {
   updatePortalEquipment,
 } from '../utils/portalApi'
 
-function roleLabel(role) {
-  if (role === 'owner') return 'Owner'
-  if (role === 'staff') return 'Staff'
-  return 'Customer'
-}
-
 function formatRevisionDateTime(value) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return String(value || '-')
@@ -911,7 +905,7 @@ export default function PortalDashboardPage() {
           {profile && (
             <div className="flex items-center gap-3">
               <span className="rounded-full border border-slate-300 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700">
-                {roleLabel(profile.role)}
+                {profile.username || profile.fullName || 'Portal User'}
               </span>
               <button
                 type="button"
