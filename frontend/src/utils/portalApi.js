@@ -390,3 +390,43 @@ export async function getReportRevisions(reportId) {
   const body = await parseResponse(response, path)
   return Array.isArray(body?.results) ? body.results : []
 }
+
+export async function getEquipmentCertificates(equipmentId) {
+  const path = '/portal/equipment/' + encodeURIComponent(String(equipmentId)) + '/certificates/'
+  const response = await authFetch(path)
+  const body = await parseResponse(response, path)
+  return Array.isArray(body?.results) ? body.results : []
+}
+
+export async function uploadEquipmentCertificate(equipmentId, payload) {
+  const path = '/portal/equipment/' + encodeURIComponent(String(equipmentId)) + '/certificates/'
+  const certificateFile = payload?.file
+  
+  if (!certificateFile) {
+    throw new Error('Certificate file is required')
+  }
+
+  const formData = new FormData()
+  formData.set('title', String(payload?.title || ''))
+  formData.set('issue_date', String(payload?.issue_date || ''))
+  formData.set('expiry_date', String(payload?.expiry_date || ''))
+  if (payload?.report_id) {
+    formData.set('report', String(payload.report_id))
+  }
+  formData.set('file', certificateFile)
+
+  const response = await authFetch(path, {
+    method: 'POST',
+    body: formData,
+  })
+  return parseResponse(response, path)
+}
+
+export async function downloadCertificate(certificateId) {
+  const path = '/portal/certificates/' + encodeURIComponent(String(certificateId)) + '/download/'
+  const response = await authFetch(path)
+  if (!response.ok) {
+    throw new Error('Failed to download certificate')
+  }
+  return response.blob()
+}
