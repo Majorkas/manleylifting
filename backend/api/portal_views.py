@@ -34,6 +34,7 @@ from .serializers import (
     PortalCustomerCreateSerializer,
     ReportRevisionSerializer,
     UserProfileAssignmentSerializer,
+    UserProfileAssignmentCreateSerializer,
     UserProfileAssignmentUpdateSerializer,
 )
 
@@ -68,7 +69,7 @@ def _visible_companies(user):
         return Company.objects.filter(is_active=True)
 
     profile = _profile_for_user(user)
-    if profile.role == UserProfile.ROLE_OWNER:
+    if profile.role in {UserProfile.ROLE_OWNER, UserProfile.ROLE_OFFICE_STAFF}:
         return Company.objects.filter(is_active=True)
 
     return profile.allowed_companies.filter(is_active=True)
@@ -81,13 +82,28 @@ def _visible_company_ids(user):
 def _is_staff_or_owner(user):
     if user.is_superuser:
         return True
-    return _profile_for_user(user).role in {UserProfile.ROLE_STAFF, UserProfile.ROLE_OWNER}
+    return _profile_for_user(user).role in {
+        UserProfile.ROLE_ENGINEER,
+        UserProfile.ROLE_STAFF,
+        UserProfile.ROLE_OFFICE_STAFF,
+        UserProfile.ROLE_OWNER,
+    }
+
+
+def _is_engineer(user):
+    if user.is_superuser:
+        return False
+    return _profile_for_user(user).role in {UserProfile.ROLE_ENGINEER, UserProfile.ROLE_STAFF}
+
+
+def _is_employee_role(role):
+    return role in {UserProfile.ROLE_ENGINEER, UserProfile.ROLE_STAFF, UserProfile.ROLE_OFFICE_STAFF}
 
 
 def _is_owner(user):
     if user.is_superuser:
         return True
-    return _profile_for_user(user).role == UserProfile.ROLE_OWNER
+    return _profile_for_user(user).role in {UserProfile.ROLE_OWNER, UserProfile.ROLE_OFFICE_STAFF}
 
 
 def _selected_company(user, company_id):
@@ -446,7 +462,17 @@ def portal_equipment_reports(request, equipment_id):
 
     if request.method == "GET":
         reports = equipment.reports.select_related("submitted_by", "edited_by").all()
-        if not _is_staff_or_owner(request.user):
+        if _is_owner(request.user):
+            pass
+        elif _is_engineer(request.user):
+            reports = reports.filter(
+                Q(status=InspectionReport.STATUS_APPROVED)
+                | Q(
+                    submitted_by=request.user,
+                    status__in=[InspectionReport.STATUS_DRAFT, InspectionReport.STATUS_SUBMITTED],
+                )
+            )
+        else:
             reports = reports.filter(status=InspectionReport.STATUS_APPROVED)
         serializer = InspectionReportSerializer(reports, many=True)
         return Response({"results": serializer.data})
@@ -550,7 +576,7 @@ def portal_report_owner_edit(request, report_id):
         return Response(InspectionReportSerializer(report).data)
 
     profile = _profile_for_user(request.user)
-    if profile.role != UserProfile.ROLE_STAFF:
+    if profile.role not in {UserProfile.ROLE_ENGINEER, UserProfile.ROLE_STAFF}:
         return Response({"detail": "Only staff or owner can edit reports"}, status=status.HTTP_403_FORBIDDEN)
 
     if report.status != InspectionReport.STATUS_DRAFT:
@@ -680,16 +706,85 @@ def portal_certificate_download(request, certificate_id):
     return response
 
 
-@api_view(["GET", "PATCH"])
+@api_view(["GET", "POST", "PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
 def portal_staff_assignments(request):
     if not _is_owner(request.user):
         return Response({"detail": "Only owner can manage assignments"}, status=status.HTTP_403_FORBIDDEN)
 
     if request.method == "GET":
-        profiles = UserProfile.objects.select_related("user").prefetch_related("allowed_companies")
+        profiles = (
+            UserProfile.objects.select_related("user")
+            .prefetch_related("allowed_companies")
+            .filter(role__in=[UserProfile.ROLE_ENGINEER, UserProfile.ROLE_STAFF, UserProfile.ROLE_OFFICE_STAFF])
+        )
         serializer = UserProfileAssignmentSerializer(profiles, many=True)
         return Response({"results": serializer.data})
+
+    if request.method == "POST":
+        serializer = UserProfileAssignmentCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+
+        user_model = get_user_model()
+        username = payload["username"].strip().lower()
+        email = payload["email"].strip().lower()
+
+        if user_model.objects.filter(username__iexact=username).exists():
+            return Response({"detail": "username already exists"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if user_model.objects.filter(email__iexact=email).exists():
+            return Response({"detail": "email already exists"}, status=status.HTTP_400_BAD_REQUEST)
+
+        role = payload.get("role") or UserProfile.ROLE_ENGINEER
+        if not _is_employee_role(role):
+            return Response({"detail": "Employee role must be engineer or office staff"}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            created_user = user_model.objects.create_user(
+                username=username,
+                email=email,
+                password=payload["password"],
+                first_name=payload.get("first_name", "").strip(),
+                last_name=payload.get("last_name", "").strip(),
+                is_active=True,
+            )
+
+            profile, _ = UserProfile.objects.get_or_create(
+                user=created_user,
+                defaults={"role": role},
+            )
+            profile.role = role
+            profile.save(update_fields=["role", "updated_at"])
+
+            visible_ids = _visible_company_ids(request.user)
+            requested_company_ids = payload.get("allowed_company_ids", [])
+            allowed_ids = list(set(requested_company_ids) & set(visible_ids))
+            companies = Company.objects.filter(id__in=allowed_ids, is_active=True)
+            profile.allowed_companies.set(companies)
+
+        output = UserProfileAssignmentSerializer(profile)
+        return Response(output.data, status=status.HTTP_201_CREATED)
+
+    if request.method == "DELETE":
+        user_id_raw = request.data.get("user_id")
+        try:
+            user_id = int(user_id_raw)
+        except (TypeError, ValueError):
+            return Response({"detail": "user_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if request.user.id == user_id:
+            return Response({"detail": "You cannot remove your own account"}, status=status.HTTP_400_BAD_REQUEST)
+
+        profile = UserProfile.objects.select_related("user").filter(user_id=user_id).first()
+        if not profile:
+            return Response({"detail": "User profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        if not _is_employee_role(profile.role):
+            return Response({"detail": "Only employee accounts can be removed"}, status=status.HTTP_400_BAD_REQUEST)
+
+        profile.user.delete()
+        return Response({"ok": True})
 
     serializer = UserProfileAssignmentUpdateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -699,7 +794,15 @@ def portal_staff_assignments(request):
     if not profile:
         return Response({"detail": "User profile not found"}, status=status.HTTP_404_NOT_FOUND)
 
+    if not _is_employee_role(profile.role):
+        return Response({"detail": "Only employee accounts can be updated"}, status=status.HTTP_400_BAD_REQUEST)
+
     if "role" in payload:
+        if not _is_employee_role(payload["role"]):
+            return Response(
+                {"detail": "Employee role must be engineer or office staff"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         profile.role = payload["role"]
         profile.save(update_fields=["role", "updated_at"])
 

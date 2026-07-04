@@ -294,6 +294,24 @@ class PortalRBACTests(TestCase):
         self.assertEqual(results[0]["company_name"], self.company_b.name)
         self.assertEqual(results[1]["equipment_name"], self.equipment_a.name)
 
+    def test_office_staff_has_owner_pending_approval_access(self):
+        office_user = get_user_model().objects.create_user(username="office_user", password="testpass123")
+        office_profile = UserProfile.objects.create(user=office_user, role=UserProfile.ROLE_OFFICE_STAFF)
+        office_profile.allowed_companies.add(self.company_a, self.company_b)
+
+        InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Submitted A",
+            summary="Needs approval",
+            report_date="2026-06-20",
+            status=InspectionReport.STATUS_SUBMITTED,
+        )
+
+        self.client.force_authenticate(user=office_user)
+        response = self.client.get("/api/portal/pending-report-approvals/")
+        self.assertEqual(response.status_code, 200)
+
     def test_customer_only_sees_allowed_company_equipment(self):
         self.client.force_authenticate(user=self.customer_user)
         response = self.client.get("/api/portal/equipment/")
@@ -334,6 +352,58 @@ class PortalRBACTests(TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["id"], approved.id)
         self.assertEqual(results[0]["status"], InspectionReport.STATUS_APPROVED)
+
+    def test_staff_only_sees_own_draft_and_submitted_reports(self):
+        other_staff = get_user_model().objects.create_user(username="staff_visibility", password="testpass123")
+        other_profile = UserProfile.objects.create(user=other_staff, role=UserProfile.ROLE_STAFF)
+        other_profile.allowed_companies.add(self.company_a)
+
+        own_draft = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Own draft",
+            report_date="2026-06-10",
+            status=InspectionReport.STATUS_DRAFT,
+        )
+        own_submitted = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Own submitted",
+            report_date="2026-06-11",
+            status=InspectionReport.STATUS_SUBMITTED,
+        )
+        other_draft = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=other_staff,
+            title="Other draft",
+            report_date="2026-06-12",
+            status=InspectionReport.STATUS_DRAFT,
+        )
+        other_submitted = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=other_staff,
+            title="Other submitted",
+            report_date="2026-06-13",
+            status=InspectionReport.STATUS_SUBMITTED,
+        )
+        approved = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=other_staff,
+            title="Approved",
+            report_date="2026-06-14",
+            status=InspectionReport.STATUS_APPROVED,
+        )
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.get(f"/api/portal/equipment/{self.equipment_a.id}/reports/")
+        self.assertEqual(response.status_code, 200)
+
+        ids = {item["id"] for item in response.json()["results"]}
+        self.assertIn(own_draft.id, ids)
+        self.assertIn(own_submitted.id, ids)
+        self.assertIn(approved.id, ids)
+        self.assertNotIn(other_draft.id, ids)
+        self.assertNotIn(other_submitted.id, ids)
 
     @patch("api.portal_views.cloudinary_uploader.upload")
     @patch.dict(
@@ -642,6 +712,59 @@ class PortalRBACTests(TestCase):
 
         updated_profile = UserProfile.objects.get(user=self.staff_user)
         self.assertEqual(list(updated_profile.allowed_companies.values_list("id", flat=True)), [self.company_b.id])
+
+    def test_owner_can_create_employee_assignment(self):
+        self.client.force_authenticate(user=self.owner_user)
+
+        create_response = self.client.post(
+            "/api/portal/staff-assignments/",
+            data={
+                "username": "ops_staff",
+                "email": "ops_staff@example.com",
+                "password": "StrongPass!234",
+                "first_name": "Ops",
+                "last_name": "Staff",
+                "allowed_company_ids": [self.company_a.id, self.company_b.id],
+            },
+            format="json",
+        )
+
+        self.assertEqual(create_response.status_code, 201)
+        body = create_response.json()
+        self.assertEqual(body["username"], "ops_staff")
+        self.assertEqual(body["role"], UserProfile.ROLE_ENGINEER)
+
+        created_user = get_user_model().objects.get(username="ops_staff")
+        profile = UserProfile.objects.get(user=created_user)
+        self.assertEqual(profile.role, UserProfile.ROLE_ENGINEER)
+        self.assertCountEqual(
+            list(profile.allowed_companies.values_list("id", flat=True)),
+            [self.company_a.id, self.company_b.id],
+        )
+
+    def test_owner_can_delete_employee_assignment(self):
+        self.client.force_authenticate(user=self.owner_user)
+
+        delete_response = self.client.delete(
+            "/api/portal/staff-assignments/",
+            data={"user_id": self.staff_user.id},
+            format="json",
+        )
+        self.assertEqual(delete_response.status_code, 200)
+        self.assertFalse(get_user_model().objects.filter(id=self.staff_user.id).exists())
+
+    def test_owner_cannot_promote_assignment_to_owner(self):
+        self.client.force_authenticate(user=self.owner_user)
+
+        update_response = self.client.patch(
+            "/api/portal/staff-assignments/",
+            data={
+                "user_id": self.staff_user.id,
+                "role": UserProfile.ROLE_OWNER,
+            },
+            format="json",
+        )
+        self.assertEqual(update_response.status_code, 400)
 
     def test_staff_can_create_equipment_for_allowed_company(self):
         self.client.force_authenticate(user=self.staff_user)

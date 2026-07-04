@@ -155,11 +155,16 @@ class Company(models.Model):
 
 class UserProfile(models.Model):
     ROLE_CUSTOMER = "customer"
+    ROLE_ENGINEER = "engineer"
+    ROLE_OFFICE_STAFF = "office_staff"
+    # Legacy value retained to avoid breaking existing rows.
     ROLE_STAFF = "staff"
     ROLE_OWNER = "owner"
 
     ROLE_CHOICES = [
         (ROLE_CUSTOMER, "Customer"),
+        (ROLE_ENGINEER, "Engineer"),
+        (ROLE_OFFICE_STAFF, "Office Staff"),
         (ROLE_STAFF, "Staff"),
         (ROLE_OWNER, "Owner"),
     ]

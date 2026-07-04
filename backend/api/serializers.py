@@ -237,6 +237,19 @@ class UserProfileAssignmentUpdateSerializer(serializers.Serializer):
     )
 
 
+class UserProfileAssignmentCreateSerializer(serializers.Serializer):
+    username = serializers.CharField(max_length=150)
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, min_length=8, max_length=128)
+    first_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    last_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    role = serializers.ChoiceField(choices=UserProfile.ROLE_CHOICES, required=False)
+    allowed_company_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+    )
+
+
 class PortalCustomerCreateSerializer(serializers.Serializer):
     company_name = serializers.CharField(max_length=200)
     company_contact_email = serializers.EmailField(required=False, allow_blank=True)
