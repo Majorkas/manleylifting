@@ -241,6 +241,7 @@ export default function PortalDashboardPage() {
   const [savingStaffUserId, setSavingStaffUserId] = useState(0)
   const [removingStaffUserId, setRemovingStaffUserId] = useState(0)
   const [creatingStaffAssignment, setCreatingStaffAssignment] = useState(false)
+  const [confirmRemoveUserId, setConfirmRemoveUserId] = useState(0)
   const [showCreateEquipmentForm, setShowCreateEquipmentForm] = useState(false)
   const [creatingEquipment, setCreatingEquipment] = useState(false)
   const [equipmentCreateError, setEquipmentCreateError] = useState('')
@@ -395,6 +396,15 @@ export default function PortalDashboardPage() {
     mediaQuery.addListener(updateViewport)
     return () => mediaQuery.removeListener(updateViewport)
   }, [])
+
+  // Handle session expiry and redirect to login with message
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      navigate('/portal/login', { state: { sessionExpired: true } })
+    }
+    window.addEventListener('portalSessionExpired', handleSessionExpired)
+    return () => window.removeEventListener('portalSessionExpired', handleSessionExpired)
+  }, [navigate])
 
   useEffect(() => {
     if (equipmentPage > equipmentTotalPages) {
@@ -1477,14 +1487,35 @@ export default function PortalDashboardPage() {
                     </div>
 
                     <div className="mt-4 flex flex-wrap justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveEmployeeAssignment(assignment)}
-                        disabled={removingStaffUserId === Number(assignment.user_id)}
-                        className="rounded-md border border-rose-300 bg-rose-600 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {removingStaffUserId === Number(assignment.user_id) ? 'Removing...' : 'Remove Employee'}
-                      </button>
+                      {confirmRemoveUserId === Number(assignment.user_id) ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveEmployeeAssignment(assignment)}
+                            disabled={removingStaffUserId === Number(assignment.user_id)}
+                            className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {removingStaffUserId === Number(assignment.user_id) ? 'Removing...' : 'Confirm Remove'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmRemoveUserId(0)}
+                            disabled={removingStaffUserId === Number(assignment.user_id)}
+                            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmRemoveUserId(Number(assignment.user_id))}
+                          disabled={removingStaffUserId === Number(assignment.user_id)}
+                          className="rounded-md border border-rose-300 bg-rose-600 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Remove Employee
+                        </button>
+                      )}
                     </div>
                         </>
                     )

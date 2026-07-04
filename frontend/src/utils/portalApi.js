@@ -60,6 +60,10 @@ export function clearPortalSession() {
   if (typeof window === 'undefined') return
   window.localStorage.removeItem(ACCESS_TOKEN_KEY)
   window.localStorage.removeItem(REFRESH_TOKEN_KEY)
+  // Signal session expiry to other parts of the app
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('portalSessionExpired'))
+  }
 }
 
 async function refreshAccessToken() {
@@ -121,7 +125,7 @@ async function authFetch(path, options = {}) {
       headers: retryHeaders,
       retry: false,
     })
-  } catch {
+  } catch (error) {
     clearPortalSession()
     return response
   }

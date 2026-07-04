@@ -1,10 +1,11 @@
-import { useState } from 'react'
-import { Link, Navigate, useNavigate } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { Link, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import PortalLayout from '../components/PortalLayout'
 import { hasPortalSession, portalLogin } from '../utils/portalApi'
 
 export default function PortalLoginPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
@@ -13,6 +14,13 @@ export default function PortalLoginPage() {
   if (hasPortalSession()) {
     return <Navigate to="/portal" replace />
   }
+
+  // Show session expiry message if redirected from dashboard
+  useEffect(() => {
+    if (location.state?.sessionExpired) {
+      setErrorMessage('Your session has expired. Please sign in again.')
+    }
+  }, [location.state?.sessionExpired])
 
   async function onSubmit(event) {
     event.preventDefault()
@@ -57,7 +65,11 @@ export default function PortalLoginPage() {
             <h2 className="text-2xl font-extrabold text-[#123A7A]">Portal Login</h2>
 
             {errorMessage && (
-              <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              <div className={`mt-4 rounded-lg border px-4 py-3 text-sm ${
+                errorMessage.includes('expired')
+                  ? 'border-amber-200 bg-amber-50 text-amber-700'
+                  : 'border-red-200 bg-red-50 text-red-700'
+              }`}>
                 {errorMessage}
               </div>
             )}

@@ -223,6 +223,12 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     ),
+    "DEFAULT_THROTTLE_CLASSES": (
+        "rest_framework.throttling.SimpleRateThrottle",
+    ),
+    "DEFAULT_THROTTLE_RATES": {
+        "auth.token": "5/minute",
+    },
 }
 
 AUTHENTICATION_BACKENDS = (

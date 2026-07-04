@@ -45,6 +45,35 @@ REPORT_IMAGE_ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 REPORT_IMAGE_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 
 
+def _get_pagination_params(request, default_page_size=50):
+    """Extract and validate pagination parameters from request."""
+    try:
+        page = int(request.GET.get('page', 1))
+        page_size = int(request.GET.get('page_size', default_page_size))
+    except (TypeError, ValueError):
+        page = 1
+        page_size = default_page_size
+
+    page = max(1, page)
+    page_size = max(1, min(page_size, 500))  # Cap at 500 per page
+    return page, page_size
+
+
+def _paginate_queryset(queryset, page, page_size):
+    """Apply pagination to a queryset and return paginated results."""
+    total_count = queryset.count()
+    total_pages = (total_count + page_size - 1) // page_size
+    start = (page - 1) * page_size
+    end = start + page_size
+    return {
+        'results': list(queryset[start:end]),
+        'total_count': total_count,
+        'page': page,
+        'page_size': page_size,
+        'total_pages': total_pages,
+    }
+
+
 def _cloudinary_is_configured():
     return bool(
         os.getenv("CLOUDINARY_URL", "").strip()
@@ -287,8 +316,16 @@ def portal_company_header(request):
 @permission_classes([IsAuthenticated])
 def portal_companies(request):
     companies = _visible_companies(request.user).order_by("name")
-    serializer = CompanyHeaderSerializer(companies, many=True, context={"request": request})
-    return Response({"results": serializer.data})
+    page, page_size = _get_pagination_params(request)
+    paginated = _paginate_queryset(companies, page, page_size)
+    serializer = CompanyHeaderSerializer(paginated['results'], many=True, context={"request": request})
+    return Response({
+        "results": serializer.data,
+        "total_count": paginated['total_count'],
+        "page": paginated['page'],
+        "page_size": paginated['page_size'],
+        "total_pages": paginated['total_pages'],
+    })
 
 
 @api_view(["POST"])
@@ -409,11 +446,17 @@ def portal_equipment_list(request):
             | Q(location__icontains=search)
         )
 
-    serializer = EquipmentSerializer(
-        equipment.select_related("company").order_by("company__name", "name")[:500],
-        many=True,
-    )
-    return Response({"results": serializer.data})
+    equipment = equipment.select_related("company").order_by("company__name", "name")
+    page, page_size = _get_pagination_params(request)
+    paginated = _paginate_queryset(equipment, page, page_size)
+    serializer = EquipmentSerializer(paginated['results'], many=True)
+    return Response({
+        "results": serializer.data,
+        "total_count": paginated['total_count'],
+        "page": paginated['page'],
+        "page_size": paginated['page_size'],
+        "total_pages": paginated['total_pages'],
+    })
 
 
 @api_view(["PATCH"])
@@ -474,8 +517,18 @@ def portal_equipment_reports(request, equipment_id):
             )
         else:
             reports = reports.filter(status=InspectionReport.STATUS_APPROVED)
-        serializer = InspectionReportSerializer(reports, many=True)
-        return Response({"results": serializer.data})
+        
+        reports = reports.order_by("-updated_at", "-report_date", "-id")
+        page, page_size = _get_pagination_params(request)
+        paginated = _paginate_queryset(reports, page, page_size)
+        serializer = InspectionReportSerializer(paginated['results'], many=True)
+        return Response({
+            "results": serializer.data,
+            "total_count": paginated['total_count'],
+            "page": paginated['page'],
+            "page_size": paginated['page_size'],
+            "total_pages": paginated['total_pages'],
+        })
 
     if not _is_staff_or_owner(request.user):
         return Response({"detail": "Insufficient permissions"}, status=status.HTTP_403_FORBIDDEN)
@@ -516,8 +569,16 @@ def portal_pending_report_approvals(request):
         .filter(status=InspectionReport.STATUS_SUBMITTED, equipment__company_id__in=_visible_company_ids(request.user))
         .order_by("-updated_at", "-report_date", "-id")
     )
-    serializer = InspectionReportSerializer(reports, many=True)
-    return Response({"results": serializer.data})
+    page, page_size = _get_pagination_params(request)
+    paginated = _paginate_queryset(reports, page, page_size)
+    serializer = InspectionReportSerializer(paginated['results'], many=True)
+    return Response({
+        "results": serializer.data,
+        "total_count": paginated['total_count'],
+        "page": paginated['page'],
+        "page_size": paginated['page_size'],
+        "total_pages": paginated['total_pages'],
+    })
 
 
 @api_view(["PATCH"])
@@ -717,9 +778,18 @@ def portal_staff_assignments(request):
             UserProfile.objects.select_related("user")
             .prefetch_related("allowed_companies")
             .filter(role__in=[UserProfile.ROLE_ENGINEER, UserProfile.ROLE_STAFF, UserProfile.ROLE_OFFICE_STAFF])
+            .order_by("-id")
         )
-        serializer = UserProfileAssignmentSerializer(profiles, many=True)
-        return Response({"results": serializer.data})
+        page, page_size = _get_pagination_params(request)
+        paginated = _paginate_queryset(profiles, page, page_size)
+        serializer = UserProfileAssignmentSerializer(paginated['results'], many=True)
+        return Response({
+            "results": serializer.data,
+            "total_count": paginated['total_count'],
+            "page": paginated['page'],
+            "page_size": paginated['page_size'],
+            "total_pages": paginated['total_pages'],
+        })
 
     if request.method == "POST":
         serializer = UserProfileAssignmentCreateSerializer(data=request.data)
@@ -783,7 +853,9 @@ def portal_staff_assignments(request):
         if not _is_employee_role(profile.role):
             return Response({"detail": "Only employee accounts can be removed"}, status=status.HTTP_400_BAD_REQUEST)
 
-        profile.user.delete()
+        # Soft-delete: deactivate user instead of hard-delete to preserve report attribution
+        profile.user.is_active = False
+        profile.user.save(update_fields=["is_active", "updated_at"])
         return Response({"ok": True})
 
     serializer = UserProfileAssignmentUpdateSerializer(data=request.data)
