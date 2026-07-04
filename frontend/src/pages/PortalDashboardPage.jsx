@@ -204,6 +204,7 @@ export default function PortalDashboardPage() {
   const [loggingOut, setLoggingOut] = useState(false)
   const [selectedEquipment, setSelectedEquipment] = useState(null)
   const [reports, setReports] = useState([])
+  const [reportYearFilter, setReportYearFilter] = useState('')
   const [reportsLoading, setReportsLoading] = useState(false)
   const [reportError, setReportError] = useState('')
   const [creatingReport, setCreatingReport] = useState(false)
@@ -278,6 +279,22 @@ export default function PortalDashboardPage() {
     () => ['owner', 'office_staff', 'staff', 'engineer'].includes(profile?.role),
     [profile?.role],
   )
+
+  const availableReportYears = useMemo(() => {
+    const years = new Set()
+    reports.forEach((report) => {
+      if (report.report_date) {
+        const year = report.report_date.split('-')[0]
+        years.add(year)
+      }
+    })
+    return Array.from(years).sort().reverse()
+  }, [reports])
+
+  const filteredReports = useMemo(() => {
+    if (!reportYearFilter) return reports
+    return reports.filter((report) => report.report_date?.startsWith(reportYearFilter))
+  }, [reports, reportYearFilter])
   const showsCustomerPicker = canEditReports && !selectedCompanyId
   const isOwner = profile?.role === 'owner' || profile?.role === 'office_staff'
   const isStaff = profile?.role === 'staff' || profile?.role === 'engineer'
@@ -2234,14 +2251,31 @@ export default function PortalDashboardPage() {
 
 
             <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
+              <div className="bg-slate-50 px-4 py-3">
+                <label className="flex items-center gap-3 text-sm font-semibold text-slate-700">
+                  Filter by Year:
+                  <select
+                    value={reportYearFilter}
+                    onChange={(event) => setReportYearFilter(event.target.value)}
+                    className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900"
+                  >
+                    <option value="">All Years ({reports.length})</option>
+                    {availableReportYears.map((year) => (
+                      <option key={year} value={year}>
+                        {year} ({reports.filter((r) => r.report_date?.startsWith(year)).length})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
               {isMobileViewport && (
                 <div className="space-y-3 p-3">
                 {reportsLoading ? (
                   <p className="text-sm text-slate-500">Loading reports...</p>
-                ) : reports.length === 0 ? (
+                ) : filteredReports.length === 0 ? (
                   <p className="text-sm text-slate-500">No reports have been submitted for this equipment.</p>
                 ) : (
-                  reports.map((report) => (
+                  filteredReports.map((report) => (
                     <article key={report.id} className="rounded-lg border border-slate-200 bg-white p-3">
                       {(() => {
                         const isExpandedReportCard = String(expandedReportCardId) === String(report.id)
@@ -2326,14 +2360,14 @@ export default function PortalDashboardPage() {
                           Loading reports...
                         </td>
                       </tr>
-                    ) : reports.length === 0 ? (
+                    ) : filteredReports.length === 0 ? (
                       <tr>
                         <td className="px-4 py-4 text-slate-500" colSpan={6}>
                           No reports have been submitted for this equipment.
                         </td>
                       </tr>
                     ) : (
-                      reports.map((report) => {
+                      filteredReports.map((report) => {
                         const statusBadge = getReportStatusBadge(report.status)
                         return (
                           <tr key={report.id} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
