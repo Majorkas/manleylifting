@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import PortalLayout from '../components/PortalLayout'
 import {
+  createStaffAssignment,
+  deleteStaffAssignment,
   createPortalCustomer,
   createPortalEquipment,
   clearPortalSession,
@@ -13,8 +15,10 @@ import {
   getPortalMe,
   getPendingReportApprovals,
   getReportRevisions,
+  getStaffAssignments,
   hasPortalSession,
   portalLogout,
+  updateStaffAssignment,
   updateReport,
   updatePortalEquipment,
 } from '../utils/portalApi'
@@ -142,6 +146,49 @@ function buildEmptyEquipmentForm() {
   }
 }
 
+function buildEmptyEmployeeForm() {
+  return {
+    email: '',
+    password: '',
+    first_name: '',
+    last_name: '',
+    role: 'engineer',
+    allowed_company_ids: [],
+  }
+}
+
+function buildEmployeeUsername(firstName, lastName) {
+  const first = String(firstName || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '')
+  const last = String(lastName || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '')
+  if (!first || !last) return ''
+
+  return `${first.slice(0, 1)}_${last.slice(0, 4)}`
+}
+
+function buildUniqueEmployeeUsername(baseUsername, existingUsernames) {
+  const base = String(baseUsername || '').trim().toLowerCase()
+  if (!base) return ''
+
+  const taken = new Set(
+    Array.isArray(existingUsernames)
+      ? existingUsernames
+          .map((value) => String(value || '').trim().toLowerCase())
+          .filter(Boolean)
+      : [],
+  )
+
+  if (!taken.has(base)) return base
+
+  let suffix = 2
+  let candidate = `${base}${suffix}`
+  while (taken.has(candidate)) {
+    suffix += 1
+    candidate = `${base}${suffix}`
+  }
+
+  return candidate
+}
+
 export default function PortalDashboardPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -179,6 +226,21 @@ export default function PortalDashboardPage() {
   const [customerCreateError, setCustomerCreateError] = useState('')
   const [customerCreateSuccess, setCustomerCreateSuccess] = useState('')
   const [showCreateCustomerForm, setShowCreateCustomerForm] = useState(false)
+  const [customerSearchInput, setCustomerSearchInput] = useState('')
+  const [customerPage, setCustomerPage] = useState(1)
+  const [showCreateEmployeeForm, setShowCreateEmployeeForm] = useState(false)
+  const [employeeForm, setEmployeeForm] = useState(buildEmptyEmployeeForm())
+  const [staffAssignments, setStaffAssignments] = useState([])
+  const [staffAssignmentsLoading, setStaffAssignmentsLoading] = useState(false)
+  const [staffAssignmentsError, setStaffAssignmentsError] = useState('')
+  const [staffAssignmentsSuccess, setStaffAssignmentsSuccess] = useState('')
+  const [employeeSearchInput, setEmployeeSearchInput] = useState('')
+  const [employeePage, setEmployeePage] = useState(1)
+  const [companyPickerUserId, setCompanyPickerUserId] = useState('')
+  const [companyPickerSearchInput, setCompanyPickerSearchInput] = useState('')
+  const [savingStaffUserId, setSavingStaffUserId] = useState(0)
+  const [removingStaffUserId, setRemovingStaffUserId] = useState(0)
+  const [creatingStaffAssignment, setCreatingStaffAssignment] = useState(false)
   const [showCreateEquipmentForm, setShowCreateEquipmentForm] = useState(false)
   const [creatingEquipment, setCreatingEquipment] = useState(false)
   const [equipmentCreateError, setEquipmentCreateError] = useState('')
@@ -193,16 +255,31 @@ export default function PortalDashboardPage() {
   const [expandedEquipmentCardId, setExpandedEquipmentCardId] = useState('')
   const [expandedReportCardId, setExpandedReportCardId] = useState('')
   const previousSelectedEquipmentIdRef = useRef('')
+  const employeeControlsSectionRef = useRef(null)
+  const generatedEmployeeBaseUsername = useMemo(
+    () => buildEmployeeUsername(employeeForm.first_name, employeeForm.last_name),
+    [employeeForm.first_name, employeeForm.last_name],
+  )
+  const existingEmployeeUsernames = useMemo(
+    () => staffAssignments.map((assignment) => assignment.username),
+    [staffAssignments],
+  )
+  const generatedEmployeeUsername = useMemo(
+    () => buildUniqueEmployeeUsername(generatedEmployeeBaseUsername, existingEmployeeUsernames),
+    [generatedEmployeeBaseUsername, existingEmployeeUsernames],
+  )
   const selectedCompanyId = searchParams.get('companyId') || ''
   const equipmentPageSize = 10
+  const customerPageSize = 5
+  const employeePageSize = 5
 
   const canEditReports = useMemo(
-    () => profile?.role === 'owner' || profile?.role === 'staff',
+    () => ['owner', 'office_staff', 'staff', 'engineer'].includes(profile?.role),
     [profile?.role],
   )
   const showsCustomerPicker = canEditReports && !selectedCompanyId
-  const isOwner = profile?.role === 'owner'
-  const isStaff = profile?.role === 'staff'
+  const isOwner = profile?.role === 'owner' || profile?.role === 'office_staff'
+  const isStaff = profile?.role === 'staff' || profile?.role === 'engineer'
   const activeSelectedEquipment = useMemo(() => {
     if (!selectedEquipment) return null
     return equipment.find((item) => String(item.id) === String(selectedEquipment.id)) || null
@@ -247,6 +324,45 @@ export default function PortalDashboardPage() {
     () => calculateNextInspectionDue(equipmentForm.last_inspected_at, equipmentForm.inspection_interval_days),
     [equipmentForm.inspection_interval_days, equipmentForm.last_inspected_at],
   )
+  const normalizedCustomerSearch = customerSearchInput.trim().toLowerCase()
+  const filteredCustomers = useMemo(() => {
+    if (!normalizedCustomerSearch) return companies
+    return companies.filter((item) => {
+      const haystack = [item.name, item.contact_email, item.contact_phone]
+        .map((value) => String(value || '').toLowerCase())
+        .join(' ')
+      return haystack.includes(normalizedCustomerSearch)
+    })
+  }, [companies, normalizedCustomerSearch])
+  const customerTotalPages = Math.max(1, Math.ceil(filteredCustomers.length / customerPageSize))
+  const customerStartIndex = (customerPage - 1) * customerPageSize
+  const visibleCustomers = filteredCustomers.slice(customerStartIndex, customerStartIndex + customerPageSize)
+
+  const normalizedEmployeeSearch = employeeSearchInput.trim().toLowerCase()
+  const filteredStaffAssignments = useMemo(() => {
+    if (!normalizedEmployeeSearch) return staffAssignments
+    return staffAssignments.filter((assignment) => {
+      const haystack = [assignment.username, assignment.email, assignment.full_name]
+        .map((value) => String(value || '').toLowerCase())
+        .join(' ')
+      return haystack.includes(normalizedEmployeeSearch)
+    })
+  }, [staffAssignments, normalizedEmployeeSearch])
+  const employeeTotalPages = Math.max(1, Math.ceil(filteredStaffAssignments.length / employeePageSize))
+  const employeeStartIndex = (employeePage - 1) * employeePageSize
+  const visibleStaffAssignments = filteredStaffAssignments.slice(
+    employeeStartIndex,
+    employeeStartIndex + employeePageSize,
+  )
+  const activeCompanyPickerAssignment = useMemo(
+    () => staffAssignments.find((item) => String(item.user_id) === String(companyPickerUserId)) || null,
+    [staffAssignments, companyPickerUserId],
+  )
+  const filteredCompanyPickerCompanies = useMemo(() => {
+    const query = companyPickerSearchInput.trim().toLowerCase()
+    if (!query) return companies
+    return companies.filter((item) => String(item.name || '').toLowerCase().includes(query))
+  }, [companies, companyPickerSearchInput])
   const isEditingReport = Boolean(reportForm.reportId)
   const isAnyModalOpen = Boolean(
     viewedReport ||
@@ -254,6 +370,8 @@ export default function PortalDashboardPage() {
       showRevisionsModal ||
       showCreateReportForm ||
       showCreateCustomerForm ||
+      showCreateEmployeeForm ||
+      companyPickerUserId ||
       showCreateEquipmentForm ||
       showDecommissionConfirm,
   )
@@ -283,6 +401,26 @@ export default function PortalDashboardPage() {
       setEquipmentPage(equipmentTotalPages)
     }
   }, [equipmentPage, equipmentTotalPages])
+
+  useEffect(() => {
+    if (customerPage > customerTotalPages) {
+      setCustomerPage(customerTotalPages)
+    }
+  }, [customerPage, customerTotalPages])
+
+  useEffect(() => {
+    if (employeePage > employeeTotalPages) {
+      setEmployeePage(employeeTotalPages)
+    }
+  }, [employeePage, employeeTotalPages])
+
+  useEffect(() => {
+    setCustomerPage(1)
+  }, [customerSearchInput, showsCustomerPicker])
+
+  useEffect(() => {
+    setEmployeePage(1)
+  }, [employeeSearchInput, showsCustomerPicker])
 
   useEffect(() => {
     setExpandedEquipmentCardId('')
@@ -376,7 +514,11 @@ export default function PortalDashboardPage() {
 
   useEffect(() => {
     const isAnyCreateModalOpen = Boolean(
-      showCreateCustomerForm || showCreateEquipmentForm || showCreateReportForm
+      showCreateCustomerForm ||
+        showCreateEmployeeForm ||
+        companyPickerUserId ||
+        showCreateEquipmentForm ||
+        showCreateReportForm
     )
     if (!isAnyCreateModalOpen) return
 
@@ -395,15 +537,30 @@ export default function PortalDashboardPage() {
       if (showCreateCustomerForm) {
         setShowCreateCustomerForm(false)
       }
+
+      if (showCreateEmployeeForm) {
+        setShowCreateEmployeeForm(false)
+      }
+
+      if (companyPickerUserId) {
+        setCompanyPickerUserId('')
+        setCompanyPickerSearchInput('')
+      }
     }
 
     window.addEventListener('keydown', handleEscapeClose)
     return () => window.removeEventListener('keydown', handleEscapeClose)
-  }, [showCreateCustomerForm, showCreateEquipmentForm, showCreateReportForm])
+  }, [
+    showCreateCustomerForm,
+    showCreateEmployeeForm,
+    companyPickerUserId,
+    showCreateEquipmentForm,
+    showCreateReportForm,
+  ])
 
   async function refreshPendingReportApprovals(force = false) {
     if (!isAuthenticated) return
-    if (!force && profile?.role !== 'owner') return
+    if (!force && !['owner', 'office_staff'].includes(profile?.role)) return
 
     setPendingApprovalsLoading(true)
     setPendingApprovalsError('')
@@ -418,6 +575,25 @@ export default function PortalDashboardPage() {
       setPendingReportApprovals([])
     } finally {
       setPendingApprovalsLoading(false)
+    }
+  }
+
+  async function refreshStaffAssignments(force = false) {
+    if (!isAuthenticated) return
+    if (!force && !['owner', 'office_staff'].includes(profile?.role)) return
+
+    setStaffAssignmentsLoading(true)
+    setStaffAssignmentsError('')
+    try {
+      const assignments = await getStaffAssignments()
+      setStaffAssignments(assignments)
+    } catch (error) {
+      if (Number(error?.status || 0) !== 403) {
+        setStaffAssignmentsError(String(error?.message || 'Unable to load employee assignments.'))
+      }
+      setStaffAssignments([])
+    } finally {
+      setStaffAssignmentsLoading(false)
     }
   }
 
@@ -499,8 +675,8 @@ export default function PortalDashboardPage() {
         if (cancelled) return
 
         setProfile(nextProfile)
-        const isStaffOrOwner = nextProfile.role === 'staff' || nextProfile.role === 'owner'
-        const isOwnerUser = nextProfile.role === 'owner'
+        const isStaffOrOwner = ['staff', 'engineer', 'owner', 'office_staff'].includes(nextProfile.role)
+        const isOwnerUser = ['owner', 'office_staff'].includes(nextProfile.role)
 
         let activeCompanyId = nextProfile.allowedCompanyIds[0] || ''
 
@@ -520,8 +696,10 @@ export default function PortalDashboardPage() {
         }
 
         if (isOwnerUser) {
+          await refreshStaffAssignments(true)
           await refreshPendingReportApprovals(true)
         } else {
+          setStaffAssignments([])
           setPendingReportApprovals([])
         }
 
@@ -673,6 +851,116 @@ export default function PortalDashboardPage() {
       setCustomerCreateError(String(error?.message || 'Unable to create customer account.'))
     } finally {
       setCreatingCustomer(false)
+    }
+  }
+
+  async function handleCreateEmployeeAssignment(event) {
+    event.preventDefault()
+    if (!isOwner || creatingStaffAssignment) return
+
+    const nextBaseUsername = buildEmployeeUsername(employeeForm.first_name, employeeForm.last_name)
+    const nextUsername = buildUniqueEmployeeUsername(nextBaseUsername, existingEmployeeUsernames)
+    if (!nextUsername) {
+      setStaffAssignmentsError('First name and last name are required to generate a username.')
+      return
+    }
+
+    setCreatingStaffAssignment(true)
+    setStaffAssignmentsError('')
+    setStaffAssignmentsSuccess('')
+    try {
+      const created = await createStaffAssignment({
+        ...employeeForm,
+        username: nextUsername,
+      })
+      await refreshStaffAssignments(true)
+      setEmployeeForm(buildEmptyEmployeeForm())
+      setShowCreateEmployeeForm(false)
+      setStaffAssignmentsSuccess(`Created employee ${created.username}.`)
+    } catch (error) {
+      setStaffAssignmentsError(String(error?.message || 'Unable to create employee account.'))
+    } finally {
+      setCreatingStaffAssignment(false)
+    }
+  }
+
+  async function handleSaveEmployeeAssignment(assignment) {
+    if (!assignment?.user_id || savingStaffUserId) return
+    setSavingStaffUserId(Number(assignment.user_id))
+    setStaffAssignmentsError('')
+    setStaffAssignmentsSuccess('')
+    try {
+      await updateStaffAssignment({
+        user_id: assignment.user_id,
+        role: assignment.role,
+        allowed_company_ids: assignment.allowed_company_ids || [],
+      })
+      setStaffAssignmentsSuccess(`Updated permissions for ${assignment.username}.`)
+      await refreshStaffAssignments(true)
+      if (String(companyPickerUserId) === String(assignment.user_id)) {
+        setCompanyPickerUserId('')
+        setCompanyPickerSearchInput('')
+      }
+      window.requestAnimationFrame(() => {
+        employeeControlsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      })
+    } catch (error) {
+      setStaffAssignmentsError(String(error?.message || 'Unable to update employee permissions.'))
+    } finally {
+      setSavingStaffUserId(0)
+    }
+  }
+
+  async function handleEmployeeRoleChange(assignment, nextRole) {
+    if (!assignment?.user_id || savingStaffUserId || removingStaffUserId) return
+
+    const previousRole = assignment.role
+    setStaffAssignments((current) =>
+      current.map((item) =>
+        item.user_id === assignment.user_id
+          ? { ...item, role: nextRole }
+          : item,
+      ),
+    )
+
+    setSavingStaffUserId(Number(assignment.user_id))
+    setStaffAssignmentsError('')
+    setStaffAssignmentsSuccess('')
+    try {
+      await updateStaffAssignment({
+        user_id: assignment.user_id,
+        role: nextRole,
+        allowed_company_ids: assignment.allowed_company_ids || [],
+      })
+      setStaffAssignmentsSuccess(`Updated employee type for ${assignment.username}.`)
+      await refreshStaffAssignments(true)
+    } catch (error) {
+      setStaffAssignments((current) =>
+        current.map((item) =>
+          item.user_id === assignment.user_id
+            ? { ...item, role: previousRole }
+            : item,
+        ),
+      )
+      setStaffAssignmentsError(String(error?.message || 'Unable to update employee type.'))
+    } finally {
+      setSavingStaffUserId(0)
+    }
+  }
+
+  async function handleRemoveEmployeeAssignment(assignment) {
+    if (!assignment?.user_id || removingStaffUserId) return
+    setRemovingStaffUserId(Number(assignment.user_id))
+    setStaffAssignmentsError('')
+    setStaffAssignmentsSuccess('')
+    try {
+      await deleteStaffAssignment(assignment.user_id)
+      setStaffAssignmentsSuccess(`Removed employee ${assignment.username}.`)
+      await refreshStaffAssignments(true)
+    } catch (error) {
+      setStaffAssignmentsError(String(error?.message || 'Unable to remove employee account.'))
+    } finally {
+      setRemovingStaffUserId(0)
     }
   }
 
@@ -939,6 +1227,16 @@ export default function PortalDashboardPage() {
               </span>
             </div>
 
+            <div className="mt-4 w-full max-w-md">
+              <input
+                type="search"
+                value={customerSearchInput}
+                onChange={(event) => setCustomerSearchInput(event.target.value)}
+                placeholder="Search customers by name, email, phone"
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#123A7A]"
+              />
+            </div>
+
             {customerCreateError && (
               <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                 {customerCreateError}
@@ -977,7 +1275,7 @@ export default function PortalDashboardPage() {
                     </button>
                   </article>
                 )}
-                {companies.map((item) => (
+                {visibleCustomers.map((item) => (
                   <article key={item.id} className="rounded-xl border border-slate-200 p-4">
                     <h3 className="text-lg font-bold text-[#123A7A]">{item.name}</h3>
                     <p className="mt-1 text-sm text-slate-600">{item.contact_email || 'No email provided'}</p>
@@ -996,6 +1294,233 @@ export default function PortalDashboardPage() {
                     No customer companies are assigned to this account.
                   </div>
                 )}
+                {companies.length > 0 && filteredCustomers.length === 0 && (
+                  <div className="md:col-span-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                    No customers match your search.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {!loading && filteredCustomers.length > 0 && (
+              <div className="mt-4 flex items-center justify-between gap-3">
+                <p className="text-sm text-slate-600">
+                  Showing {customerStartIndex + 1}-{Math.min(customerStartIndex + customerPageSize, filteredCustomers.length)} of{' '}
+                  {filteredCustomers.length} customers.
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCustomerPage((current) => Math.max(1, current - 1))}
+                    disabled={customerPage === 1}
+                    className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 disabled:opacity-50"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                    Page {customerPage} of {customerTotalPages}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setCustomerPage((current) => Math.min(customerTotalPages, current + 1))}
+                    disabled={customerPage === customerTotalPages}
+                    className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {showsCustomerPicker && isOwner && (
+          <section ref={employeeControlsSectionRef} className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-2xl font-extrabold text-[#123A7A]">Employee Controls</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  Manage employee portal accounts and company access permissions.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setStaffAssignmentsError('')
+                  setStaffAssignmentsSuccess('')
+                  setShowCreateEmployeeForm(true)
+                }}
+                className="rounded-md border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+              >
+                Add Employee
+              </button>
+            </div>
+
+            <div className="mt-4 w-full max-w-md">
+              <input
+                type="search"
+                value={employeeSearchInput}
+                onChange={(event) => setEmployeeSearchInput(event.target.value)}
+                placeholder="Search employees by username, email, name"
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#123A7A]"
+              />
+            </div>
+
+            {staffAssignmentsError && (
+              <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {staffAssignmentsError}
+              </div>
+            )}
+            {staffAssignmentsSuccess && (
+              <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                {staffAssignmentsSuccess}
+              </div>
+            )}
+
+            {staffAssignmentsLoading ? (
+              <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                Loading employee assignments...
+              </div>
+            ) : staffAssignments.length === 0 ? (
+              <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                No employee accounts found yet.
+              </div>
+            ) : filteredStaffAssignments.length === 0 ? (
+              <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
+                No employees match your search.
+              </div>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {visibleStaffAssignments.map((assignment) => (
+                  <article key={assignment.user_id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    {(() => {
+                      const assignedCompanyNames = companies
+                        .filter((item) => (assignment.allowed_company_ids || []).includes(item.id))
+                        .map((item) => item.name)
+                      const previewNames = assignedCompanyNames.slice(0, 2).join(', ')
+                      const remainingCount = Math.max(assignedCompanyNames.length - 2, 0)
+
+                      return (
+                        <>
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div>
+                        <h3 className="text-base font-bold text-[#123A7A]">{assignment.username}</h3>
+                        <p className="text-sm text-slate-600">{assignment.email || '-'}</p>
+                        <p className="text-sm text-slate-600">{assignment.full_name || '-'}</p>
+                      </div>
+                      <div className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
+                        <span>Employee Type</span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void handleEmployeeRoleChange(assignment, 'engineer')
+                            }}
+                            aria-pressed={(assignment.role === 'staff' ? 'engineer' : assignment.role) === 'engineer'}
+                            disabled={
+                              savingStaffUserId === Number(assignment.user_id) ||
+                              removingStaffUserId === Number(assignment.user_id)
+                            }
+                            className={
+                              'rounded-full border px-3 py-1 text-[11px] font-bold uppercase tracking-wide transition ' +
+                              ((assignment.role === 'staff' ? 'engineer' : assignment.role) === 'engineer'
+                                ? 'border-[#123A7A] bg-white text-[#123A7A] shadow-md ring-2 ring-[#123A7A]/25'
+                                : 'border-slate-200 bg-slate-100 text-slate-500 hover:bg-white')
+                            }
+                          >
+                            Engineer
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void handleEmployeeRoleChange(assignment, 'office_staff')
+                            }}
+                            aria-pressed={(assignment.role === 'staff' ? 'engineer' : assignment.role) === 'office_staff'}
+                            disabled={
+                              savingStaffUserId === Number(assignment.user_id) ||
+                              removingStaffUserId === Number(assignment.user_id)
+                            }
+                            className={
+                              'rounded-full border px-3 py-1 text-[11px] font-bold uppercase tracking-wide transition ' +
+                              ((assignment.role === 'staff' ? 'engineer' : assignment.role) === 'office_staff'
+                                ? 'border-[#0f3168] bg-[#123A7A] text-white shadow-md ring-2 ring-[#123A7A]/35'
+                                : 'border-blue-200 bg-blue-50 text-blue-500 hover:bg-blue-100')
+                            }
+                          >
+                            Office
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-3 py-2">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Allowed Companies</p>
+                          <p className="text-sm text-slate-700">
+                            {assignedCompanyNames.length === 0
+                              ? 'No companies assigned.'
+                              : `${previewNames}${remainingCount > 0 ? ` +${remainingCount} more` : ''}`}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCompanyPickerUserId(String(assignment.user_id))
+                            setCompanyPickerSearchInput('')
+                          }}
+                          className="rounded-md border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                        >
+                          Edit Companies
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveEmployeeAssignment(assignment)}
+                        disabled={removingStaffUserId === Number(assignment.user_id)}
+                        className="rounded-md border border-rose-300 bg-rose-600 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {removingStaffUserId === Number(assignment.user_id) ? 'Removing...' : 'Remove Employee'}
+                      </button>
+                    </div>
+                        </>
+                    )
+                  })()}
+                  </article>
+                ))}
+              </div>
+            )}
+
+            {!staffAssignmentsLoading && filteredStaffAssignments.length > 0 && (
+              <div className="mt-4 flex items-center justify-between gap-3">
+                <p className="text-sm text-slate-600">
+                  Showing {employeeStartIndex + 1}-{Math.min(employeeStartIndex + employeePageSize, filteredStaffAssignments.length)} of{' '}
+                  {filteredStaffAssignments.length} employees.
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEmployeePage((current) => Math.max(1, current - 1))}
+                    disabled={employeePage === 1}
+                    className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 disabled:opacity-50"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                    Page {employeePage} of {employeeTotalPages}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setEmployeePage((current) => Math.min(employeeTotalPages, current + 1))}
+                    disabled={employeePage === employeeTotalPages}
+                    className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 disabled:opacity-50"
+                  >
+                    Next
+                  </button>
+                </div>
               </div>
             )}
           </section>
@@ -1952,6 +2477,257 @@ export default function PortalDashboardPage() {
                 {creatingCustomer ? 'Creating customer...' : 'Create Customer'}
               </button>
             </form>
+          </div>
+        )}
+
+        {isOwner && showCreateEmployeeForm && (
+          <div
+            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
+            onClick={() => setShowCreateEmployeeForm(false)}
+          >
+            <form
+              className="max-h-[calc(100vh-7rem)] w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
+              onSubmit={handleCreateEmployeeAssignment}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-bold text-[#123A7A]">Add Employee</h3>
+                  <p className="mt-1 text-sm text-slate-600">Create a new portal employee account and assign access.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateEmployeeForm(false)}
+                  className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <label className="text-sm font-semibold text-slate-700">
+                  Username (Auto-generated)
+                  <input
+                    type="text"
+                    value={generatedEmployeeUsername}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    placeholder="a_surn"
+                    readOnly
+                  />
+                  <p className="mt-1 text-xs font-normal text-slate-500">
+                    Format: first letter of first name + underscore + first 4 letters of surname. A number is appended automatically if needed.
+                  </p>
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Email
+                  <input
+                    type="email"
+                    value={employeeForm.email}
+                    onChange={(event) => setEmployeeForm((current) => ({ ...current, email: event.target.value }))}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    required
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  First Name
+                  <input
+                    type="text"
+                    value={employeeForm.first_name}
+                    onChange={(event) => setEmployeeForm((current) => ({ ...current, first_name: event.target.value }))}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    required
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Last Name
+                  <input
+                    type="text"
+                    value={employeeForm.last_name}
+                    onChange={(event) => setEmployeeForm((current) => ({ ...current, last_name: event.target.value }))}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    required
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Temporary Password
+                  <input
+                    type="password"
+                    value={employeeForm.password}
+                    onChange={(event) => setEmployeeForm((current) => ({ ...current, password: event.target.value }))}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    required
+                  />
+                </label>
+                <label className="flex flex-col gap-2 text-sm font-semibold text-slate-700">
+                  Employee Type
+                  <select
+                    value={employeeForm.role}
+                    onChange={(event) => setEmployeeForm((current) => ({ ...current, role: event.target.value }))}
+                    className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  >
+                    <option value="engineer">Engineer</option>
+                    <option value="office_staff">Office</option>
+                  </select>
+                </label>
+                <div className="text-sm font-semibold text-slate-700 md:col-span-2">
+                  Allowed Companies
+                  <div className="mt-2 max-h-44 overflow-y-auto rounded-md border border-slate-200 bg-slate-50 p-2">
+                    <div className="flex flex-wrap gap-2">
+                    {companies.map((companyItem) => {
+                      const checked = employeeForm.allowed_company_ids.includes(companyItem.id)
+                      return (
+                        <label
+                          key={`create-${companyItem.id}`}
+                          className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(event) =>
+                              setEmployeeForm((current) => {
+                                if (event.target.checked) {
+                                  return {
+                                    ...current,
+                                    allowed_company_ids: [...new Set([...current.allowed_company_ids, companyItem.id])],
+                                  }
+                                }
+                                return {
+                                  ...current,
+                                  allowed_company_ids: current.allowed_company_ids.filter((id) => id !== companyItem.id),
+                                }
+                              })
+                            }
+                          />
+                          <span>{companyItem.name}</span>
+                        </label>
+                      )
+                    })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 flex justify-end">
+                <button
+                  type="submit"
+                  disabled={creatingStaffAssignment}
+                  className="rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168] disabled:opacity-70"
+                >
+                  {creatingStaffAssignment ? 'Creating...' : 'Create Employee'}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {isOwner && companyPickerUserId && activeCompanyPickerAssignment && (
+          <div
+            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
+            onClick={() => {
+              setCompanyPickerUserId('')
+              setCompanyPickerSearchInput('')
+            }}
+          >
+            <div
+              className="max-h-[calc(100vh-7rem)] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-bold text-[#123A7A]">Edit Company Access</h3>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {activeCompanyPickerAssignment.username} can access selected companies.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCompanyPickerUserId('')
+                    setCompanyPickerSearchInput('')
+                  }}
+                  className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="mt-4">
+                <input
+                  type="search"
+                  value={companyPickerSearchInput}
+                  onChange={(event) => setCompanyPickerSearchInput(event.target.value)}
+                  placeholder="Search companies"
+                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#123A7A]"
+                />
+              </div>
+
+              <div className="mt-4 max-h-80 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-3">
+                {filteredCompanyPickerCompanies.length === 0 ? (
+                  <p className="text-sm text-slate-500">No companies match your search.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {filteredCompanyPickerCompanies.map((companyItem) => {
+                      const checked = (activeCompanyPickerAssignment.allowed_company_ids || []).includes(companyItem.id)
+                      return (
+                        <label
+                          key={`picker-${activeCompanyPickerAssignment.user_id}-${companyItem.id}`}
+                          className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                        >
+                          <span>{companyItem.name}</span>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(event) =>
+                              setStaffAssignments((current) =>
+                                current.map((item) => {
+                                  if (String(item.user_id) !== String(activeCompanyPickerAssignment.user_id)) {
+                                    return item
+                                  }
+                                  const existing = item.allowed_company_ids || []
+                                  if (event.target.checked) {
+                                    return {
+                                      ...item,
+                                      allowed_company_ids: [...new Set([...existing, companyItem.id])],
+                                    }
+                                  }
+                                  return {
+                                    ...item,
+                                    allowed_company_ids: existing.filter((id) => id !== companyItem.id),
+                                  }
+                                }),
+                              )
+                            }
+                          />
+                        </label>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleSaveEmployeeAssignment(activeCompanyPickerAssignment)}
+                  disabled={savingStaffUserId === Number(activeCompanyPickerAssignment.user_id)}
+                  className="rounded-md border border-[#123A7A] bg-white px-4 py-2 text-sm font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingStaffUserId === Number(activeCompanyPickerAssignment.user_id)
+                    ? 'Saving...'
+                    : 'Save Permissions'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCompanyPickerUserId('')
+                    setCompanyPickerSearchInput('')
+                  }}
+                  className="rounded-md bg-slate-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
           </div>
         )}
 

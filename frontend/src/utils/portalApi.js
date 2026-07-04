@@ -208,6 +208,49 @@ export async function getPendingReportApprovals() {
   return Array.isArray(body?.results) ? body.results : []
 }
 
+export async function getStaffAssignments() {
+  const path = '/portal/staff-assignments/'
+  const response = await authFetch(path)
+  const body = await parseResponse(response, path)
+  return Array.isArray(body?.results) ? body.results : []
+}
+
+export async function createStaffAssignment(payload) {
+  const path = '/portal/staff-assignments/'
+  const response = await authFetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  return parseResponse(response, path)
+}
+
+export async function updateStaffAssignment(payload) {
+  const path = '/portal/staff-assignments/'
+  const response = await authFetch(path, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  return parseResponse(response, path)
+}
+
+export async function deleteStaffAssignment(userId) {
+  const path = '/portal/staff-assignments/'
+  const response = await authFetch(path, {
+    method: 'DELETE',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ user_id: userId }),
+  })
+  return parseResponse(response, path)
+}
+
 export async function createPortalCustomer(payload) {
   const path = '/portal/customers/'
   const response = await authFetch(path, {
