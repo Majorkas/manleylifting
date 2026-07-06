@@ -188,7 +188,20 @@ export async function getPortalMe() {
     fullName: String(body?.full_name || ''),
     role: String(body?.role || ''),
     allowedCompanyIds: Array.isArray(body?.allowed_company_ids) ? body.allowed_company_ids : [],
+    requiredPasswordChange: Boolean(body?.required_password_change),
   }
+}
+
+export async function changePortalPassword(payload) {
+  const path = '/portal/me/change-password/'
+  const response = await authFetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  return parseResponse(response, path)
 }
 
 export async function getPortalCompanyHeader(companyId) {
@@ -203,6 +216,17 @@ export async function getPortalCompanies() {
   const response = await authFetch(path)
   const body = await parseResponse(response, path)
   return Array.isArray(body?.results) ? body.results : []
+}
+
+export async function getPortalDashboardStats() {
+  const path = '/portal/dashboard-stats/'
+  const response = await authFetch(path)
+  const body = await parseResponse(response, path)
+  return {
+    overdue_count: Number(body?.overdue_count || 0),
+    due_soon_count: Number(body?.due_soon_count || 0),
+    pending_approvals_count: Number(body?.pending_approvals_count || 0),
+  }
 }
 
 export async function getPendingReportApprovals() {
@@ -259,6 +283,18 @@ export async function createPortalCustomer(payload) {
   const path = '/portal/customers/'
   const response = await authFetch(path, {
     method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  return parseResponse(response, path)
+}
+
+export async function updatePortalCustomer(payload) {
+  const path = '/portal/customers/'
+  const response = await authFetch(path, {
+    method: 'PATCH',
     headers: {
       'Content-Type': 'application/json',
     },
@@ -401,7 +437,7 @@ export async function getEquipmentCertificates(equipmentId) {
 export async function uploadEquipmentCertificate(equipmentId, payload) {
   const path = '/portal/equipment/' + encodeURIComponent(String(equipmentId)) + '/certificates/'
   const certificateFile = payload?.file
-  
+
   if (!certificateFile) {
     throw new Error('Certificate file is required')
   }
