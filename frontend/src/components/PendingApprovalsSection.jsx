@@ -1,3 +1,5 @@
+import { PendingApprovalsSkeleton } from './PortalLoadingSkeletons'
+
 export default function PendingApprovalsSection({
   pendingReportApprovals,
   pendingApprovalsLoading,
@@ -37,9 +39,7 @@ export default function PendingApprovalsSection({
       )}
 
       {pendingApprovalsLoading ? (
-        <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-          Loading pending approvals...
-        </div>
+        <PendingApprovalsSkeleton />
       ) : pendingReportApprovals.length === 0 ? (
         <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
           No submitted reports are waiting for approval.

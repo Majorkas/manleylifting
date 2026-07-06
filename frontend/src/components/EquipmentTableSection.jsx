@@ -1,4 +1,5 @@
 import PaginationControls from './PaginationControls'
+import { EquipmentTableSkeleton, InlineListSkeleton } from './PortalLoadingSkeletons'
 
 export default function EquipmentTableSection({
   canEditReports,
@@ -108,9 +109,7 @@ export default function EquipmentTableSection({
       )}
 
       {loading ? (
-        <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-          Loading equipment...
-        </div>
+        <EquipmentTableSkeleton />
       ) : equipment.length === 0 ? (
         <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
           No equipment found for this company.
@@ -330,7 +329,7 @@ export default function EquipmentTableSection({
                         <div className="mt-3 space-y-2">
                           <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Certificates</p>
                           {certificatesLoading ? (
-                            <p className="text-xs text-slate-500">Loading certificates...</p>
+                            <InlineListSkeleton />
                           ) : certificates.length === 0 ? (
                             <p className="text-xs text-slate-500">No certificates uploaded for this equipment.</p>
                           ) : (
@@ -359,7 +358,7 @@ export default function EquipmentTableSection({
 
                         <div className="mt-3 space-y-2">
                           {reportsLoading ? (
-                            <p className="text-xs text-slate-500">Loading reports...</p>
+                            <InlineListSkeleton />
                           ) : reports.length === 0 ? (
                             <p className="text-xs text-slate-500">No reports have been submitted for this equipment.</p>
                           ) : (

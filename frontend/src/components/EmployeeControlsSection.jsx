@@ -1,4 +1,5 @@
 import PaginationControls from './PaginationControls'
+import { EmployeeAssignmentsSkeleton } from './PortalLoadingSkeletons'
 
 export default function EmployeeControlsSection({
   sectionRef,
@@ -67,9 +68,7 @@ export default function EmployeeControlsSection({
       )}
 
       {staffAssignmentsLoading ? (
-        <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-          Loading employee assignments...
-        </div>
+        <EmployeeAssignmentsSkeleton />
       ) : staffAssignments.length === 0 ? (
         <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
           No employee accounts found yet.

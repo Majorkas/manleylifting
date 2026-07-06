@@ -1,4 +1,5 @@
 import PaginationControls from './PaginationControls'
+import { CustomerCardGridSkeleton, CustomerStatsSkeleton } from './PortalLoadingSkeletons'
 
 export default function CustomerListSection({
   isOwner,
@@ -60,55 +61,53 @@ export default function CustomerListSection({
             </div>
           )}
 
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <button
-              type="button"
-              onClick={() => onToggleCustomerStatsFilter('overdue')}
-              aria-pressed={customerStatsFilter === 'overdue'}
-              className={
-                'rounded-xl p-4 text-left transition focus:outline-none focus:ring-2 focus:ring-red-300 ' +
-                (customerStatsFilter === 'overdue'
-                  ? 'border-2 border-red-400 bg-red-100 shadow-sm'
-                  : 'border border-red-200 bg-red-50 hover:bg-red-100')
-              }
-            >
-              <p className="text-xs font-semibold uppercase tracking-wide text-red-700">Overdue Inspections</p>
-              <p className="mt-2 text-3xl font-extrabold text-red-800">
-                {dashboardStatsLoading ? '-' : dashboardStats.overdue_count}
-              </p>
-              <p className="mt-1 text-xs text-red-700">
-                Equipment already past due date {customerStatsFilter === 'overdue' ? '(filtered)' : ''}
-              </p>
-            </button>
+          {dashboardStatsLoading ? (
+            <CustomerStatsSkeleton />
+          ) : (
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <button
+                type="button"
+                onClick={() => onToggleCustomerStatsFilter('overdue')}
+                aria-pressed={customerStatsFilter === 'overdue'}
+                className={
+                  'rounded-xl p-4 text-left transition focus:outline-none focus:ring-2 focus:ring-red-300 ' +
+                  (customerStatsFilter === 'overdue'
+                    ? 'border-2 border-red-400 bg-red-100 shadow-sm'
+                    : 'border border-red-200 bg-red-50 hover:bg-red-100')
+                }
+              >
+                <p className="text-xs font-semibold uppercase tracking-wide text-red-700">Overdue Inspections</p>
+                <p className="mt-2 text-3xl font-extrabold text-red-800">{dashboardStats.overdue_count}</p>
+                <p className="mt-1 text-xs text-red-700">
+                  Equipment already past due date {customerStatsFilter === 'overdue' ? '(filtered)' : ''}
+                </p>
+              </button>
 
-            <button
-              type="button"
-              onClick={() => onToggleCustomerStatsFilter('due_soon')}
-              aria-pressed={customerStatsFilter === 'due_soon'}
-              className={
-                'rounded-xl p-4 text-left transition focus:outline-none focus:ring-2 focus:ring-amber-300 ' +
-                (customerStatsFilter === 'due_soon'
-                  ? 'border-2 border-amber-400 bg-amber-100 shadow-sm'
-                  : 'border border-amber-200 bg-amber-50 hover:bg-amber-100')
-              }
-            >
-              <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Due In 14 Days</p>
-              <p className="mt-2 text-3xl font-extrabold text-amber-800">
-                {dashboardStatsLoading ? '-' : dashboardStats.due_soon_count}
-              </p>
-              <p className="mt-1 text-xs text-amber-700">
-                Upcoming inspections to schedule {customerStatsFilter === 'due_soon' ? '(filtered)' : ''}
-              </p>
-            </button>
+              <button
+                type="button"
+                onClick={() => onToggleCustomerStatsFilter('due_soon')}
+                aria-pressed={customerStatsFilter === 'due_soon'}
+                className={
+                  'rounded-xl p-4 text-left transition focus:outline-none focus:ring-2 focus:ring-amber-300 ' +
+                  (customerStatsFilter === 'due_soon'
+                    ? 'border-2 border-amber-400 bg-amber-100 shadow-sm'
+                    : 'border border-amber-200 bg-amber-50 hover:bg-amber-100')
+                }
+              >
+                <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Due In 14 Days</p>
+                <p className="mt-2 text-3xl font-extrabold text-amber-800">{dashboardStats.due_soon_count}</p>
+                <p className="mt-1 text-xs text-amber-700">
+                  Upcoming inspections to schedule {customerStatsFilter === 'due_soon' ? '(filtered)' : ''}
+                </p>
+              </button>
 
-            <article className="rounded-xl border border-blue-200 bg-blue-50 p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">Pending Approvals</p>
-              <p className="mt-2 text-3xl font-extrabold text-blue-800">
-                {dashboardStatsLoading ? '-' : dashboardStats.pending_approvals_count}
-              </p>
-              <p className="mt-1 text-xs text-blue-700">Submitted reports waiting review</p>
-            </article>
-          </div>
+              <article className="rounded-xl border border-blue-200 bg-blue-50 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">Pending Approvals</p>
+                <p className="mt-2 text-3xl font-extrabold text-blue-800">{dashboardStats.pending_approvals_count}</p>
+                <p className="mt-1 text-xs text-blue-700">Submitted reports waiting review</p>
+              </article>
+            </div>
+          )}
         </>
       )}
 
@@ -144,9 +143,7 @@ export default function CustomerListSection({
       )}
 
       {loading ? (
-        <div className="mt-6 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-          Loading customers...
-        </div>
+        <CustomerCardGridSkeleton />
       ) : (
         <div className="mt-6 grid gap-4 md:grid-cols-2">
           {visibleCustomers.map((item) => (
