@@ -10,10 +10,8 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.http import FileResponse
 from django.db.models import Count, Q
 from django.utils import timezone
-from django.utils.dateparse import parse_date
 from django.utils.text import slugify
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -22,25 +20,14 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import Certificate, Company, Equipment, InspectionReport, ReportImage, ReportRevision, UserProfile
+from .models import Company, Equipment, InspectionReport, ReportImage, UserProfile
 from .serializers import (
-    CertificateSerializer,
-    EquipmentCreateSerializer,
     CompanyHeaderSerializer,
-    EquipmentSerializer,
-    InspectionReportCreateSerializer,
-    InspectionReportOwnerEditSerializer,
-    InspectionReportSerializer,
-    InspectionReportUpdateSerializer,
     PortalMeSerializer,
     PortalCustomerCreateResponseSerializer,
     PortalCustomerCreateSerializer,
     PortalCustomerUpdateSerializer,
     PortalChangePasswordSerializer,
-    ReportRevisionSerializer,
-    UserProfileAssignmentSerializer,
-    UserProfileAssignmentCreateSerializer,
-    UserProfileAssignmentUpdateSerializer,
 )
 
 
