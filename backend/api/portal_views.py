@@ -7,9 +7,12 @@ try:
 except ImportError:
     cloudinary_uploader = None
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.http import FileResponse
-from django.db.models import Q
+from django.db.models import Count, Q
+from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.utils.text import slugify
 from rest_framework import status
@@ -32,6 +35,8 @@ from .serializers import (
     PortalMeSerializer,
     PortalCustomerCreateResponseSerializer,
     PortalCustomerCreateSerializer,
+    PortalCustomerUpdateSerializer,
+    PortalChangePasswordSerializer,
     ReportRevisionSerializer,
     UserProfileAssignmentSerializer,
     UserProfileAssignmentCreateSerializer,
@@ -279,9 +284,49 @@ def portal_me(request):
         "full_name": request.user.get_full_name() or "",
         "role": profile.role,
         "allowed_company_ids": _visible_company_ids(request.user),
+        "required_password_change": bool(profile.required_password_change),
     }
     serializer = PortalMeSerializer(payload)
     return Response(serializer.data)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def portal_change_password(request):
+    serializer = PortalChangePasswordSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    payload = serializer.validated_data
+
+    current_password = payload["current_password"]
+    new_password = payload["new_password"]
+
+    if not request.user.check_password(current_password):
+        return Response({"detail": "Current password is incorrect"}, status=status.HTTP_400_BAD_REQUEST)
+
+    if current_password == new_password:
+        return Response(
+            {"detail": "New password must be different from current password"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        validate_password(new_password, user=request.user)
+    except ValidationError as error:
+        messages = list(error.messages or [])
+        return Response(
+            {"detail": messages[0] if messages else "Password is not valid"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    request.user.set_password(new_password)
+    request.user.save()
+
+    profile = _profile_for_user(request.user)
+    if profile.required_password_change:
+        profile.required_password_change = False
+        profile.save(update_fields=["required_password_change", "updated_at"])
+
+    return Response({"ok": True})
 
 
 @api_view(["POST"])
@@ -315,7 +360,37 @@ def portal_company_header(request):
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def portal_companies(request):
-    companies = _visible_companies(request.user).order_by("name")
+    today = timezone.localdate()
+    due_soon_cutoff = today + timedelta(days=14)
+    active_statuses = [
+        Equipment.STATUS_ACTIVE,
+        Equipment.STATUS_INACTIVE,
+        Equipment.STATUS_RETIRED,
+    ]
+
+    companies = (
+        _visible_companies(request.user)
+        .annotate(
+            inspections_overdue_count=Count(
+                "equipment",
+                filter=Q(
+                    equipment__status__in=active_statuses,
+                    equipment__next_inspection_due__lt=today,
+                ),
+                distinct=True,
+            ),
+            inspections_due_count=Count(
+                "equipment",
+                filter=Q(
+                    equipment__status__in=active_statuses,
+                    equipment__next_inspection_due__gte=today,
+                    equipment__next_inspection_due__lte=due_soon_cutoff,
+                ),
+                distinct=True,
+            ),
+        )
+        .order_by("name")
+    )
     page, page_size = _get_pagination_params(request)
     paginated = _paginate_queryset(companies, page, page_size)
     serializer = CompanyHeaderSerializer(paginated['results'], many=True, context={"request": request})
@@ -328,11 +403,55 @@ def portal_companies(request):
     })
 
 
-@api_view(["POST"])
+@api_view(["POST", "PATCH"])
 @permission_classes([IsAuthenticated])
 def portal_create_customer(request):
     if not _is_owner(request.user):
         return Response({"detail": "Only owner can create customers"}, status=status.HTTP_403_FORBIDDEN)
+
+    if request.method == "PATCH":
+        serializer = PortalCustomerUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+
+        company_id = payload["company_id"]
+        company = Company.objects.filter(id=company_id, is_active=True).first()
+        if not company:
+            return Response({"detail": "Company not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        updates = []
+
+        if "company_name" in payload:
+            next_name = str(payload.get("company_name") or "").strip()
+            if not next_name:
+                return Response({"detail": "company_name cannot be blank"}, status=status.HTTP_400_BAD_REQUEST)
+            if Company.objects.filter(name__iexact=next_name).exclude(id=company.id).exists():
+                return Response({"detail": "company_name already exists"}, status=status.HTTP_400_BAD_REQUEST)
+            company.name = next_name
+            updates.append("name")
+
+        if "company_contact_email" in payload:
+            company.contact_email = str(payload.get("company_contact_email") or "").strip()
+            updates.append("contact_email")
+
+        if "company_contact_phone" in payload:
+            company.contact_phone = str(payload.get("company_contact_phone") or "").strip()
+            updates.append("contact_phone")
+
+        if "company_address" in payload:
+            company.address = str(payload.get("company_address") or "").strip()
+            updates.append("address")
+
+        if "is_active" in payload:
+            company.is_active = bool(payload.get("is_active"))
+            updates.append("is_active")
+
+        if not updates:
+            return Response({"detail": "No valid changes provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        updates.append("updated_at")
+        company.save(update_fields=updates)
+        return Response(CompanyHeaderSerializer(company, context={"request": request}).data)
 
     serializer = PortalCustomerCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -378,10 +497,14 @@ def portal_create_customer(request):
 
         profile, _ = UserProfile.objects.get_or_create(
             user=customer_user,
-            defaults={"role": UserProfile.ROLE_CUSTOMER},
+            defaults={
+                "role": UserProfile.ROLE_CUSTOMER,
+                "required_password_change": True,
+            },
         )
         profile.role = UserProfile.ROLE_CUSTOMER
-        profile.save(update_fields=["role", "updated_at"])
+        profile.required_password_change = True
+        profile.save(update_fields=["role", "required_password_change", "updated_at"])
         profile.allowed_companies.set([company])
 
     body = {
@@ -517,7 +640,7 @@ def portal_equipment_reports(request, equipment_id):
             )
         else:
             reports = reports.filter(status=InspectionReport.STATUS_APPROVED)
-        
+
         reports = reports.order_by("-updated_at", "-report_date", "-id")
         page, page_size = _get_pagination_params(request)
         paginated = _paginate_queryset(reports, page, page_size)
@@ -578,6 +701,32 @@ def portal_pending_report_approvals(request):
         "page": paginated['page'],
         "page_size": paginated['page_size'],
         "total_pages": paginated['total_pages'],
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def portal_dashboard_stats(request):
+    if not _is_owner(request.user):
+        return Response({"detail": "Only owner can view dashboard stats"}, status=status.HTTP_403_FORBIDDEN)
+
+    visible_ids = _visible_company_ids(request.user)
+    today = timezone.localdate()
+    due_soon_cutoff = today + timedelta(days=14)
+
+    equipment = Equipment.objects.filter(company_id__in=visible_ids).exclude(status=Equipment.STATUS_DECOMMISSIONED)
+
+    overdue_count = equipment.filter(next_inspection_due__lt=today).count()
+    due_soon_count = equipment.filter(next_inspection_due__gte=today, next_inspection_due__lte=due_soon_cutoff).count()
+    pending_approvals_count = InspectionReport.objects.filter(
+        status=InspectionReport.STATUS_SUBMITTED,
+        equipment__company_id__in=visible_ids,
+    ).count()
+
+    return Response({
+        "overdue_count": overdue_count,
+        "due_soon_count": due_soon_count,
+        "pending_approvals_count": pending_approvals_count,
     })
 
 
@@ -822,10 +971,11 @@ def portal_staff_assignments(request):
 
             profile, _ = UserProfile.objects.get_or_create(
                 user=created_user,
-                defaults={"role": role},
+                defaults={"role": role, "required_password_change": True},
             )
             profile.role = role
-            profile.save(update_fields=["role", "updated_at"])
+            profile.required_password_change = True
+            profile.save(update_fields=["role", "required_password_change", "updated_at"])
 
             visible_ids = _visible_company_ids(request.user)
             requested_company_ids = payload.get("allowed_company_ids", [])

@@ -1,11 +1,16 @@
 from datetime import timedelta
 
+from django.contrib.auth import get_user_model
 from rest_framework import serializers
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from .models import Certificate, Company, Equipment, InspectionReport, ReportImage, ReportRevision, UserProfile
 
 
 class CompanyHeaderSerializer(serializers.ModelSerializer):
+    inspections_due_count = serializers.IntegerField(read_only=True)
+    inspections_overdue_count = serializers.IntegerField(read_only=True)
+
     class Meta:
         model = Company
         fields = [
@@ -16,6 +21,8 @@ class CompanyHeaderSerializer(serializers.ModelSerializer):
             "contact_email",
             "contact_phone",
             "address",
+            "inspections_due_count",
+            "inspections_overdue_count",
         ]
 
 
@@ -201,6 +208,12 @@ class PortalMeSerializer(serializers.Serializer):
     full_name = serializers.CharField(allow_blank=True)
     role = serializers.ChoiceField(choices=UserProfile.ROLE_CHOICES)
     allowed_company_ids = serializers.ListField(child=serializers.IntegerField())
+    required_password_change = serializers.BooleanField()
+
+
+class PortalChangePasswordSerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
+    new_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
 
 
 class UserProfileAssignmentSerializer(serializers.ModelSerializer):
@@ -265,3 +278,54 @@ class PortalCustomerCreateSerializer(serializers.Serializer):
 class PortalCustomerCreateResponseSerializer(serializers.Serializer):
     company = CompanyHeaderSerializer()
     customer = serializers.DictField()
+
+
+class PortalCustomerUpdateSerializer(serializers.Serializer):
+    company_id = serializers.IntegerField(min_value=1)
+    company_name = serializers.CharField(max_length=200, required=False)
+    company_contact_email = serializers.EmailField(required=False, allow_blank=True)
+    company_contact_phone = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    company_address = serializers.CharField(required=False, allow_blank=True)
+    is_active = serializers.BooleanField(required=False)
+
+    def validate(self, attrs):
+        updatable_fields = {
+            "company_name",
+            "company_contact_email",
+            "company_contact_phone",
+            "company_address",
+            "is_active",
+        }
+        if not any(field in attrs for field in updatable_fields):
+            raise serializers.ValidationError("At least one field is required for update")
+        return attrs
+
+
+class PortalTokenObtainPairSerializer(TokenObtainPairSerializer):
+    default_error_messages = {
+        "no_active_account": "Invalid credentials",
+    }
+
+    def validate(self, attrs):
+        username = str(attrs.get("username") or "").strip()
+        password = attrs.get("password")
+
+        if not username:
+            raise serializers.ValidationError({"detail": "Username is required"})
+
+        if not password:
+            raise serializers.ValidationError({"detail": "Password is required"})
+
+        user_model = get_user_model()
+        user = user_model.objects.filter(username__iexact=username).first()
+
+        if user is None:
+            raise serializers.ValidationError({"detail": "Incorrect username"})
+
+        if not user.check_password(password):
+            raise serializers.ValidationError({"detail": "Incorrect password"})
+
+        if not user.is_active:
+            raise serializers.ValidationError({"detail": "Account is disabled"})
+
+        return super().validate(attrs)

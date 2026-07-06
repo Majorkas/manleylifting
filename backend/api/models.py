@@ -171,6 +171,7 @@ class UserProfile(models.Model):
 
     user = models.OneToOneField("auth.User", on_delete=models.CASCADE, related_name="profile")
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ROLE_CUSTOMER)
+    required_password_change = models.BooleanField(default=False)
     allowed_companies = models.ManyToManyField(Company, blank=True, related_name="members")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

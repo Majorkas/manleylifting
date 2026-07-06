@@ -1,11 +1,15 @@
 from django.urls import path
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
+from .serializers import PortalTokenObtainPairSerializer
 from .portal_views import (
   portal_create_customer,
   portal_certificate_download,
   portal_companies,
   portal_company_header,
+  portal_change_password,
+  portal_dashboard_stats,
   portal_equipment_certificates,
   portal_equipment_list,
   portal_equipment_update,
@@ -30,12 +34,20 @@ from .views import (
   stripe_webhook,
 )
 
+
+class PortalTokenObtainPairView(TokenObtainPairView):
+  serializer_class = PortalTokenObtainPairSerializer
+  throttle_classes = [ScopedRateThrottle]
+  throttle_scope = "auth.token"
+
 urlpatterns = [
-  path("auth/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
+  path("auth/token/", PortalTokenObtainPairView.as_view(), name="token_obtain_pair"),
   path("auth/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
   path("auth/logout/", portal_logout),
   path("portal/me/", portal_me),
+  path("portal/me/change-password/", portal_change_password),
   path("portal/companies/", portal_companies),
+  path("portal/dashboard-stats/", portal_dashboard_stats),
   path("portal/customers/", portal_create_customer),
   path("portal/company-header/", portal_company_header),
   path("portal/equipment/", portal_equipment_list),
