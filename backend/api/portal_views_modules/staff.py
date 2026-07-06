@@ -11,6 +11,7 @@ from ..portal_views import (
     _is_employee_role,
     _is_owner,
     _paginate_queryset,
+    _suggest_available_username,
     _visible_company_ids,
 )
 from ..serializers import (
@@ -56,7 +57,13 @@ def portal_staff_assignments(request):
         email = payload["email"].strip().lower()
 
         if user_model.objects.filter(username__iexact=username).exists():
-            return Response({"detail": "username already exists"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {
+                    "detail": "username already exists",
+                    "suggested_username": _suggest_available_username(username),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if user_model.objects.filter(email__iexact=email).exists():
             return Response({"detail": "email already exists"}, status=status.HTTP_400_BAD_REQUEST)
@@ -110,7 +117,7 @@ def portal_staff_assignments(request):
             return Response({"detail": "Only employee accounts can be removed"}, status=status.HTTP_400_BAD_REQUEST)
 
         profile.user.is_active = False
-        profile.user.save(update_fields=["is_active", "updated_at"])
+        profile.user.save(update_fields=["is_active"])
         return Response({"ok": True})
 
     serializer = UserProfileAssignmentUpdateSerializer(data=request.data)

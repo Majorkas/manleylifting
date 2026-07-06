@@ -129,6 +129,23 @@ def _is_owner(user):
     return _profile_for_user(user).role in {UserProfile.ROLE_OWNER, UserProfile.ROLE_OFFICE_STAFF}
 
 
+def _suggest_available_username(base_username):
+    user_model = get_user_model()
+    base = str(base_username or "").strip().lower()
+    if not base:
+        return ""
+
+    if not user_model.objects.filter(username__iexact=base).exists():
+        return base
+
+    suffix = 2
+    while True:
+        candidate = f"{base}{suffix}"
+        if not user_model.objects.filter(username__iexact=candidate).exists():
+            return candidate
+        suffix += 1
+
+
 def _selected_company(user, company_id):
     companies = _visible_companies(user)
     if company_id:
@@ -458,7 +475,13 @@ def portal_create_customer(request):
     company_name = payload["company_name"].strip()
 
     if user_model.objects.filter(username__iexact=username).exists():
-        return Response({"detail": "customer_username already exists"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {
+                "detail": "customer_username already exists",
+                "suggested_username": _suggest_available_username(username),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
 
     if user_model.objects.filter(email__iexact=email).exists():
         return Response({"detail": "customer_email already exists"}, status=status.HTTP_400_BAD_REQUEST)

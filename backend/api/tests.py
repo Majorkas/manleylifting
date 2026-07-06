@@ -776,7 +776,24 @@ class PortalRBACTests(TestCase):
             format="json",
         )
         self.assertEqual(delete_response.status_code, 200)
-        self.assertFalse(get_user_model().objects.filter(id=self.staff_user.id).exists())
+        self.staff_user.refresh_from_db()
+        self.assertFalse(self.staff_user.is_active)
+
+    def test_portal_companies_pagination_metadata(self):
+        self.client.force_authenticate(user=self.owner_user)
+        Company.objects.create(name="C One", slug="c-one")
+        Company.objects.create(name="C Two", slug="c-two")
+        Company.objects.create(name="C Three", slug="c-three")
+
+        response = self.client.get("/api/portal/companies/?page=2&page_size=2")
+        self.assertEqual(response.status_code, 200)
+
+        body = response.json()
+        self.assertEqual(body["page"], 2)
+        self.assertEqual(body["page_size"], 2)
+        self.assertEqual(body["total_count"], 5)
+        self.assertEqual(body["total_pages"], 3)
+        self.assertEqual(len(body["results"]), 2)
 
     def test_owner_cannot_promote_assignment_to_owner(self):
         self.client.force_authenticate(user=self.owner_user)
@@ -884,6 +901,23 @@ class PortalRBACTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "customer_username already exists")
+        self.assertEqual(response.json()["suggested_username"], f"{self.customer_user.username}2")
+
+    def test_owner_create_employee_duplicate_username_returns_suggestion(self):
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.post(
+            "/api/portal/staff-assignments/",
+            data={
+                "username": self.staff_user.username,
+                "email": "new.staff@example.com",
+                "password": "StrongPass!234",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "username already exists")
+        self.assertEqual(response.json()["suggested_username"], f"{self.staff_user.username}2")
 
     def test_logout_blacklists_refresh_token(self):
         self.client.force_authenticate(user=self.owner_user)

@@ -11,13 +11,16 @@ vi.mock('../components/PortalLayout', () => ({
 vi.mock('../utils/portalApi', () => ({
   clearPortalSession: vi.fn(),
   createEquipmentReport: vi.fn(),
+  deleteStaffAssignment: vi.fn(),
   getEquipmentReports: vi.fn(),
+  getPortalDashboardStats: vi.fn(),
   getPortalCompanies: vi.fn(),
   getPortalCompanyHeader: vi.fn(),
   getPortalEquipment: vi.fn(),
   getPortalMe: vi.fn(),
   getPendingReportApprovals: vi.fn(),
   getReportRevisions: vi.fn(),
+  getStaffAssignments: vi.fn(),
   hasPortalSession: vi.fn(),
   portalLogout: vi.fn(),
   updateReport: vi.fn(),
@@ -25,12 +28,15 @@ vi.mock('../utils/portalApi', () => ({
 
 import {
   createEquipmentReport,
+  deleteStaffAssignment,
   getEquipmentReports,
+  getPortalDashboardStats,
   getPortalCompanies,
   getPortalCompanyHeader,
   getPortalEquipment,
   getPortalMe,
   getPendingReportApprovals,
+  getStaffAssignments,
   hasPortalSession,
   updateReport,
 } from '../utils/portalApi'
@@ -81,11 +87,126 @@ describe('PortalDashboardPage', () => {
     vi.clearAllMocks()
     hasPortalSession.mockReturnValue(true)
     getPortalCompanies.mockResolvedValue([])
+    getPortalDashboardStats.mockResolvedValue({ overdue_count: 0, due_soon_count: 0, pending_approvals_count: 0 })
     getEquipmentReports.mockResolvedValue([])
     getPortalCompanyHeader.mockResolvedValue({})
     getPortalEquipment.mockResolvedValue([])
     getPendingReportApprovals.mockResolvedValue([])
+    getStaffAssignments.mockResolvedValue([])
+    deleteStaffAssignment.mockResolvedValue({ ok: true })
     updateReport.mockResolvedValue({})
+  })
+
+  it('redirects to login when portal session expired event is fired', async () => {
+    mockCustomerData()
+
+    renderDashboardPage('/portal')
+    expect(await screen.findByText('Acme Lifts')).toBeInTheDocument()
+
+    window.dispatchEvent(new CustomEvent('portalSessionExpired'))
+
+    expect(await screen.findByText('Login Page')).toBeInTheDocument()
+  })
+
+  it('filters visible reports by selected report year', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 11,
+      username: 'demo_customer',
+      email: 'customer@example.com',
+      fullName: 'Demo Customer',
+      role: 'customer',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 101,
+        name: 'Warehouse Hoist',
+        asset_tag: 'WH-1',
+        serial_number: 'SN-101',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-09-01',
+      },
+    ])
+    getEquipmentReports.mockResolvedValue([
+      {
+        id: 1,
+        title: 'Inspection 2026',
+        report_date: '2026-07-01',
+        status: 'approved',
+        submitted_by_name: 'Inspector A',
+        summary: 'Year 2026',
+      },
+      {
+        id: 2,
+        title: 'Inspection 2025',
+        report_date: '2025-07-01',
+        status: 'approved',
+        submitted_by_name: 'Inspector B',
+        summary: 'Year 2025',
+      },
+    ])
+
+    renderDashboardPage('/portal')
+
+    await user.click(await screen.findByRole('button', { name: 'View' }))
+    expect(await screen.findByText('Inspection 2026')).toBeInTheDocument()
+    expect(screen.getByText('Inspection 2025')).toBeInTheDocument()
+
+    await user.selectOptions(screen.getByRole('combobox'), '2025')
+
+    expect(await screen.findByText('Inspection 2025')).toBeInTheDocument()
+    expect(screen.queryByText('Inspection 2026')).not.toBeInTheDocument()
+  })
+
+  it('uses two-step confirm before removing an employee assignment', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 31,
+      username: 'demo_owner',
+      email: 'owner@example.com',
+      fullName: 'Demo Owner',
+      role: 'owner',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getStaffAssignments.mockResolvedValue([
+      {
+        user_id: 99,
+        username: 'ops_staff',
+        email: 'ops_staff@example.com',
+        full_name: 'Ops Staff',
+        role: 'engineer',
+        allowed_company_ids: [1],
+      },
+    ])
+
+    renderDashboardPage('/portal')
+
+    expect(await screen.findByRole('heading', { name: 'Employee Controls' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove Employee' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Remove Employee' }))
+    expect(screen.getByRole('button', { name: 'Confirm Remove' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Confirm Remove' }))
+
+    await waitFor(() => {
+      expect(deleteStaffAssignment).toHaveBeenCalledWith(99)
+    })
   })
 
   it('redirects signed-out users to the portal login route', () => {
