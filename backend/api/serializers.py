@@ -1,8 +1,9 @@
 from datetime import timedelta
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
-from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
 
 from .models import Certificate, Company, Equipment, InspectionReport, ReportImage, ReportRevision, UserProfile
 
@@ -328,4 +329,21 @@ class PortalTokenObtainPairSerializer(TokenObtainPairSerializer):
         if not user.is_active:
             raise serializers.ValidationError({"detail": "Account is disabled"})
 
+        return super().validate(attrs)
+
+
+class PortalTokenRefreshSerializer(TokenRefreshSerializer):
+    refresh = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        refresh = str(attrs.get("refresh") or "").strip()
+        if not refresh:
+            request = self.context.get("request")
+            cookie_name = settings.JWT_REFRESH_COOKIE_NAME
+            refresh = str(getattr(request, "COOKIES", {}).get(cookie_name) or "").strip()
+
+        if not refresh:
+            raise serializers.ValidationError({"detail": "refresh token is required"})
+
+        attrs["refresh"] = refresh
         return super().validate(attrs)

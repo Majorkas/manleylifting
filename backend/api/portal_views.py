@@ -6,6 +6,7 @@ try:
     import cloudinary.uploader as cloudinary_uploader
 except ImportError:
     cloudinary_uploader = None
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
@@ -20,6 +21,7 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from .auth_cookies import clear_refresh_cookie
 from .models import Company, Equipment, InspectionReport, ReportImage, UserProfile
 from .serializers import (
     CompanyHeaderSerializer,
@@ -319,17 +321,23 @@ def portal_change_password(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def portal_logout(request):
-    refresh = str(request.data.get("refresh") or "").strip()
-    if not refresh:
-        return Response({"detail": "refresh token is required"}, status=status.HTTP_400_BAD_REQUEST)
+    refresh = str(
+        request.data.get("refresh")
+        or request.COOKIES.get(settings.JWT_REFRESH_COOKIE_NAME)
+        or ""
+    ).strip()
 
-    try:
-        token = RefreshToken(refresh)
-        token.blacklist()
-    except TokenError:
-        return Response({"detail": "invalid refresh token"}, status=status.HTTP_400_BAD_REQUEST)
+    if refresh:
+        try:
+            token = RefreshToken(refresh)
+            token.blacklist()
+        except TokenError:
+            # Logout should stay idempotent even with stale/invalid refresh cookies.
+            pass
 
-    return Response({"ok": True})
+    response = Response({"ok": True})
+    clear_refresh_cookie(response)
+    return response
 
 
 @api_view(["GET"])

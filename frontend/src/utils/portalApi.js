@@ -2,8 +2,8 @@ const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').trim()
 const defaultApiBaseUrl = import.meta.env.PROD ? '/api' : 'http://localhost:8000/api'
 const apiBaseUrl = (configuredApiBaseUrl || defaultApiBaseUrl).replace(/\/+$/, '')
 
-const ACCESS_TOKEN_KEY = 'manley-portal-access-token-v1'
-const REFRESH_TOKEN_KEY = 'manley-portal-refresh-token-v1'
+const SESSION_FLAG_KEY = 'manley-portal-session-v1'
+let accessTokenMemory = ''
 
 function apiUrl(path) {
   return apiBaseUrl + path
@@ -37,29 +37,27 @@ async function parseResponse(response, path) {
 }
 
 export function getAccessToken() {
-  if (typeof window === 'undefined') return ''
-  return String(window.localStorage.getItem(ACCESS_TOKEN_KEY) || '')
-}
-
-export function getRefreshToken() {
-  if (typeof window === 'undefined') return ''
-  return String(window.localStorage.getItem(REFRESH_TOKEN_KEY) || '')
+  return String(accessTokenMemory || '')
 }
 
 export function hasPortalSession() {
-  return Boolean(getAccessToken() && getRefreshToken())
+  if (getAccessToken()) return true
+  if (typeof window === 'undefined') return false
+  return window.localStorage.getItem(SESSION_FLAG_KEY) === '1'
 }
 
-export function savePortalTokens(accessToken, refreshToken) {
+export function savePortalAccessToken(accessToken) {
+  accessTokenMemory = String(accessToken || '')
   if (typeof window === 'undefined') return
-  window.localStorage.setItem(ACCESS_TOKEN_KEY, String(accessToken || ''))
-  window.localStorage.setItem(REFRESH_TOKEN_KEY, String(refreshToken || ''))
+  if (accessTokenMemory) {
+    window.localStorage.setItem(SESSION_FLAG_KEY, '1')
+  }
 }
 
 export function clearPortalSession() {
+  accessTokenMemory = ''
   if (typeof window === 'undefined') return
-  window.localStorage.removeItem(ACCESS_TOKEN_KEY)
-  window.localStorage.removeItem(REFRESH_TOKEN_KEY)
+  window.localStorage.removeItem(SESSION_FLAG_KEY)
   // Signal session expiry to other parts of the app
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('portalSessionExpired'))
@@ -67,29 +65,24 @@ export function clearPortalSession() {
 }
 
 async function refreshAccessToken() {
-  const refresh = getRefreshToken()
-  if (!refresh) {
-    throw new Error('Missing refresh token')
-  }
-
   const path = '/auth/token/refresh/'
   const response = await fetch(apiUrl(path), {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
     },
-    body: JSON.stringify({ refresh }),
+    body: JSON.stringify({}),
   })
 
   const body = await parseResponse(response, path)
   const nextAccess = String(body?.access || '')
-  const nextRefresh = String(body?.refresh || refresh)
   if (!nextAccess) {
     throw new Error('Refresh token response missing access token')
   }
 
-  savePortalTokens(nextAccess, nextRefresh)
+  savePortalAccessToken(nextAccess)
   return nextAccess
 }
 
@@ -106,6 +99,7 @@ async function authFetch(path, options = {}) {
 
   const response = await fetch(apiUrl(path), {
     ...options,
+    credentials: 'include',
     headers,
   })
 
@@ -122,6 +116,7 @@ async function authFetch(path, options = {}) {
 
     return fetch(apiUrl(path), {
       ...options,
+      credentials: 'include',
       headers: retryHeaders,
       retry: false,
     })
@@ -135,6 +130,7 @@ export async function portalLogin(username, password) {
   const path = '/auth/token/'
   const response = await fetch(apiUrl(path), {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
@@ -144,34 +140,30 @@ export async function portalLogin(username, password) {
   const body = await parseResponse(response, path)
 
   const access = String(body?.access || '')
-  const refresh = String(body?.refresh || '')
-  if (!access || !refresh) {
-    throw new Error('Login did not return valid tokens')
+  if (!access) {
+    throw new Error('Login did not return an access token')
   }
 
-  savePortalTokens(access, refresh)
+  savePortalAccessToken(access)
   return body
 }
 
 export async function portalLogout() {
-  const refresh = getRefreshToken()
   const path = '/auth/logout/'
 
-  if (refresh) {
-    try {
-      const response = await authFetch(path, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ refresh }),
-      })
-      if (response.ok) {
-        await parseResponse(response, path)
-      }
-    } catch {
-      // Clear local session even if server-side revoke fails.
+  try {
+    const response = await authFetch(path, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({}),
+    })
+    if (response.ok) {
+      await parseResponse(response, path)
     }
+  } catch {
+    // Clear local session even if server-side revoke fails.
   }
 
   clearPortalSession()

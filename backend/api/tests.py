@@ -255,8 +255,33 @@ class PortalRBACTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("access", response.json())
-        self.assertIn("refresh", response.json())
+        self.assertNotIn("refresh", response.json())
+        self.assertIn("manley_portal_refresh", response.cookies)
         self.assertEqual(user.username, "MixedCaseUser")
+
+    def test_refresh_uses_http_only_cookie(self):
+        user_model = get_user_model()
+        user_model.objects.create_user(username="CookieUser", password="testpass123")
+
+        login_response = self.client.post(
+            "/api/auth/token/",
+            data={"username": "cookieuser", "password": "testpass123"},
+            format="json",
+        )
+        self.assertEqual(login_response.status_code, 200)
+        refresh_cookie = login_response.cookies.get("manley_portal_refresh")
+        self.assertIsNotNone(refresh_cookie)
+
+        self.client.cookies["manley_portal_refresh"] = refresh_cookie.value
+        refresh_response = self.client.post(
+            "/api/auth/token/refresh/",
+            data={},
+            format="json",
+        )
+
+        self.assertEqual(refresh_response.status_code, 200)
+        self.assertIn("access", refresh_response.json())
+        self.assertNotIn("refresh", refresh_response.json())
 
     def test_owner_sees_pending_report_approvals_only(self):
         submitted_a = InspectionReport.objects.create(
@@ -863,10 +888,11 @@ class PortalRBACTests(TestCase):
     def test_logout_blacklists_refresh_token(self):
         self.client.force_authenticate(user=self.owner_user)
         refresh = RefreshToken.for_user(self.owner_user)
+        self.client.cookies["manley_portal_refresh"] = str(refresh)
 
         response = self.client.post(
             "/api/auth/logout/",
-            data={"refresh": str(refresh)},
+            data={},
             format="json",
         )
         self.assertEqual(response.status_code, 200)
