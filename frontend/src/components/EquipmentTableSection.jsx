@@ -3,6 +3,7 @@ import { EquipmentTableSkeleton, InlineListSkeleton } from './PortalLoadingSkele
 
 export default function EquipmentTableSection({
   canEditReports,
+  lastUpdatedLabel,
   searchInput,
   onSearchInputChange,
   onSearchSubmit,
@@ -59,6 +60,9 @@ export default function EquipmentTableSection({
           <h2 className="text-2xl font-extrabold text-[#123A7A]">Managed Equipment</h2>
           <p className="mt-1 text-sm text-slate-600">
             View inspection-ready assets and reporting status at any time.
+          </p>
+          <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Last updated {lastUpdatedLabel}
           </p>
         </div>
 

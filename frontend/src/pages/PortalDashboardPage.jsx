@@ -225,6 +225,23 @@ function buildEmployeeUsername(firstName, lastName) {
   return `${first.slice(0, 1)}_${last.slice(0, 4)}`
 }
 
+function formatLastUpdatedLabel(value, now) {
+  if (!value) return 'Never'
+  const timestamp = Number(value)
+  if (!Number.isFinite(timestamp)) return 'Never'
+
+  const elapsedMs = Math.max(0, now - timestamp)
+  const elapsedMinutes = Math.floor(elapsedMs / 60000)
+  if (elapsedMinutes < 1) return 'just now'
+  if (elapsedMinutes < 60) return `${elapsedMinutes} min ago`
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60)
+  if (elapsedHours < 24) return `${elapsedHours} hr ago`
+
+  const elapsedDays = Math.floor(elapsedHours / 24)
+  return `${elapsedDays} day${elapsedDays === 1 ? '' : 's'} ago`
+}
+
 function buildUniqueEmployeeUsername(baseUsername, existingUsernames) {
   const base = String(baseUsername || '').trim().toLowerCase()
   if (!base) return ''
@@ -265,6 +282,10 @@ export default function PortalDashboardPage() {
   const [refreshingCustomers, setRefreshingCustomers] = useState(false)
   const [refreshingEquipment, setRefreshingEquipment] = useState(false)
   const [portalToast, setPortalToast] = useState(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  const [customersLastUpdatedAt, setCustomersLastUpdatedAt] = useState(0)
+  const [equipmentLastUpdatedAt, setEquipmentLastUpdatedAt] = useState(0)
+  const [pendingApprovalsLastUpdatedAt, setPendingApprovalsLastUpdatedAt] = useState(0)
   const [selectedEquipment, setSelectedEquipment] = useState(null)
   const [reports, setReports] = useState([])
   const [reportYearFilter, setReportYearFilter] = useState('')
@@ -537,6 +558,24 @@ export default function PortalDashboardPage() {
     return () => clearTimeout(timer)
   }, [portalToast])
 
+  useEffect(() => {
+    const interval = setInterval(() => setNowMs(Date.now()), 60000)
+    return () => clearInterval(interval)
+  }, [])
+
+  const customersLastUpdatedLabel = useMemo(
+    () => formatLastUpdatedLabel(customersLastUpdatedAt, nowMs),
+    [customersLastUpdatedAt, nowMs],
+  )
+  const equipmentLastUpdatedLabel = useMemo(
+    () => formatLastUpdatedLabel(equipmentLastUpdatedAt, nowMs),
+    [equipmentLastUpdatedAt, nowMs],
+  )
+  const pendingApprovalsLastUpdatedLabel = useMemo(
+    () => formatLastUpdatedLabel(pendingApprovalsLastUpdatedAt, nowMs),
+    [pendingApprovalsLastUpdatedAt, nowMs],
+  )
+
   // Handle session expiry and redirect to login with message
   useEffect(() => {
     const handleSessionExpired = () => {
@@ -791,6 +830,7 @@ export default function PortalDashboardPage() {
     try {
       const nextReports = await getPendingReportApprovals()
       setPendingReportApprovals(nextReports)
+      setPendingApprovalsLastUpdatedAt(Date.now())
     } catch (error) {
       if (Number(error?.status || 0) !== 403) {
         setPendingApprovalsError(String(error?.message || 'Unable to load pending approvals.'))
@@ -865,6 +905,7 @@ export default function PortalDashboardPage() {
     try {
       const nextCompanies = await getPortalCompanies()
       setCompanies(nextCompanies)
+      setCustomersLastUpdatedAt(Date.now())
       if (['owner', 'office_staff'].includes(profile?.role)) {
         await refreshDashboardStats(true)
       }
@@ -890,6 +931,7 @@ export default function PortalDashboardPage() {
         search: searchQuery,
       })
       setEquipment(refreshedEquipment)
+      setEquipmentLastUpdatedAt(Date.now())
       if (selectedEquipment) {
         const nextSelectedEquipment = refreshedEquipment.find(
           (item) => String(item.id) === String(selectedEquipment.id),
@@ -1018,6 +1060,7 @@ export default function PortalDashboardPage() {
           const nextCompanies = await getPortalCompanies()
           if (cancelled) return
           setCompanies(nextCompanies)
+          setCustomersLastUpdatedAt(Date.now())
 
           if (selectedCompanyId) {
             activeCompanyId = selectedCompanyId
@@ -1060,6 +1103,7 @@ export default function PortalDashboardPage() {
 
         setCompany(nextCompany)
         setEquipment(nextEquipment)
+        setEquipmentLastUpdatedAt(Date.now())
         setEquipmentPage(1)
       } catch (error) {
         if (cancelled) return
@@ -1286,6 +1330,7 @@ export default function PortalDashboardPage() {
       const created = await createPortalCustomer(customerForm)
       const refreshedCompanies = await getPortalCompanies()
       setCompanies(refreshedCompanies)
+      setCustomersLastUpdatedAt(Date.now())
       setCustomerForm(buildEmptyCustomerForm())
       setShowCreateCustomerForm(false)
       setCustomerCreateSuccess(
@@ -1340,6 +1385,7 @@ export default function PortalDashboardPage() {
       const updated = await updatePortalCustomer(payload)
       const refreshedCompanies = await getPortalCompanies()
       setCompanies(refreshedCompanies)
+      setCustomersLastUpdatedAt(Date.now())
       setShowEditCustomerForm(false)
       setCustomerEditForm(buildEmptyCustomerEditForm())
       const nextCustomerMessage = customerEditForm.deactivate_customer
@@ -1509,6 +1555,7 @@ export default function PortalDashboardPage() {
         search: searchQuery,
       })
       setEquipment(refreshedEquipment)
+      setEquipmentLastUpdatedAt(Date.now())
       setEquipmentPage(1)
       setEquipmentForm(buildEmptyEquipmentForm())
       setShowCreateEquipmentForm(false)
@@ -1536,6 +1583,7 @@ export default function PortalDashboardPage() {
         search: searchQuery,
       })
       setEquipment(refreshedEquipment)
+      setEquipmentLastUpdatedAt(Date.now())
       if (selectedEquipmentIdToMaintain) {
         const nextSelectedEquipment = refreshedEquipment.find(
           (item) => String(item.id) === String(selectedEquipmentIdToMaintain),
@@ -1793,6 +1841,7 @@ export default function PortalDashboardPage() {
             dashboardStats={dashboardStats}
             dashboardStatsError={dashboardStatsError}
             dashboardStatsLoading={dashboardStatsLoading}
+            lastUpdatedLabel={customersLastUpdatedLabel}
             onRefreshCustomers={refreshCustomerCompanies}
             refreshingCustomers={refreshingCustomers}
             customerStatsFilter={customerStatsFilter}
@@ -1869,6 +1918,7 @@ export default function PortalDashboardPage() {
             pendingReportApprovals={pendingReportApprovals}
             pendingApprovalsLoading={pendingApprovalsLoading}
             pendingApprovalsError={pendingApprovalsError}
+            lastUpdatedLabel={pendingApprovalsLastUpdatedLabel}
             onRefresh={refreshPendingReportApprovals}
             onReviewReport={(report) => {
               setViewedReportError('')
@@ -1939,6 +1989,7 @@ export default function PortalDashboardPage() {
             searchInput={searchInput}
             onSearchInputChange={setSearchInput}
             onSearchSubmit={() => setSearchQuery(searchInput.trim())}
+            lastUpdatedLabel={equipmentLastUpdatedLabel}
             onOpenCreateEquipment={() => {
               setShowCreateEquipmentForm(true)
               setEquipmentCreateError('')

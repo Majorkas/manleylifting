@@ -4,6 +4,7 @@ import { CustomerCardGridSkeleton, CustomerStatsSkeleton } from './PortalLoading
 export default function CustomerListSection({
   isOwner,
   companies,
+  lastUpdatedLabel,
   dashboardStats,
   dashboardStatsError,
   dashboardStatsLoading,
@@ -35,6 +36,9 @@ export default function CustomerListSection({
           <h2 className="text-2xl font-extrabold text-[#123A7A]">Customer List</h2>
           <p className="mt-1 text-sm text-slate-600">
             Open a customer to view company details, equipment, reports, and certificates.
+          </p>
+          <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Last updated {lastUpdatedLabel}
           </p>
         </div>
         <div className="flex items-center gap-2">

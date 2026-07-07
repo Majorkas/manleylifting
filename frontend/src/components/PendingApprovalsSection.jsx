@@ -4,6 +4,7 @@ export default function PendingApprovalsSection({
   pendingReportApprovals,
   pendingApprovalsLoading,
   pendingApprovalsError,
+  lastUpdatedLabel,
   onRefresh,
   onReviewReport,
   getReportStatusBadge,
@@ -15,6 +16,9 @@ export default function PendingApprovalsSection({
           <h2 className="text-2xl font-extrabold text-[#123A7A]">Pending Report Approvals</h2>
           <p className="mt-1 text-sm text-slate-600">
             Submitted reports waiting for owner approval across all visible customers.
+          </p>
+          <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Last updated {lastUpdatedLabel}
           </p>
         </div>
         <div className="flex items-center gap-2">
