@@ -144,8 +144,16 @@ function prettifyRawMessage(path, status, rawMessage, body) {
     return 'Unsupported certificate file type. Upload a PDF, PNG, JPG, or JPEG file.'
   }
 
+  if (normalized.includes('certificate file content does not match the file extension')) {
+    return 'The certificate file content does not match its extension. Upload a valid PDF or image file.'
+  }
+
   if (normalized.includes('report images must')) {
     return 'Unsupported image type. Upload PNG, JPG, JPEG, or WEBP images only.'
+  }
+
+  if (normalized.includes('report image content does not match the file extension')) {
+    return 'One or more report images are invalid. Upload valid PNG, JPG, JPEG, or WEBP files only.'
   }
 
   if (normalized.includes('only owner can')) {

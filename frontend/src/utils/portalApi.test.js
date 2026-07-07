@@ -131,4 +131,36 @@ describe('portalApi error messaging', () => {
       'Too many failed sign-in attempts. Please wait 15 minutes and try again.',
     )
   })
+
+  it('maps certificate content mismatch error to clear guidance', async () => {
+    savePortalAccessToken('test-access-token')
+    fetch.mockResolvedValueOnce(
+      mockJsonResponse(400, {
+        detail: 'Certificate file content does not match the file extension',
+      }),
+    )
+
+    await expect(
+      createPortalEquipment({
+        company_id: 1,
+        name: 'Demo Equipment',
+      }),
+    ).rejects.toThrow('The certificate file content does not match its extension. Upload a valid PDF or image file.')
+  })
+
+  it('maps report image content mismatch error to clear guidance', async () => {
+    savePortalAccessToken('test-access-token')
+    fetch.mockResolvedValueOnce(
+      mockJsonResponse(400, {
+        detail: 'Report image content does not match the file extension',
+      }),
+    )
+
+    await expect(
+      createPortalEquipment({
+        company_id: 1,
+        name: 'Demo Equipment',
+      }),
+    ).rejects.toThrow('One or more report images are invalid. Upload valid PNG, JPG, JPEG, or WEBP files only.')
+  })
 })

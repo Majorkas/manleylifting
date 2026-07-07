@@ -1,4 +1,5 @@
 import json
+from io import BytesIO
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -6,6 +7,7 @@ from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
 from datetime import date
+from PIL import Image
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -559,6 +561,10 @@ class PortalRBACTests(TestCase):
             "public_id": "manleylifting/reports/report-image",
         }
 
+        image_buffer = BytesIO()
+        Image.new("RGB", (1, 1), color=(255, 0, 0)).save(image_buffer, format="PNG")
+        image_buffer.seek(0)
+
         self.client.force_authenticate(user=self.staff_user)
         response = self.client.post(
             f"/api/portal/equipment/{self.equipment_a.id}/reports/",
@@ -567,7 +573,7 @@ class PortalRBACTests(TestCase):
                 "report_date": "2026-06-30",
                 "status": InspectionReport.STATUS_DRAFT,
                 "images": [
-                    SimpleUploadedFile("damage.jpg", b"fake-image-bytes", content_type="image/jpeg")
+                    SimpleUploadedFile("damage.png", image_buffer.getvalue(), content_type="image/png")
                 ],
             },
             format="multipart",
@@ -576,6 +582,24 @@ class PortalRBACTests(TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(len(response.json().get("images", [])), 1)
         self.assertEqual(ReportImage.objects.count(), 1)
+
+    def test_staff_cannot_upload_invalid_report_image_content(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            f"/api/portal/equipment/{self.equipment_a.id}/reports/",
+            data={
+                "title": "Invalid report image",
+                "report_date": "2026-06-30",
+                "status": InspectionReport.STATUS_DRAFT,
+                "images": [
+                    SimpleUploadedFile("damage.png", b"not-an-image", content_type="image/png")
+                ],
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json().get("detail"), "Report image content does not match the file extension")
 
     @patch("api.portal_views.cloudinary_uploader.destroy")
     @patch("api.portal_views._cloudinary_is_configured", return_value=True)
@@ -830,6 +854,20 @@ class PortalRBACTests(TestCase):
             format="multipart",
         )
         self.assertEqual(response.status_code, 201)
+
+    def test_staff_cannot_upload_certificate_with_invalid_pdf_content(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            f"/api/portal/equipment/{self.equipment_a.id}/certificates/",
+            data={
+                "title": "Invalid certificate",
+                "file": SimpleUploadedFile("cert.pdf", b"not-a-pdf", content_type="application/pdf"),
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json().get("detail"), "Certificate file content does not match the file extension")
 
     def test_owner_can_manage_staff_assignments(self):
         self.client.force_authenticate(user=self.owner_user)

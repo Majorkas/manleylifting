@@ -14,6 +14,7 @@ from django.db import transaction
 from django.db.models import Count, Q
 from django.utils import timezone
 from django.utils.text import slugify
+from PIL import Image, UnidentifiedImageError
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated
@@ -165,10 +166,43 @@ def _validate_certificate_upload(uploaded_file):
     if extension not in CERTIFICATE_ALLOWED_EXTENSIONS:
         return "Certificate file type must be PDF, PNG, JPG, or JPEG"
 
+    uploaded_file.seek(0)
+    if extension == ".pdf":
+        header = uploaded_file.read(5)
+        uploaded_file.seek(0)
+        if header != b"%PDF-":
+            return "Certificate file content does not match the file extension"
+        return ""
+
+    allowed_image_formats = {
+        ".png": {"PNG"},
+        ".jpg": {"JPEG"},
+        ".jpeg": {"JPEG"},
+    }
+
+    try:
+        image = Image.open(uploaded_file)
+        image.verify()
+        image_format = str(image.format or "").upper()
+    except (UnidentifiedImageError, OSError, ValueError):
+        uploaded_file.seek(0)
+        return "Certificate file content does not match the file extension"
+
+    uploaded_file.seek(0)
+    if image_format not in allowed_image_formats.get(extension, set()):
+        return "Certificate file content does not match the file extension"
+
     return ""
 
 
 def _validate_report_images(report_images):
+    allowed_image_formats = {
+        ".png": {"PNG"},
+        ".jpg": {"JPEG"},
+        ".jpeg": {"JPEG"},
+        ".webp": {"WEBP"},
+    }
+
     for uploaded_file in report_images:
         if uploaded_file.size > REPORT_IMAGE_MAX_FILE_SIZE_BYTES:
             return "Each report image must be 10MB or smaller"
@@ -176,6 +210,19 @@ def _validate_report_images(report_images):
         extension = os.path.splitext(uploaded_file.name or "")[1].lower()
         if extension not in REPORT_IMAGE_ALLOWED_EXTENSIONS:
             return "Report images must be PNG, JPG, JPEG, or WEBP"
+
+        uploaded_file.seek(0)
+        try:
+            image = Image.open(uploaded_file)
+            image.verify()
+            image_format = str(image.format or "").upper()
+        except (UnidentifiedImageError, OSError, ValueError):
+            uploaded_file.seek(0)
+            return "Report image content does not match the file extension"
+
+        uploaded_file.seek(0)
+        if image_format not in allowed_image_formats.get(extension, set()):
+            return "Report image content does not match the file extension"
 
     return ""
 
