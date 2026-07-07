@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import CustomerListSection from '../components/CustomerListSection'
 import EmployeeControlsSection from '../components/EmployeeControlsSection'
@@ -130,7 +130,7 @@ function normalizeReportChecklistItems(items) {
     return {
       label,
       status: normalizedStatus,
-      note: String(existing?.note || '').trim(),
+      note: String(existing?.note ?? ''),
     }
   })
 }
@@ -158,6 +158,88 @@ function getMissingChecklistNoteLabel(items) {
   )
   return missing?.label || ''
 }
+
+const ReportChecklistEditor = memo(function ReportChecklistEditor({ checklistItems, onChange }) {
+  const [localItems, setLocalItems] = useState(() => normalizeReportChecklistItems(checklistItems))
+
+  useEffect(() => {
+    setLocalItems(normalizeReportChecklistItems(checklistItems))
+  }, [checklistItems])
+
+  function updateLocalItem(index, patch) {
+    setLocalItems((current) => {
+      const nextItems = normalizeReportChecklistItems(current)
+      nextItems[index] = {
+        ...nextItems[index],
+        ...patch,
+      }
+      return nextItems
+    })
+  }
+
+  function updateStatus(index, status) {
+    const nextItems = normalizeReportChecklistItems(localItems)
+    nextItems[index] = {
+      ...nextItems[index],
+      status,
+    }
+    setLocalItems(nextItems)
+    onChange(nextItems)
+  }
+
+  function commitNotes() {
+    onChange(localItems)
+  }
+
+  return (
+    <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 md:col-span-2">
+      <div className="mb-3">
+        <h4 className="text-sm font-bold text-[#123A7A]">Inspection Template Checklist</h4>
+        <p className="mt-1 text-xs text-slate-600">
+          Mark each check item. Notes are required for Worn but Servicable and Attention Required.
+        </p>
+      </div>
+
+      <div className="space-y-3">
+        {localItems.map((item, index) => {
+          const needsNote = item.status !== REPORT_CHECKLIST_STATUS_GOOD
+
+          return (
+            <div key={item.label} className="rounded-md border border-slate-200 bg-white p-3">
+              <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_220px] md:items-start">
+                <p className="text-sm font-semibold text-slate-800">{item.label}</p>
+                <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                  Condition
+                  <select
+                    value={item.status}
+                    onChange={(event) => updateStatus(index, event.target.value)}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  >
+                    <option value={REPORT_CHECKLIST_STATUS_GOOD}>Good Order</option>
+                    <option value={REPORT_CHECKLIST_STATUS_WORN}>Worn but Servicable</option>
+                    <option value={REPORT_CHECKLIST_STATUS_ATTENTION}>Attention Required</option>
+                  </select>
+                </label>
+              </div>
+
+              {needsNote && (
+                <label className="mt-2 block text-xs font-semibold uppercase tracking-wide text-slate-600">
+                  Note (required)
+                  <textarea
+                    value={item.note}
+                    onChange={(event) => updateLocalItem(index, { note: event.target.value })}
+                    onBlur={commitNotes}
+                    className="mt-1 min-h-16 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  />
+                </label>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+})
 
 function parsePositiveInt(value, fallback = 1) {
   const parsed = Number.parseInt(String(value || ''), 10)
@@ -770,6 +852,10 @@ export default function PortalDashboardPage() {
     if (!query) return companies
     return companies.filter((item) => String(item.name || '').toLowerCase().includes(query))
   }, [companies, companyPickerSearchInput])
+  const normalizedReportChecklistItems = useMemo(
+    () => normalizeReportChecklistItems(reportForm.checklist_items),
+    [reportForm.checklist_items],
+  )
   const isEditingReport = Boolean(reportForm.reportId)
   const isAnyModalOpen = Boolean(
     viewedReport ||
@@ -2438,82 +2524,11 @@ export default function PortalDashboardPage() {
     ]
   }
 
-  function renderReportChecklistEditor() {
-    const checklistItems = normalizeReportChecklistItems(reportForm.checklist_items)
-
-    return (
-      <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 md:col-span-2">
-        <div className="mb-3">
-          <h4 className="text-sm font-bold text-[#123A7A]">Inspection Template Checklist</h4>
-          <p className="mt-1 text-xs text-slate-600">
-            Mark each check item. Notes are required for Worn but Servicable and Attention Required.
-          </p>
-        </div>
-
-        <div className="space-y-3">
-          {checklistItems.map((item, index) => {
-            const needsNote = item.status !== REPORT_CHECKLIST_STATUS_GOOD
-
-            return (
-              <div key={item.label} className="rounded-md border border-slate-200 bg-white p-3">
-                <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_220px] md:items-start">
-                  <p className="text-sm font-semibold text-slate-800">{item.label}</p>
-                  <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-                    Condition
-                    <select
-                      value={item.status}
-                      onChange={(event) => {
-                        const nextStatus = event.target.value
-                        setReportForm((current) => {
-                          const nextChecklistItems = normalizeReportChecklistItems(current.checklist_items)
-                          nextChecklistItems[index] = {
-                            ...nextChecklistItems[index],
-                            status: nextStatus,
-                          }
-                          return {
-                            ...current,
-                            checklist_items: nextChecklistItems,
-                          }
-                        })
-                      }}
-                      className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
-                    >
-                      <option value={REPORT_CHECKLIST_STATUS_GOOD}>Good Order</option>
-                      <option value={REPORT_CHECKLIST_STATUS_WORN}>Worn but Servicable</option>
-                      <option value={REPORT_CHECKLIST_STATUS_ATTENTION}>Attention Required</option>
-                    </select>
-                  </label>
-                </div>
-
-                {needsNote && (
-                  <label className="mt-2 block text-xs font-semibold uppercase tracking-wide text-slate-600">
-                    Note (required)
-                    <textarea
-                      value={item.note}
-                      onChange={(event) => {
-                        const nextNote = event.target.value
-                        setReportForm((current) => {
-                          const nextChecklistItems = normalizeReportChecklistItems(current.checklist_items)
-                          nextChecklistItems[index] = {
-                            ...nextChecklistItems[index],
-                            note: nextNote,
-                          }
-                          return {
-                            ...current,
-                            checklist_items: nextChecklistItems,
-                          }
-                        })
-                      }}
-                      className="mt-1 min-h-16 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
-                    />
-                  </label>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      </div>
-    )
+  function updateReportChecklistItems(nextChecklistItems) {
+    setReportForm((current) => ({
+      ...current,
+      checklist_items: normalizeReportChecklistItems(nextChecklistItems),
+    }))
   }
 
   function handleCloseEquipmentDetails() {
@@ -4010,7 +4025,10 @@ export default function PortalDashboardPage() {
                     ))}
                   </select>
                 </label>
-                {renderReportChecklistEditor()}
+                <ReportChecklistEditor
+                  checklistItems={normalizedReportChecklistItems}
+                  onChange={updateReportChecklistItems}
+                />
                 <label className="text-sm font-semibold text-slate-700 md:col-span-2">
                   Images
                   <input
@@ -4478,7 +4496,10 @@ export default function PortalDashboardPage() {
                       ))}
                     </select>
                   </label>
-                  {renderReportChecklistEditor()}
+                  <ReportChecklistEditor
+                    checklistItems={normalizedReportChecklistItems}
+                    onChange={updateReportChecklistItems}
+                  />
                   <label className="text-sm font-semibold text-slate-700 md:col-span-2">
                     Add Images
                     <input
