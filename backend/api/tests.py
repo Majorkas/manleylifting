@@ -285,6 +285,31 @@ class PortalRBACTests(TestCase):
         self.assertIn("access", refresh_response.json())
         self.assertNotIn("refresh", refresh_response.json())
 
+    def test_refresh_endpoint_is_throttled(self):
+        cache.clear()
+
+        with patch.dict(
+            ScopedRateThrottle.THROTTLE_RATES,
+            {"auth.token": "100/minute", "auth.refresh": "1/minute"},
+            clear=False,
+        ):
+            login_response = self.client.post(
+                "/api/auth/token/",
+                data={"username": "owner", "password": "testpass123"},
+                format="json",
+            )
+            self.assertEqual(login_response.status_code, 200)
+
+            refresh_cookie = login_response.cookies.get("manley_portal_refresh")
+            self.assertIsNotNone(refresh_cookie)
+            self.client.cookies["manley_portal_refresh"] = refresh_cookie.value
+
+            first_refresh = self.client.post("/api/auth/token/refresh/", data={}, format="json")
+            second_refresh = self.client.post("/api/auth/token/refresh/", data={}, format="json")
+
+        self.assertEqual(first_refresh.status_code, 200)
+        self.assertEqual(second_refresh.status_code, 429)
+
     def test_login_errors_do_not_enumerate_usernames(self):
         cache.clear()
         with patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"auth.token": "100/minute"}, clear=False):

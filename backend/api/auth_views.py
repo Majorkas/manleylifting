@@ -21,6 +21,8 @@ class PortalTokenObtainPairView(TokenObtainPairView):
 
 class PortalTokenRefreshView(TokenRefreshView):
     serializer_class = PortalTokenRefreshSerializer
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth.refresh"
 
     def post(self, request, *args, **kwargs):
         response = super().post(request, *args, **kwargs)
