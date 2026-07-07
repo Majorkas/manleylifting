@@ -8,7 +8,6 @@ export default function EquipmentTableSection({
   onSearchSubmit,
   onOpenCreateEquipment,
   equipmentCreateError,
-  equipmentCreateSuccess,
   onRefreshEquipment,
   refreshingEquipment,
   loading,
@@ -35,7 +34,6 @@ export default function EquipmentTableSection({
   equipmentStatusError,
   reportError,
   certificateError,
-  certificateSuccess,
   onOpenUploadCertificate,
   onOpenCreateReport,
   certificatesLoading,
@@ -114,12 +112,6 @@ export default function EquipmentTableSection({
           {equipmentCreateError}
         </div>
       )}
-      {equipmentCreateSuccess && (
-        <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-          {equipmentCreateSuccess}
-        </div>
-      )}
-
       {loading ? (
         <EquipmentTableSkeleton />
       ) : equipment.length === 0 ? (
@@ -311,11 +303,6 @@ export default function EquipmentTableSection({
                         {certificateError && (
                           <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
                             {certificateError}
-                          </div>
-                        )}
-                        {certificateSuccess && (
-                          <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
-                            {certificateSuccess}
                           </div>
                         )}
 

@@ -7,7 +7,6 @@ export default function EmployeeControlsSection({
   employeeSearchInput,
   onEmployeeSearchChange,
   staffAssignmentsError,
-  staffAssignmentsSuccess,
   staffAssignmentsLoading,
   employeeControlsTab,
   onSetEmployeeControlsTab,
@@ -94,12 +93,6 @@ export default function EmployeeControlsSection({
           {staffAssignmentsError}
         </div>
       )}
-      {staffAssignmentsSuccess && (
-        <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-          {staffAssignmentsSuccess}
-        </div>
-      )}
-
       {staffAssignmentsLoading ? (
         <EmployeeAssignmentsSkeleton />
       ) : staffAssignments.length === 0 ? (

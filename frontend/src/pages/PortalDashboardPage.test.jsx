@@ -11,6 +11,7 @@ vi.mock('../components/PortalLayout', () => ({
 vi.mock('../utils/portalApi', () => ({
   clearPortalSession: vi.fn(),
   createEquipmentReport: vi.fn(),
+  changePortalPassword: vi.fn(),
   deleteStaffAssignment: vi.fn(),
   getEquipmentReports: vi.fn(),
   getPortalDashboardStats: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock('../utils/portalApi', () => ({
 
 import {
   createEquipmentReport,
+  changePortalPassword,
   deleteStaffAssignment,
   getEquipmentReports,
   getPortalDashboardStats,
@@ -222,6 +224,32 @@ describe('PortalDashboardPage', () => {
 
     expect(screen.getByText('Login Page')).toBeInTheDocument()
   })
+
+  it('shows an auto-dismissing toast after a password update', async () => {
+    const user = userEvent.setup()
+
+    mockCustomerData()
+    changePortalPassword.mockResolvedValue({})
+
+    renderDashboardPage('/portal')
+
+    expect(await screen.findByText('Acme Lifts')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Change Password' }))
+    await user.type(screen.getByLabelText('Current Password'), 'old-password')
+    await user.type(screen.getByLabelText('New Password'), 'new-password-123')
+    await user.type(screen.getByLabelText('Confirm New Password'), 'new-password-123')
+    await user.click(screen.getByRole('button', { name: 'Update Password' }))
+
+    expect(await screen.findByText('Password updated successfully.')).toBeInTheDocument()
+
+    await waitFor(
+      () => {
+        expect(screen.queryByText('Password updated successfully.')).not.toBeInTheDocument()
+      },
+      { timeout: 6000 },
+    )
+  }, 10000)
 
   it('lets owners jump from a report modal to the matching equipment', async () => {
     const user = userEvent.setup()

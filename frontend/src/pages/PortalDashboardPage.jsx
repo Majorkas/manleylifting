@@ -4,6 +4,7 @@ import CustomerListSection from '../components/CustomerListSection'
 import EmployeeControlsSection from '../components/EmployeeControlsSection'
 import EquipmentTableSection from '../components/EquipmentTableSection'
 import Modal from '../components/Modal'
+import PortalToast from '../components/PortalToast'
 import PendingApprovalsSection from '../components/PendingApprovalsSection'
 import PortalLayout from '../components/PortalLayout'
 import {
@@ -263,6 +264,7 @@ export default function PortalDashboardPage() {
   const [loggingOut, setLoggingOut] = useState(false)
   const [refreshingCustomers, setRefreshingCustomers] = useState(false)
   const [refreshingEquipment, setRefreshingEquipment] = useState(false)
+  const [portalToast, setPortalToast] = useState(null)
   const [selectedEquipment, setSelectedEquipment] = useState(null)
   const [reports, setReports] = useState([])
   const [reportYearFilter, setReportYearFilter] = useState('')
@@ -275,7 +277,7 @@ export default function PortalDashboardPage() {
   const [certificates, setCertificates] = useState([])
   const [certificatesLoading, setCertificatesLoading] = useState(false)
   const [certificateError, setCertificateError] = useState('')
-  const [certificateSuccess, setCertificateSuccess] = useState('')
+  const [, setCertificateSuccess] = useState('')
   const [downloadingCertificateId, setDownloadingCertificateId] = useState(0)
   const [showCreateCertificateForm, setShowCreateCertificateForm] = useState(false)
   const [creatingCertificate, setCreatingCertificate] = useState(false)
@@ -305,13 +307,13 @@ export default function PortalDashboardPage() {
   const [customerForm, setCustomerForm] = useState(buildEmptyCustomerForm())
   const [creatingCustomer, setCreatingCustomer] = useState(false)
   const [customerCreateError, setCustomerCreateError] = useState('')
-  const [customerCreateSuccess, setCustomerCreateSuccess] = useState('')
+  const [, setCustomerCreateSuccess] = useState('')
   const [showCreateCustomerForm, setShowCreateCustomerForm] = useState(false)
   const [showEditCustomerForm, setShowEditCustomerForm] = useState(false)
   const [editingCustomer, setEditingCustomer] = useState(false)
   const [customerEditForm, setCustomerEditForm] = useState(buildEmptyCustomerEditForm())
   const [customerEditError, setCustomerEditError] = useState('')
-  const [customerEditSuccess, setCustomerEditSuccess] = useState('')
+  const [, setCustomerEditSuccess] = useState('')
   const [customerStatsFilter, setCustomerStatsFilter] = useState('all')
   const [customerSearchInput, setCustomerSearchInput] = useState('')
   const [customerPage, setCustomerPage] = useState(1)
@@ -321,7 +323,7 @@ export default function PortalDashboardPage() {
   const [inactiveStaffAssignments, setInactiveStaffAssignments] = useState([])
   const [staffAssignmentsLoading, setStaffAssignmentsLoading] = useState(false)
   const [staffAssignmentsError, setStaffAssignmentsError] = useState('')
-  const [staffAssignmentsSuccess, setStaffAssignmentsSuccess] = useState('')
+  const [, setStaffAssignmentsSuccess] = useState('')
   const [employeeControlsTab, setEmployeeControlsTab] = useState('active')
   const [employeeSearchInput, setEmployeeSearchInput] = useState('')
   const [employeePage, setEmployeePage] = useState(1)
@@ -337,10 +339,10 @@ export default function PortalDashboardPage() {
   const [passwordForm, setPasswordForm] = useState(buildEmptyPasswordForm())
   const [changingPassword, setChangingPassword] = useState(false)
   const [passwordChangeError, setPasswordChangeError] = useState('')
-  const [passwordChangeSuccess, setPasswordChangeSuccess] = useState('')
+  const [, setPasswordChangeSuccess] = useState('')
   const [creatingEquipment, setCreatingEquipment] = useState(false)
   const [equipmentCreateError, setEquipmentCreateError] = useState('')
-  const [equipmentCreateSuccess, setEquipmentCreateSuccess] = useState('')
+  const [, setEquipmentCreateSuccess] = useState('')
   const [equipmentForm, setEquipmentForm] = useState(buildEmptyEquipmentForm())
   const [equipmentPage, setEquipmentPage] = useState(1)
   const [updatingEquipmentStatus, setUpdatingEquipmentStatus] = useState(false)
@@ -528,6 +530,12 @@ export default function PortalDashboardPage() {
     mediaQuery.addListener(updateViewport)
     return () => mediaQuery.removeListener(updateViewport)
   }, [])
+
+  useEffect(() => {
+    if (!portalToast) return
+    const timer = setTimeout(() => setPortalToast(null), 3500)
+    return () => clearTimeout(timer)
+  }, [portalToast])
 
   // Handle session expiry and redirect to login with message
   useEffect(() => {
@@ -841,6 +849,13 @@ export default function PortalDashboardPage() {
     }
   }
 
+  function showSuccessToast(message, title) {
+    setPortalToast({
+      title: title || 'Updated',
+      message,
+    })
+  }
+
   async function refreshCustomerCompanies() {
     if (!isAuthenticated || refreshingCustomers) return
 
@@ -1111,6 +1126,7 @@ export default function PortalDashboardPage() {
       })
 
       setPasswordChangeSuccess('Password updated successfully.')
+      showSuccessToast('Password updated successfully.', 'Password Updated')
       setPasswordForm(buildEmptyPasswordForm())
       setProfile((current) => {
         if (!current) return current
@@ -1219,6 +1235,7 @@ export default function PortalDashboardPage() {
       const refreshed = await getEquipmentCertificates(activeSelectedEquipment.id)
       setCertificates(refreshed)
       setCertificateSuccess('Certificate uploaded successfully.')
+      showSuccessToast('Certificate uploaded successfully.', 'Certificate Uploaded')
       setCertificateForm(buildEmptyCertificateForm())
       setShowCreateCertificateForm(false)
     } catch (error) {
@@ -1274,6 +1291,10 @@ export default function PortalDashboardPage() {
       setCustomerCreateSuccess(
         `Created customer ${created.customer.username} for ${created.company.name}.`,
       )
+      showSuccessToast(
+        `Created customer ${created.customer.username} for ${created.company.name}.`,
+        'Customer Created',
+      )
     } catch (error) {
       setCustomerCreateError(String(error?.message || 'Unable to create customer account.'))
     } finally {
@@ -1321,10 +1342,13 @@ export default function PortalDashboardPage() {
       setCompanies(refreshedCompanies)
       setShowEditCustomerForm(false)
       setCustomerEditForm(buildEmptyCustomerEditForm())
-      setCustomerEditSuccess(
-        customerEditForm.deactivate_customer
-          ? `Deactivated customer ${updated.name}.`
-          : `Updated customer ${updated.name}.`,
+      const nextCustomerMessage = customerEditForm.deactivate_customer
+        ? `Deactivated customer ${updated.name}.`
+        : `Updated customer ${updated.name}.`
+      setCustomerEditSuccess(nextCustomerMessage)
+      showSuccessToast(
+        nextCustomerMessage,
+        customerEditForm.deactivate_customer ? 'Customer Deactivated' : 'Customer Updated',
       )
     } catch (error) {
       setCustomerEditError(String(error?.message || 'Unable to update customer.'))
@@ -1356,6 +1380,7 @@ export default function PortalDashboardPage() {
       setEmployeeForm(buildEmptyEmployeeForm())
       setShowCreateEmployeeForm(false)
       setStaffAssignmentsSuccess(`Created employee ${created.username}.`)
+      showSuccessToast(`Created employee ${created.username}.`, 'Employee Created')
     } catch (error) {
       setStaffAssignmentsError(String(error?.message || 'Unable to create employee account.'))
     } finally {
@@ -1375,6 +1400,7 @@ export default function PortalDashboardPage() {
         allowed_company_ids: assignment.allowed_company_ids || [],
       })
       setStaffAssignmentsSuccess(`Updated permissions for ${assignment.username}.`)
+      showSuccessToast(`Updated permissions for ${assignment.username}.`, 'Permissions Updated')
       await refreshStaffAssignments(true)
       if (String(companyPickerUserId) === String(assignment.user_id)) {
         setCompanyPickerUserId('')
@@ -1412,6 +1438,7 @@ export default function PortalDashboardPage() {
         allowed_company_ids: assignment.allowed_company_ids || [],
       })
       setStaffAssignmentsSuccess(`Updated employee type for ${assignment.username}.`)
+      showSuccessToast(`Updated employee type for ${assignment.username}.`, 'Employee Updated')
       await refreshStaffAssignments(true)
     } catch (error) {
       setActiveStaffAssignments((current) =>
@@ -1435,6 +1462,7 @@ export default function PortalDashboardPage() {
     try {
       await deleteStaffAssignment(assignment.user_id)
       setStaffAssignmentsSuccess(`Deactivated employee ${assignment.username}.`)
+      showSuccessToast(`Deactivated employee ${assignment.username}.`, 'Employee Deactivated')
       await refreshStaffAssignments(true)
     } catch (error) {
       setStaffAssignmentsError(String(error?.message || 'Unable to remove employee account.'))
@@ -1452,6 +1480,7 @@ export default function PortalDashboardPage() {
     try {
       await reactivateStaffAssignment(assignment.user_id)
       setStaffAssignmentsSuccess(`Reactivated employee ${assignment.username}.`)
+      showSuccessToast(`Reactivated employee ${assignment.username}.`, 'Employee Reactivated')
       await refreshStaffAssignments(true)
     } catch (error) {
       setStaffAssignmentsError(String(error?.message || 'Unable to reactivate employee account.'))
@@ -1484,6 +1513,7 @@ export default function PortalDashboardPage() {
       setEquipmentForm(buildEmptyEquipmentForm())
       setShowCreateEquipmentForm(false)
       setEquipmentCreateSuccess(`Created equipment ${created.name}.`)
+      showSuccessToast(`Created equipment ${created.name}.`, 'Equipment Created')
     } catch (error) {
       setEquipmentCreateError(String(error?.message || 'Unable to create equipment.'))
     } finally {
@@ -1700,6 +1730,7 @@ export default function PortalDashboardPage() {
 
   return (
     <PortalLayout hideNavbar={isAnyModalOpen}>
+      <PortalToast toast={portalToast} onClose={() => setPortalToast(null)} />
       <section className="mx-auto w-full max-w-7xl px-6 py-10 md:py-12">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -1771,9 +1802,7 @@ export default function PortalDashboardPage() {
             customerSearchInput={customerSearchInput}
             onCustomerSearchChange={setCustomerSearchInput}
             customerCreateError={customerCreateError}
-            customerCreateSuccess={customerCreateSuccess}
             customerEditError={customerEditError}
-            customerEditSuccess={customerEditSuccess}
             loading={loading}
             visibleCustomers={visibleCustomers}
             filteredCustomers={filteredCustomers}
@@ -1804,7 +1833,6 @@ export default function PortalDashboardPage() {
             employeeSearchInput={employeeSearchInput}
             onEmployeeSearchChange={setEmployeeSearchInput}
             staffAssignmentsError={staffAssignmentsError}
-            staffAssignmentsSuccess={staffAssignmentsSuccess}
             staffAssignmentsLoading={staffAssignmentsLoading}
             employeeControlsTab={employeeControlsTab}
             onSetEmployeeControlsTab={setEmployeeControlsTab}
@@ -1916,7 +1944,6 @@ export default function PortalDashboardPage() {
               setEquipmentCreateError('')
             }}
             equipmentCreateError={equipmentCreateError}
-            equipmentCreateSuccess={equipmentCreateSuccess}
             onRefreshEquipment={refreshEquipmentData}
             refreshingEquipment={refreshingEquipment}
             loading={loading}
@@ -1954,7 +1981,6 @@ export default function PortalDashboardPage() {
             equipmentStatusError={equipmentStatusError}
             reportError={reportError}
             certificateError={certificateError}
-            certificateSuccess={certificateSuccess}
             onOpenUploadCertificate={() => {
               setCertificateError('')
               setCertificateSuccess('')
@@ -2071,12 +2097,6 @@ export default function PortalDashboardPage() {
                 {certificateError}
               </div>
             )}
-            {certificateSuccess && (
-              <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-                {certificateSuccess}
-              </div>
-            )}
-
             {canEditReports && (
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
@@ -3008,12 +3028,6 @@ export default function PortalDashboardPage() {
                   {passwordChangeError}
                 </div>
               )}
-              {passwordChangeSuccess && (
-                <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-                  {passwordChangeSuccess}
-                </div>
-              )}
-
               <div className="mt-4 grid gap-3">
                 <label className="text-sm font-semibold text-slate-700">
                   Current Password
