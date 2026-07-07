@@ -283,6 +283,23 @@ class PortalRBACTests(TestCase):
         self.assertIn("access", refresh_response.json())
         self.assertNotIn("refresh", refresh_response.json())
 
+    def test_login_errors_do_not_enumerate_usernames(self):
+        unknown_user_response = self.client.post(
+            "/api/auth/token/",
+            data={"username": "does-not-exist", "password": "testpass123"},
+            format="json",
+        )
+        wrong_password_response = self.client.post(
+            "/api/auth/token/",
+            data={"username": "owner", "password": "wrong-password"},
+            format="json",
+        )
+
+        self.assertEqual(unknown_user_response.status_code, 400)
+        self.assertEqual(wrong_password_response.status_code, 400)
+        self.assertEqual(unknown_user_response.json().get("detail"), ["Invalid credentials"])
+        self.assertEqual(wrong_password_response.json().get("detail"), ["Invalid credentials"])
+
     def test_owner_sees_pending_report_approvals_only(self):
         submitted_a = InspectionReport.objects.create(
             equipment=self.equipment_a,

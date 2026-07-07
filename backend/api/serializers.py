@@ -323,11 +323,8 @@ class PortalTokenObtainPairSerializer(TokenObtainPairSerializer):
         user_model = get_user_model()
         user = user_model.objects.filter(username__iexact=username).first()
 
-        if user is None:
-            raise serializers.ValidationError({"detail": "Incorrect username"})
-
-        if not user.check_password(password):
-            raise serializers.ValidationError({"detail": "Incorrect password"})
+        if user is None or not user.check_password(password):
+            raise serializers.ValidationError({"detail": "Invalid credentials"})
 
         if not user.is_active:
             raise serializers.ValidationError({"detail": "Account is disabled"})

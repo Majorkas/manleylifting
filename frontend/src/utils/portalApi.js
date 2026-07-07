@@ -84,12 +84,8 @@ function prettifyRawMessage(path, status, rawMessage, body) {
     return 'You do not have permission to perform this action. Contact an account owner if you need access.'
   }
 
-  if (normalized.includes('incorrect username')) {
-    return 'That username was not found. Check the username and try again.'
-  }
-
-  if (normalized.includes('incorrect password')) {
-    return 'The password is incorrect. Re-enter your password and try again.'
+  if (normalized.includes('invalid credentials')) {
+    return 'Username or password is incorrect. Try again.'
   }
 
   if (normalized.includes('account is disabled')) {

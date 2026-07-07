@@ -43,11 +43,11 @@ describe('portalApi error messaging', () => {
     global.fetch = vi.fn()
   })
 
-  it('shows actionable login message for incorrect username', async () => {
-    fetch.mockResolvedValueOnce(mockJsonResponse(400, { detail: 'Incorrect username' }))
+  it('shows generic login message for invalid credentials', async () => {
+    fetch.mockResolvedValueOnce(mockJsonResponse(400, { detail: 'Invalid credentials' }))
 
     await expect(portalLogin('wrong_user', 'password123')).rejects.toThrow(
-      'That username was not found. Check the username and try again.',
+      'Username or password is incorrect. Try again.',
     )
   })
 
