@@ -15,7 +15,7 @@ from django.db.models import Count, Q
 from django.utils import timezone
 from django.utils.text import slugify
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.exceptions import TokenError
@@ -31,6 +31,7 @@ from .serializers import (
     PortalCustomerUpdateSerializer,
     PortalChangePasswordSerializer,
 )
+from .throttles import PortalMethodRateThrottle
 
 
 CERTIFICATE_ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
@@ -281,6 +282,7 @@ def _refresh_equipment_next_due_from_approved_reports(equipment):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
 def portal_me(request):
     profile = _profile_for_user(request.user)
     payload = {
@@ -298,6 +300,7 @@ def portal_me(request):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
 def portal_change_password(request):
     serializer = PortalChangePasswordSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -337,6 +340,7 @@ def portal_change_password(request):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
 def portal_logout(request):
     refresh = str(
         request.data.get("refresh")
@@ -359,6 +363,7 @@ def portal_logout(request):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
 def portal_company_header(request):
     company_id = request.GET.get("companyId")
     company = _selected_company(request.user, company_id)
@@ -371,6 +376,7 @@ def portal_company_header(request):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
 def portal_companies(request):
     today = timezone.localdate()
     due_soon_cutoff = today + timedelta(days=14)
@@ -417,6 +423,7 @@ def portal_companies(request):
 
 @api_view(["POST", "PATCH"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
 def portal_create_customer(request):
     if not _is_owner(request.user):
         return Response({"detail": "Only owner can create customers"}, status=status.HTTP_403_FORBIDDEN)

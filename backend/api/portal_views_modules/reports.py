@@ -4,7 +4,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -31,10 +31,12 @@ from ..serializers import (
     InspectionReportUpdateSerializer,
     ReportRevisionSerializer,
 )
+from ..throttles import PortalMethodRateThrottle
 
 
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
 def portal_equipment_reports(request, equipment_id):
     equipment = Equipment.objects.select_related("company").filter(id=equipment_id).first()
     if not equipment:
@@ -102,6 +104,7 @@ def portal_equipment_reports(request, equipment_id):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
 def portal_pending_report_approvals(request):
     if not _is_owner(request.user):
         return Response({"detail": "Only owner can view pending approvals"}, status=status.HTTP_403_FORBIDDEN)
@@ -127,6 +130,7 @@ def portal_pending_report_approvals(request):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
 def portal_dashboard_stats(request):
     if not _is_owner(request.user):
         return Response({"detail": "Only owner can view dashboard stats"}, status=status.HTTP_403_FORBIDDEN)
@@ -155,6 +159,7 @@ def portal_dashboard_stats(request):
 
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
 def portal_report_owner_edit(request, report_id):
     report = InspectionReport.objects.select_related("equipment__company").filter(id=report_id).first()
     if not report:
@@ -246,6 +251,7 @@ def portal_report_owner_edit(request, report_id):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
 def portal_report_revisions(request, report_id):
     report = InspectionReport.objects.select_related("equipment__company").filter(id=report_id).first()
     if not report:

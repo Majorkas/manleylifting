@@ -21,6 +21,7 @@ from .models import (
     ReportRevision,
     UserProfile,
 )
+from .throttles import PortalMethodRateThrottle
 
 
 TEST_CACHES = {
@@ -299,6 +300,38 @@ class PortalRBACTests(TestCase):
         self.assertEqual(wrong_password_response.status_code, 400)
         self.assertEqual(unknown_user_response.json().get("detail"), ["Invalid credentials"])
         self.assertEqual(wrong_password_response.json().get("detail"), ["Invalid credentials"])
+
+    def test_portal_read_requests_are_throttled(self):
+        cache.clear()
+        self.client.force_authenticate(user=self.owner_user)
+
+        with patch.dict(
+            PortalMethodRateThrottle.THROTTLE_RATES,
+            {"portal.read": "2/minute", "portal.write": "1/minute"},
+            clear=False,
+        ):
+            first = self.client.get("/api/portal/me/")
+            second = self.client.get("/api/portal/me/")
+            third = self.client.get("/api/portal/me/")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(third.status_code, 429)
+
+    def test_portal_write_requests_are_throttled(self):
+        cache.clear()
+        self.client.force_authenticate(user=self.owner_user)
+
+        with patch.dict(
+            PortalMethodRateThrottle.THROTTLE_RATES,
+            {"portal.read": "20/minute", "portal.write": "1/minute"},
+            clear=False,
+        ):
+            first = self.client.post("/api/auth/logout/", data={}, format="json")
+            second = self.client.post("/api/auth/logout/", data={}, format="json")
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 429)
 
     def test_owner_sees_pending_report_approvals_only(self):
         submitted_a = InspectionReport.objects.create(

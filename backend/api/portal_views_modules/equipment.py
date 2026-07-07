@@ -1,7 +1,7 @@
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -13,10 +13,12 @@ from ..portal_views import (
     _visible_company_ids,
 )
 from ..serializers import EquipmentCreateSerializer, EquipmentSerializer
+from ..throttles import PortalMethodRateThrottle
 
 
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
 def portal_equipment_list(request):
     if request.method == "POST":
         if not _is_staff_or_owner(request.user):
@@ -78,6 +80,7 @@ def portal_equipment_list(request):
 
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
 def portal_equipment_update(request, equipment_id):
     equipment = Equipment.objects.select_related("company").filter(id=equipment_id).first()
     if not equipment:

@@ -271,6 +271,8 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_THROTTLE_RATES": {
         "auth.token": "5/minute",
+        "portal.read": "300/hour",
+        "portal.write": "120/hour",
     },
 }
 

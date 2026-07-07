@@ -3,17 +3,19 @@ import os
 from django.http import FileResponse
 from django.utils.dateparse import parse_date
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from ..models import Certificate, Equipment, InspectionReport
 from ..portal_views import _is_staff_or_owner, _validate_certificate_upload, _visible_company_ids
 from ..serializers import CertificateSerializer
+from ..throttles import PortalMethodRateThrottle
 
 
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
 def portal_equipment_certificates(request, equipment_id):
     equipment = Equipment.objects.select_related("company").filter(id=equipment_id).first()
     if not equipment:
@@ -70,6 +72,7 @@ def portal_equipment_certificates(request, equipment_id):
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
 def portal_certificate_download(request, certificate_id):
     certificate = Certificate.objects.select_related("company").filter(id=certificate_id).first()
     if not certificate:
