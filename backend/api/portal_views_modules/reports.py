@@ -8,6 +8,7 @@ from rest_framework.decorators import api_view, permission_classes, throttle_cla
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from ..audit import log_portal_audit_event
 from ..models import Equipment, InspectionReport, ReportRevision, UserProfile
 from ..portal_views import (
     _get_pagination_params,
@@ -207,6 +208,20 @@ def portal_report_owner_edit(request, report_id):
                 )
         except ValueError as error:
             return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
+
+        if previous_status != InspectionReport.STATUS_APPROVED and report.status == InspectionReport.STATUS_APPROVED:
+            log_portal_audit_event(
+                request=request,
+                action="report.approved",
+                target_type="report",
+                target_id=report.id,
+                company=report.equipment.company,
+                details={
+                    "equipment_id": report.equipment_id,
+                    "previous_status": previous_status,
+                    "new_status": report.status,
+                },
+            )
 
         return Response(InspectionReportSerializer(report).data)
 

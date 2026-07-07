@@ -7,6 +7,7 @@ from rest_framework.decorators import api_view, permission_classes, throttle_cla
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from ..audit import log_portal_audit_event
 from ..models import Certificate, Equipment, InspectionReport
 from ..portal_views import _is_staff_or_owner, _validate_certificate_upload, _visible_company_ids
 from ..serializers import CertificateSerializer
@@ -65,6 +66,18 @@ def portal_equipment_certificates(request, equipment_id):
         issue_date=issue_date,
         expiry_date=expiry_date,
         uploaded_by=request.user,
+    )
+    log_portal_audit_event(
+        request=request,
+        action="certificate.uploaded",
+        target_type="certificate",
+        target_id=certificate.id,
+        company=equipment.company,
+        details={
+            "equipment_id": equipment.id,
+            "report_id": report.id if report else None,
+            "title": certificate.title,
+        },
     )
     serializer = CertificateSerializer(certificate, context={"request": request})
     return Response(serializer.data, status=status.HTTP_201_CREATED)

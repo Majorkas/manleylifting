@@ -13,6 +13,7 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import (
+    AuditLog,
     CatalogCollection,
     CatalogProduct,
     Company,
@@ -717,6 +718,13 @@ class PortalRBACTests(TestCase):
         self.equipment_a.refresh_from_db()
         self.assertEqual(self.equipment_a.next_inspection_due.isoformat(), "2027-06-25")
         self.assertEqual(ReportRevision.objects.filter(report=report).count(), 1)
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="report.approved",
+                target_type="report",
+                target_id=str(report.id),
+            ).exists()
+        )
 
     def test_staff_can_edit_own_draft_report(self):
         report = InspectionReport.objects.create(
@@ -854,6 +862,14 @@ class PortalRBACTests(TestCase):
             format="multipart",
         )
         self.assertEqual(response.status_code, 201)
+        certificate_id = response.json().get("id")
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="certificate.uploaded",
+                target_type="certificate",
+                target_id=str(certificate_id),
+            ).exists()
+        )
 
     def test_staff_cannot_upload_certificate_with_invalid_pdf_content(self):
         self.client.force_authenticate(user=self.staff_user)
@@ -888,6 +904,13 @@ class PortalRBACTests(TestCase):
 
         updated_profile = UserProfile.objects.get(user=self.staff_user)
         self.assertEqual(list(updated_profile.allowed_companies.values_list("id", flat=True)), [self.company_b.id])
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="staff.updated",
+                target_type="user",
+                target_id=str(self.staff_user.id),
+            ).exists()
+        )
 
     def test_office_staff_does_not_see_self_in_staff_assignments(self):
         office_user = get_user_model().objects.create_user(
@@ -1130,3 +1153,21 @@ class PortalRBACTests(TestCase):
             format="json",
         )
         self.assertEqual(reuse_response.status_code, 401)
+
+    def test_equipment_status_change_creates_audit_log(self):
+        self.client.force_authenticate(user=self.owner_user)
+
+        response = self.client.patch(
+            f"/api/portal/equipment/{self.equipment_a.id}/",
+            data={"status": Equipment.STATUS_DECOMMISSIONED},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="equipment.status_changed",
+                target_type="equipment",
+                target_id=str(self.equipment_a.id),
+            ).exists()
+        )

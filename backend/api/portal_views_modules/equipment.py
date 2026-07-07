@@ -5,6 +5,7 @@ from rest_framework.decorators import api_view, permission_classes, throttle_cla
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from ..audit import log_portal_audit_event
 from ..models import Company, Equipment
 from ..portal_views import (
     _get_pagination_params,
@@ -96,11 +97,22 @@ def portal_equipment_update(request, equipment_id):
         new_status = request.data.get("status", "").strip().lower()
         if new_status not in {"active", "inactive", "retired", "decommissioned"}:
             return Response({"detail": "Invalid status value"}, status=status.HTTP_400_BAD_REQUEST)
+        previous_status = equipment.status
         equipment.status = new_status
         if new_status == "decommissioned":
             equipment.decommissioned_at = timezone.now().date()
         elif new_status != "decommissioned":
             equipment.decommissioned_at = None
-        equipment.save()
+        equipment.save(update_fields=["status", "decommissioned_at", "updated_at"])
+
+        if previous_status != new_status:
+            log_portal_audit_event(
+                request=request,
+                action="equipment.status_changed",
+                target_type="equipment",
+                target_id=equipment.id,
+                company=equipment.company,
+                details={"from": previous_status, "to": new_status},
+            )
 
     return Response(EquipmentSerializer(equipment).data)

@@ -1,6 +1,7 @@
 from django.contrib import admin
 
 from .models import (
+	AuditLog,
 	CatalogCollection,
 	CatalogProduct,
 	Certificate,
@@ -77,3 +78,10 @@ class CertificateAdmin(admin.ModelAdmin):
 	list_display = ("title", "company", "equipment", "issue_date", "expiry_date", "created_at")
 	list_filter = ("company",)
 	search_fields = ("title", "equipment__name")
+
+
+@admin.register(AuditLog)
+class AuditLogAdmin(admin.ModelAdmin):
+	list_display = ("action", "target_type", "target_id", "actor", "company", "ip_address", "created_at")
+	list_filter = ("action", "company")
+	search_fields = ("target_type", "target_id", "actor__username")
