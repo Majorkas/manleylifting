@@ -9,6 +9,8 @@ export default function EquipmentTableSection({
   onOpenCreateEquipment,
   equipmentCreateError,
   equipmentCreateSuccess,
+  onRefreshEquipment,
+  refreshingEquipment,
   loading,
   equipment,
   equipmentTableTab,
@@ -62,27 +64,37 @@ export default function EquipmentTableSection({
           </p>
         </div>
 
-        <form
-          className="flex w-full max-w-sm gap-2"
-          onSubmit={(event) => {
-            event.preventDefault()
-            onSearchSubmit()
-          }}
-        >
-          <input
-            type="search"
-            value={searchInput}
-            onChange={(event) => onSearchInputChange(event.target.value)}
-            placeholder="Search by name, asset tag, serial"
-            className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#123A7A]"
-          />
+        <div className="flex w-full max-w-sm gap-2">
           <button
-            type="submit"
-            className="rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168]"
+            type="button"
+            onClick={onRefreshEquipment}
+            disabled={refreshingEquipment}
+            className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
           >
-            Search
+            {refreshingEquipment ? 'Refreshing Equipment...' : 'Refresh Equipment'}
           </button>
-        </form>
+          <form
+            className="flex w-full gap-2"
+            onSubmit={(event) => {
+              event.preventDefault()
+              onSearchSubmit()
+            }}
+          >
+            <input
+              type="search"
+              value={searchInput}
+              onChange={(event) => onSearchInputChange(event.target.value)}
+              placeholder="Search by name, asset tag, serial"
+              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#123A7A]"
+            />
+            <button
+              type="submit"
+              className="rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168]"
+            >
+              Search
+            </button>
+          </form>
+        </div>
       </div>
 
       {canEditReports && (

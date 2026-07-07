@@ -15,6 +15,8 @@ export default function CustomerListSection({
   customerCreateSuccess,
   customerEditError,
   customerEditSuccess,
+  onRefreshCustomers,
+  refreshingCustomers,
   loading,
   visibleCustomers,
   filteredCustomers,
@@ -38,6 +40,14 @@ export default function CustomerListSection({
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onRefreshCustomers}
+            disabled={refreshingCustomers}
+            className="rounded-md border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {refreshingCustomers ? 'Refreshing Customers...' : 'Refresh Customers'}
+          </button>
           {isOwner && (
             <button
               type="button"

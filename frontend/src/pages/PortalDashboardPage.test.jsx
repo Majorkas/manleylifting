@@ -283,6 +283,29 @@ describe('PortalDashboardPage', () => {
     expect(screen.queryByText('Equipment & Certification Hub')).not.toBeInTheDocument()
   })
 
+  it('refreshes the customer list from the customer picker header', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 21,
+      username: 'demo_staff',
+      email: 'staff@example.com',
+      fullName: 'Demo Staff',
+      role: 'staff',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+
+    renderDashboardPage('/portal')
+
+    expect(await screen.findByRole('heading', { name: 'Customer List' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Refresh Customers' }))
+
+    expect(getPortalCompanies).toHaveBeenCalledTimes(2)
+  })
+
   it('shows company details and equipment directly for customer users', async () => {
     mockCustomerData()
 
@@ -292,6 +315,19 @@ describe('PortalDashboardPage', () => {
     expect(screen.getByText('Equipment & Certification Hub')).toBeInTheDocument()
     expect(screen.getByText('Warehouse Hoist')).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Customer List' })).not.toBeInTheDocument()
+  })
+
+  it('refreshes the equipment table from the equipment section header', async () => {
+    const user = userEvent.setup()
+
+    mockCustomerData()
+
+    renderDashboardPage()
+
+    expect(await screen.findByText('Acme Lifts')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Refresh Equipment' }))
+
+    expect(getPortalEquipment).toHaveBeenCalledTimes(2)
   })
 
   it('sorts equipment by the nearest due date and paginates the table', async () => {

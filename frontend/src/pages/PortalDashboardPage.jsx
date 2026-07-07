@@ -261,6 +261,8 @@ export default function PortalDashboardPage() {
   const [searchInput, setSearchInput] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [loggingOut, setLoggingOut] = useState(false)
+  const [refreshingCustomers, setRefreshingCustomers] = useState(false)
+  const [refreshingEquipment, setRefreshingEquipment] = useState(false)
   const [selectedEquipment, setSelectedEquipment] = useState(null)
   const [reports, setReports] = useState([])
   const [reportYearFilter, setReportYearFilter] = useState('')
@@ -836,6 +838,54 @@ export default function PortalDashboardPage() {
       setInactiveStaffAssignments([])
     } finally {
       setStaffAssignmentsLoading(false)
+    }
+  }
+
+  async function refreshCustomerCompanies() {
+    if (!isAuthenticated || refreshingCustomers) return
+
+    setRefreshingCustomers(true)
+    setErrorMessage('')
+
+    try {
+      const nextCompanies = await getPortalCompanies()
+      setCompanies(nextCompanies)
+      if (['owner', 'office_staff'].includes(profile?.role)) {
+        await refreshDashboardStats(true)
+      }
+    } catch (error) {
+      setErrorMessage(String(error?.message || 'Unable to refresh customers right now.'))
+    } finally {
+      setRefreshingCustomers(false)
+    }
+  }
+
+  async function refreshEquipmentData() {
+    if (!isAuthenticated || refreshingEquipment) return
+
+    const companyIdForRefresh = company?.id || activeSelectedEquipment?.company_id || selectedCompanyId
+    if (!companyIdForRefresh) return
+
+    setRefreshingEquipment(true)
+    setErrorMessage('')
+
+    try {
+      const refreshedEquipment = await getPortalEquipment({
+        companyId: companyIdForRefresh,
+        search: searchQuery,
+      })
+      setEquipment(refreshedEquipment)
+      if (selectedEquipment) {
+        const nextSelectedEquipment = refreshedEquipment.find(
+          (item) => String(item.id) === String(selectedEquipment.id),
+        )
+        setSelectedEquipment(nextSelectedEquipment || null)
+      }
+      setEquipmentPage(1)
+    } catch (error) {
+      setErrorMessage(String(error?.message || 'Unable to refresh equipment right now.'))
+    } finally {
+      setRefreshingEquipment(false)
     }
   }
 
@@ -1712,6 +1762,8 @@ export default function PortalDashboardPage() {
             dashboardStats={dashboardStats}
             dashboardStatsError={dashboardStatsError}
             dashboardStatsLoading={dashboardStatsLoading}
+            onRefreshCustomers={refreshCustomerCompanies}
+            refreshingCustomers={refreshingCustomers}
             customerStatsFilter={customerStatsFilter}
             onToggleCustomerStatsFilter={(filterValue) =>
               setCustomerStatsFilter((current) => (current === filterValue ? 'all' : filterValue))
@@ -1865,6 +1917,8 @@ export default function PortalDashboardPage() {
             }}
             equipmentCreateError={equipmentCreateError}
             equipmentCreateSuccess={equipmentCreateSuccess}
+            onRefreshEquipment={refreshEquipmentData}
+            refreshingEquipment={refreshingEquipment}
             loading={loading}
             equipment={equipment}
             equipmentTableTab={equipmentTableTab}
