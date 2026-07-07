@@ -29,6 +29,16 @@ def env_list(name: str, default=None):
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def validate_required_secrets(*, debug: bool, values: dict[str, str]) -> None:
+    if debug:
+        return
+
+    missing = [name for name, value in values.items() if not str(value or "").strip()]
+    if missing:
+        missing_str = ", ".join(missing)
+        raise ValueError(f"Missing required environment variables: {missing_str}")
+
+
 def database_config():
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url:
@@ -312,6 +322,14 @@ CLOUDINARY_URL = os.getenv("CLOUDINARY_URL", "").strip()
 CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
 CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
 CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
+
+validate_required_secrets(
+    debug=DEBUG,
+    values={
+        "STRIPE_SECRET_KEY": os.getenv("STRIPE_SECRET_KEY", ""),
+        "STRIPE_WEBHOOK_SECRET": os.getenv("STRIPE_WEBHOOK_SECRET", ""),
+    },
+)
 
 if cloudinary:
     if CLOUDINARY_URL:

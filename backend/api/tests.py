@@ -26,6 +26,7 @@ from .models import (
     UserProfile,
 )
 from .throttles import PortalMethodRateThrottle
+from backend.settings import validate_required_secrets
 
 
 TEST_CACHES = {
@@ -51,6 +52,26 @@ class BaseApiTestCase(TestCase):
         self.assertEqual(response.status_code, 200)
         header_value = str(response.headers.get("Content-Security-Policy-Report-Only") or "")
         self.assertIn("default-src 'self'", header_value)
+
+    def test_validate_required_secrets_raises_when_missing_in_production(self):
+        with self.assertRaisesMessage(ValueError, "Missing required environment variables: STRIPE_SECRET_KEY"):
+            validate_required_secrets(
+                debug=False,
+                values={
+                    "STRIPE_SECRET_KEY": "",
+                    "STRIPE_WEBHOOK_SECRET": "whsec_present",
+                },
+            )
+
+    def test_validate_required_secrets_skips_when_debug_enabled(self):
+        # In local debug runs, missing external secrets should not block startup.
+        validate_required_secrets(
+            debug=True,
+            values={
+                "STRIPE_SECRET_KEY": "",
+                "STRIPE_WEBHOOK_SECRET": "",
+            },
+        )
         self.client = Client()
 
 
