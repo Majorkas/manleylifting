@@ -764,6 +764,79 @@ describe('PortalDashboardPage', () => {
     confirmSpy.mockRestore()
   })
 
+  it('restores a saved create-report draft from localStorage', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 21,
+      username: 'demo_staff',
+      email: 'staff@example.com',
+      fullName: 'Demo Staff',
+      role: 'staff',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 101,
+        name: 'Warehouse Hoist',
+        asset_tag: 'WH-1',
+        serial_number: 'SN-101',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-09-01',
+      },
+    ])
+    getEquipmentReports.mockResolvedValue([])
+
+    const originalLocalStorage = window.localStorage
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: vi.fn(() =>
+          JSON.stringify({
+            mode: 'create',
+            equipmentId: '101',
+            form: {
+              title: 'Restored Draft Title',
+              summary: 'Draft summary',
+              findings: '',
+              recommendations: '',
+              report_date: '2026-07-10',
+              status: 'draft',
+            },
+          }),
+        ),
+        setItem: vi.fn(),
+        removeItem: vi.fn(),
+      },
+    })
+
+    renderDashboardPage('/portal?companyId=1')
+
+    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await user.click(screen.getByRole('button', { name: 'Create New Report' }))
+
+    expect(await screen.findByRole('heading', { name: 'Create New Report' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Report Title')).toHaveValue('Restored Draft Title')
+    expect(screen.getByLabelText('Summary')).toHaveValue('Draft summary')
+
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: originalLocalStorage,
+    })
+  })
+
   it('refreshes the equipment table after a report is submitted', async () => {
     const user = userEvent.setup()
 

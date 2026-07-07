@@ -40,6 +40,7 @@ import {
 
 const SESSION_WARNING_WINDOW_MS = 2 * 60 * 1000
 const SESSION_WARNING_CHECK_INTERVAL_MS = 15 * 1000
+const REPORT_DRAFT_STORAGE_KEY = 'manley-portal-report-draft-v1'
 
 function formatRevisionDateTime(value) {
   const date = new Date(value)
@@ -266,6 +267,50 @@ function getSessionExpiryMs(accessToken) {
   } catch {
     return 0
   }
+}
+
+function readReportDraft() {
+  if (typeof window === 'undefined') return null
+  try {
+    const storage = window.localStorage
+    if (!storage) return null
+    const raw =
+      typeof storage.getItem === 'function'
+        ? storage.getItem(REPORT_DRAFT_STORAGE_KEY)
+        : storage[REPORT_DRAFT_STORAGE_KEY]
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function writeReportDraft(draft) {
+  if (typeof window === 'undefined') return
+  try {
+    const storage = window.localStorage
+    if (!storage) return
+    if (typeof storage.setItem === 'function') {
+      storage.setItem(REPORT_DRAFT_STORAGE_KEY, JSON.stringify(draft))
+      return
+    }
+    storage[REPORT_DRAFT_STORAGE_KEY] = JSON.stringify(draft)
+  } catch {
+    // Ignore storage write errors so form edits are never blocked.
+  }
+}
+
+function clearReportDraft() {
+  if (typeof window === 'undefined') return
+  const storage = window.localStorage
+  if (!storage) return
+  if (typeof storage.removeItem === 'function') {
+    storage.removeItem(REPORT_DRAFT_STORAGE_KEY)
+    return
+  }
+  delete storage[REPORT_DRAFT_STORAGE_KEY]
 }
 
 function buildUniqueEmployeeUsername(baseUsername, existingUsernames) {
@@ -723,6 +768,7 @@ export default function PortalDashboardPage() {
     setShowCreateReportForm(false)
     setReportForm(buildEmptyReportForm())
     setCreateReportError('')
+    clearReportDraft()
     return true
   }
 
@@ -731,6 +777,32 @@ export default function PortalDashboardPage() {
     setShowCreateCertificateForm(false)
     setCertificateForm(buildEmptyCertificateForm())
     return true
+  }
+
+  function openCreateReportForm() {
+    const baseReportForm = buildEmptyReportForm()
+    const storedDraft = readReportDraft()
+    const activeEquipmentId = String(activeSelectedEquipment?.id || '')
+    if (
+      storedDraft?.mode === 'create' &&
+      String(storedDraft?.equipmentId || '') === activeEquipmentId &&
+      storedDraft?.form &&
+      typeof storedDraft.form === 'object'
+    ) {
+      setReportForm({
+        ...baseReportForm,
+        ...storedDraft.form,
+        images: [],
+        existingImages: [],
+        removedImageIds: [],
+      })
+      showSuccessToast('Restored your saved report draft.', 'Draft Restored')
+    } else {
+      setReportForm(baseReportForm)
+    }
+
+    setCreateReportError('')
+    setShowCreateReportForm(true)
   }
 
   useEffect(() => {
@@ -759,6 +831,47 @@ export default function PortalDashboardPage() {
     const interval = setInterval(() => setNowMs(Date.now()), 60000)
     return () => clearInterval(interval)
   }, [])
+
+  useEffect(() => {
+    if (showCreateReportForm && isCreateReportDirty) {
+      writeReportDraft({
+        mode: 'create',
+        equipmentId: String(activeSelectedEquipment?.id || ''),
+        form: {
+          title: reportForm.title,
+          summary: reportForm.summary,
+          findings: reportForm.findings,
+          recommendations: reportForm.recommendations,
+          report_date: reportForm.report_date,
+          status: reportForm.status,
+        },
+      })
+      return
+    }
+
+    if (showEditReportModal && isEditReportDirty) {
+      writeReportDraft({
+        mode: 'edit',
+        reportId: String(reportForm.reportId || ''),
+        form: {
+          title: reportForm.title,
+          summary: reportForm.summary,
+          findings: reportForm.findings,
+          recommendations: reportForm.recommendations,
+          report_date: reportForm.report_date,
+          status: reportForm.status,
+          removedImageIds: reportForm.removedImageIds || [],
+        },
+      })
+    }
+  }, [
+    showCreateReportForm,
+    showEditReportModal,
+    isCreateReportDirty,
+    isEditReportDirty,
+    activeSelectedEquipment?.id,
+    reportForm,
+  ])
 
   const customersLastUpdatedLabel = useMemo(
     () => formatLastUpdatedLabel(customersLastUpdatedAt, nowMs),
@@ -1484,6 +1597,7 @@ export default function PortalDashboardPage() {
           await Promise.all([refreshPendingReportApprovals(), refreshDashboardStats()])
         }
         await refreshEquipmentList()
+        clearReportDraft()
         setReportForm(buildEmptyReportForm())
         setShowEditReportModal(false)
       } catch (error) {
@@ -1503,6 +1617,7 @@ export default function PortalDashboardPage() {
       const refreshed = await getEquipmentReports(activeSelectedEquipment.id)
       setReports(refreshed)
       await refreshEquipmentList()
+      clearReportDraft()
       setReportForm(buildEmptyReportForm())
       setShowCreateReportForm(false)
     } catch (error) {
@@ -1895,6 +2010,23 @@ export default function PortalDashboardPage() {
       removedImageIds: [],
     }
     initialReportEditFormRef.current = nextEditReportForm
+
+    const storedDraft = readReportDraft()
+    if (
+      storedDraft?.mode === 'edit' &&
+      String(storedDraft?.reportId || '') === String(report.id) &&
+      storedDraft?.form &&
+      typeof storedDraft.form === 'object'
+    ) {
+      setReportForm({
+        ...nextEditReportForm,
+        ...storedDraft.form,
+        images: [],
+      })
+      showSuccessToast('Restored your saved report draft.', 'Draft Restored')
+      return
+    }
+
     setReportForm(nextEditReportForm)
   }
 
@@ -1992,6 +2124,7 @@ export default function PortalDashboardPage() {
 
   function handleCancelEdit(force = false) {
     if (!force && isEditReportDirty && !confirmDiscardUnsavedChanges()) return
+    clearReportDraft()
     setReportForm(buildEmptyReportForm())
     setEditReportError('')
     setConfirmRemoveReportImageId('')
@@ -2348,9 +2481,7 @@ export default function PortalDashboardPage() {
               setShowCreateCertificateForm(true)
             }}
             onOpenCreateReport={() => {
-              setReportForm(buildEmptyReportForm())
-              setCreateReportError('')
-              setShowCreateReportForm(true)
+              openCreateReportForm()
             }}
             certificatesLoading={certificatesLoading}
             certificates={certificates}
@@ -2473,11 +2604,7 @@ export default function PortalDashboardPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setReportForm(buildEmptyReportForm())
-                    setCreateReportError('')
-                    setShowCreateReportForm(true)
-                  }}
+                  onClick={openCreateReportForm}
                   className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
                 >
                   Create New Report
