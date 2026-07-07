@@ -409,6 +409,8 @@ export default function PortalDashboardPage() {
   const [expandedReportCardId, setExpandedReportCardId] = useState('')
   const previousSelectedEquipmentIdRef = useRef('')
   const previousDesktopSelectedEquipmentIdRef = useRef('')
+  const initialCustomerEditFormRef = useRef(buildEmptyCustomerEditForm())
+  const initialReportEditFormRef = useRef(buildEmptyReportForm())
   const employeeControlsSectionRef = useRef(null)
   const equipmentDetailsSectionRef = useRef(null)
   const generatedEmployeeBaseUsername = useMemo(
@@ -593,6 +595,143 @@ export default function PortalDashboardPage() {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
     return window.matchMedia('(max-width: 767px)').matches
   })
+  const createReportBaseDate = useMemo(() => buildEmptyReportForm().report_date, [])
+  const isCreateCustomerDirty = useMemo(
+    () => Object.values(customerForm).some((value) => String(value || '').trim() !== ''),
+    [customerForm],
+  )
+  const isEditCustomerDirty = useMemo(() => {
+    const initial = initialCustomerEditFormRef.current
+    return (
+      String(customerEditForm.company_name || '') !== String(initial.company_name || '') ||
+      String(customerEditForm.company_contact_email || '') !== String(initial.company_contact_email || '') ||
+      String(customerEditForm.company_contact_phone || '') !== String(initial.company_contact_phone || '') ||
+      String(customerEditForm.company_address || '') !== String(initial.company_address || '') ||
+      Boolean(customerEditForm.deactivate_customer)
+    )
+  }, [customerEditForm])
+  const isCreateEmployeeDirty = useMemo(
+    () =>
+      String(employeeForm.email || '').trim() !== '' ||
+      String(employeeForm.password || '').trim() !== '' ||
+      String(employeeForm.first_name || '').trim() !== '' ||
+      String(employeeForm.last_name || '').trim() !== '' ||
+      String(employeeForm.role || 'engineer') !== 'engineer' ||
+      (employeeForm.allowed_company_ids || []).length > 0,
+    [employeeForm],
+  )
+  const isCreateEquipmentDirty = useMemo(
+    () =>
+      String(equipmentForm.name || '').trim() !== '' ||
+      String(equipmentForm.asset_tag || '').trim() !== '' ||
+      String(equipmentForm.serial_number || '').trim() !== '' ||
+      String(equipmentForm.location || '').trim() !== '' ||
+      String(equipmentForm.status || 'active') !== 'active' ||
+      Number(equipmentForm.inspection_interval_days || 365) !== 365 ||
+      String(equipmentForm.last_inspected_at || '').trim() !== '' ||
+      String(equipmentForm.notes || '').trim() !== '',
+    [equipmentForm],
+  )
+  const isPasswordDirty = useMemo(
+    () =>
+      String(passwordForm.current_password || '').trim() !== '' ||
+      String(passwordForm.new_password || '').trim() !== '' ||
+      String(passwordForm.confirm_password || '').trim() !== '',
+    [passwordForm],
+  )
+  const isCreateReportDirty = useMemo(
+    () =>
+      String(reportForm.title || '').trim() !== '' ||
+      String(reportForm.summary || '').trim() !== '' ||
+      String(reportForm.findings || '').trim() !== '' ||
+      String(reportForm.recommendations || '').trim() !== '' ||
+      String(reportForm.status || 'draft') !== 'draft' ||
+      String(reportForm.report_date || createReportBaseDate) !== String(createReportBaseDate) ||
+      (reportForm.images || []).length > 0,
+    [reportForm, createReportBaseDate],
+  )
+  const isCreateCertificateDirty = useMemo(
+    () =>
+      String(certificateForm.title || '').trim() !== '' ||
+      String(certificateForm.issue_date || '').trim() !== '' ||
+      String(certificateForm.expiry_date || '').trim() !== '' ||
+      String(certificateForm.report_id || '').trim() !== '' ||
+      Boolean(certificateForm.file),
+    [certificateForm],
+  )
+  const isEditReportDirty = useMemo(() => {
+    const initial = initialReportEditFormRef.current
+    return (
+      String(reportForm.title || '') !== String(initial.title || '') ||
+      String(reportForm.summary || '') !== String(initial.summary || '') ||
+      String(reportForm.findings || '') !== String(initial.findings || '') ||
+      String(reportForm.recommendations || '') !== String(initial.recommendations || '') ||
+      String(reportForm.report_date || '') !== String(initial.report_date || '') ||
+      String(reportForm.status || '') !== String(initial.status || '') ||
+      (reportForm.images || []).length > 0 ||
+      (reportForm.removedImageIds || []).length > 0
+    )
+  }, [reportForm])
+
+  function confirmDiscardUnsavedChanges() {
+    return window.confirm('You have unsaved changes. Discard them?')
+  }
+
+  function closeCreateCustomerForm(force = false) {
+    if (!force && isCreateCustomerDirty && !confirmDiscardUnsavedChanges()) return false
+    setShowCreateCustomerForm(false)
+    setCustomerCreateError('')
+    setCustomerForm(buildEmptyCustomerForm())
+    return true
+  }
+
+  function closeEditCustomerForm(force = false) {
+    if (!force && isEditCustomerDirty && !confirmDiscardUnsavedChanges()) return false
+    setShowEditCustomerForm(false)
+    setConfirmCustomerDeactivate(false)
+    setCustomerEditForm(buildEmptyCustomerEditForm())
+    return true
+  }
+
+  function closeCreateEmployeeForm(force = false) {
+    if (!force && isCreateEmployeeDirty && !confirmDiscardUnsavedChanges()) return false
+    setShowCreateEmployeeForm(false)
+    setEmployeeForm(buildEmptyEmployeeForm())
+    return true
+  }
+
+  function closeCreateEquipmentForm(force = false) {
+    if (!force && isCreateEquipmentDirty && !confirmDiscardUnsavedChanges()) return false
+    setShowCreateEquipmentForm(false)
+    setEquipmentForm(buildEmptyEquipmentForm())
+    setEquipmentCreateError('')
+    return true
+  }
+
+  function closeChangePasswordModal(force = false) {
+    if (profile?.requiredPasswordChange) return false
+    if (!force && isPasswordDirty && !confirmDiscardUnsavedChanges()) return false
+    setShowChangePasswordModal(false)
+    setPasswordForm(buildEmptyPasswordForm())
+    setPasswordChangeError('')
+    setPasswordChangeSuccess('')
+    return true
+  }
+
+  function closeCreateReportForm(force = false) {
+    if (!force && isCreateReportDirty && !confirmDiscardUnsavedChanges()) return false
+    setShowCreateReportForm(false)
+    setReportForm(buildEmptyReportForm())
+    setCreateReportError('')
+    return true
+  }
+
+  function closeCreateCertificateForm(force = false) {
+    if (!force && isCreateCertificateDirty && !confirmDiscardUnsavedChanges()) return false
+    setShowCreateCertificateForm(false)
+    setCertificateForm(buildEmptyCertificateForm())
+    return true
+  }
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
@@ -839,12 +978,7 @@ export default function PortalDashboardPage() {
 
     function handleEscapeClose(event) {
       if (event.key !== 'Escape') return
-      if (profile?.requiredPasswordChange) return
-
-      setShowChangePasswordModal(false)
-      setPasswordForm(buildEmptyPasswordForm())
-      setPasswordChangeError('')
-      setPasswordChangeSuccess('')
+      closeChangePasswordModal()
     }
 
     window.addEventListener('keydown', handleEscapeClose)
@@ -867,31 +1001,27 @@ export default function PortalDashboardPage() {
       if (event.key !== 'Escape') return
 
       if (showCreateReportForm) {
-        setShowCreateReportForm(false)
-        setReportForm(buildEmptyReportForm())
-        setCreateReportError('')
+        closeCreateReportForm()
       }
 
       if (showCreateCertificateForm) {
-        setShowCreateCertificateForm(false)
-        setCertificateForm(buildEmptyCertificateForm())
+        closeCreateCertificateForm()
       }
 
       if (showCreateEquipmentForm) {
-        setShowCreateEquipmentForm(false)
+        closeCreateEquipmentForm()
       }
 
       if (showCreateCustomerForm) {
-        setShowCreateCustomerForm(false)
+        closeCreateCustomerForm()
       }
 
       if (showEditCustomerForm) {
-        setShowEditCustomerForm(false)
-        setCustomerEditForm(buildEmptyCustomerEditForm())
+        closeEditCustomerForm()
       }
 
       if (showCreateEmployeeForm) {
-        setShowCreateEmployeeForm(false)
+        closeCreateEmployeeForm()
       }
 
       if (companyPickerUserId) {
@@ -1470,14 +1600,16 @@ export default function PortalDashboardPage() {
     setCustomerEditError('')
     setCustomerEditSuccess('')
     setConfirmCustomerDeactivate(false)
-    setCustomerEditForm({
+    const nextEditForm = {
       company_id: String(item.id),
       company_name: String(item.name || ''),
       company_contact_email: String(item.contact_email || ''),
       company_contact_phone: String(item.contact_phone || ''),
       company_address: String(item.address || ''),
       deactivate_customer: false,
-    })
+    }
+    initialCustomerEditFormRef.current = nextEditForm
+    setCustomerEditForm(nextEditForm)
     setShowEditCustomerForm(true)
   }
 
@@ -1750,7 +1882,7 @@ export default function PortalDashboardPage() {
     setEditReportError('')
     setConfirmRemoveReportImageId('')
     setShowEditReportModal(true)
-    setReportForm({
+    const nextEditReportForm = {
       reportId: String(report.id),
       title: report.title || '',
       summary: report.summary || '',
@@ -1761,7 +1893,9 @@ export default function PortalDashboardPage() {
       images: [],
       existingImages: Array.isArray(report.images) ? report.images : [],
       removedImageIds: [],
-    })
+    }
+    initialReportEditFormRef.current = nextEditReportForm
+    setReportForm(nextEditReportForm)
   }
 
   function handleOpenReportImage(image, images = []) {
@@ -1856,7 +1990,8 @@ export default function PortalDashboardPage() {
     }
   }
 
-  function handleCancelEdit() {
+  function handleCancelEdit(force = false) {
+    if (!force && isEditReportDirty && !confirmDiscardUnsavedChanges()) return
     setReportForm(buildEmptyReportForm())
     setEditReportError('')
     setConfirmRemoveReportImageId('')
@@ -2563,7 +2698,7 @@ export default function PortalDashboardPage() {
         )}
 
         {isOwner && showCreateCustomerForm && (
-          <Modal open={showCreateCustomerForm} onClose={() => setShowCreateCustomerForm(false)}>
+          <Modal open={showCreateCustomerForm} onClose={closeCreateCustomerForm}>
             <form
               onSubmit={handleCreateCustomer}
               onClick={(event) => event.stopPropagation()}
@@ -2577,7 +2712,7 @@ export default function PortalDashboardPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => setShowCreateCustomerForm(false)}
+                  onClick={() => closeCreateCustomerForm()}
                   className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
                 >
                   Close
@@ -2711,11 +2846,7 @@ export default function PortalDashboardPage() {
         {isOwner && showEditCustomerForm && (
           <Modal
             open={showEditCustomerForm}
-            onClose={() => {
-              setShowEditCustomerForm(false)
-              setConfirmCustomerDeactivate(false)
-              setCustomerEditForm(buildEmptyCustomerEditForm())
-            }}
+            onClose={closeEditCustomerForm}
           >
             <form
               onSubmit={handleEditCustomer}
@@ -2730,11 +2861,7 @@ export default function PortalDashboardPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => {
-                    setShowEditCustomerForm(false)
-                    setConfirmCustomerDeactivate(false)
-                    setCustomerEditForm(buildEmptyCustomerEditForm())
-                  }}
+                  onClick={() => closeEditCustomerForm()}
                   className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
                 >
                   Close
@@ -2827,7 +2954,7 @@ export default function PortalDashboardPage() {
         )}
 
         {isOwner && showCreateEmployeeForm && (
-          <Modal open={showCreateEmployeeForm} onClose={() => setShowCreateEmployeeForm(false)}>
+          <Modal open={showCreateEmployeeForm} onClose={closeCreateEmployeeForm}>
             <form
               onSubmit={handleCreateEmployeeAssignment}
               onClick={(event) => event.stopPropagation()}
@@ -2839,7 +2966,7 @@ export default function PortalDashboardPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => setShowCreateEmployeeForm(false)}
+                  onClick={() => closeCreateEmployeeForm()}
                   className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
                 >
                   Close
@@ -3086,7 +3213,7 @@ export default function PortalDashboardPage() {
         )}
 
         {canEditReports && showCreateEquipmentForm && (
-          <Modal open={showCreateEquipmentForm} onClose={() => setShowCreateEquipmentForm(false)}>
+          <Modal open={showCreateEquipmentForm} onClose={closeCreateEquipmentForm}>
             <form
               onSubmit={handleCreateEquipment}
               onClick={(event) => event.stopPropagation()}
@@ -3095,7 +3222,7 @@ export default function PortalDashboardPage() {
                 <h3 className="text-lg font-bold text-[#123A7A]">Add Equipment</h3>
                 <button
                   type="button"
-                  onClick={() => setShowCreateEquipmentForm(false)}
+                  onClick={() => closeCreateEquipmentForm()}
                   className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
                 >
                   Close
@@ -3218,13 +3345,7 @@ export default function PortalDashboardPage() {
         {showChangePasswordModal && (
           <div
             className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
-            onClick={() => {
-              if (profile?.requiredPasswordChange) return
-              setShowChangePasswordModal(false)
-              setPasswordForm(buildEmptyPasswordForm())
-              setPasswordChangeError('')
-              setPasswordChangeSuccess('')
-            }}
+            onClick={() => closeChangePasswordModal()}
           >
             <form
               className="max-h-[calc(100vh-7rem)] w-full max-w-xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
@@ -3243,12 +3364,7 @@ export default function PortalDashboardPage() {
                 {!profile?.requiredPasswordChange && (
                   <button
                     type="button"
-                    onClick={() => {
-                      setShowChangePasswordModal(false)
-                      setPasswordForm(buildEmptyPasswordForm())
-                      setPasswordChangeError('')
-                      setPasswordChangeSuccess('')
-                    }}
+                    onClick={() => closeChangePasswordModal()}
                     className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
                   >
                     Close
@@ -3316,11 +3432,7 @@ export default function PortalDashboardPage() {
         {canEditReports && showCreateReportForm && (
           <div
             className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
-            onClick={() => {
-              setShowCreateReportForm(false)
-              setReportForm(buildEmptyReportForm())
-              setCreateReportError('')
-            }}
+            onClick={() => closeCreateReportForm()}
           >
             <form
               className="max-h-[calc(100vh-7rem)] w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
@@ -3331,11 +3443,7 @@ export default function PortalDashboardPage() {
                 <h3 className="text-lg font-bold text-[#123A7A]">Create New Report</h3>
                 <button
                   type="button"
-                  onClick={() => {
-                    setShowCreateReportForm(false)
-                    setReportForm(buildEmptyReportForm())
-                    setCreateReportError('')
-                  }}
+                  onClick={() => closeCreateReportForm()}
                   className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
                 >
                   Close
@@ -3450,10 +3558,7 @@ export default function PortalDashboardPage() {
         {canEditReports && showCreateCertificateForm && activeSelectedEquipment && (
           <div
             className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
-            onClick={() => {
-              setShowCreateCertificateForm(false)
-              setCertificateForm(buildEmptyCertificateForm())
-            }}
+            onClick={() => closeCreateCertificateForm()}
           >
             <form
               className="max-h-[calc(100vh-7rem)] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
@@ -3469,10 +3574,7 @@ export default function PortalDashboardPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => {
-                    setShowCreateCertificateForm(false)
-                    setCertificateForm(buildEmptyCertificateForm())
-                  }}
+                  onClick={() => closeCreateCertificateForm()}
                   className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
                 >
                   Close
