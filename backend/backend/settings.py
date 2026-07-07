@@ -95,6 +95,10 @@ INSTALLED_APPS = [
     "api",
 ]
 
+USE_R2_STORAGE = env_bool("USE_R2_STORAGE", False)
+if USE_R2_STORAGE:
+    INSTALLED_APPS.append("storages")
+
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
@@ -187,6 +191,45 @@ STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+if USE_R2_STORAGE:
+    AWS_S3_REGION_NAME = os.getenv("R2_REGION", "auto").strip() or "auto"
+    AWS_STORAGE_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "").strip()
+    AWS_S3_ENDPOINT_URL = os.getenv("R2_ENDPOINT_URL", "").strip()
+    AWS_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "").strip()
+    AWS_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "").strip()
+    AWS_S3_ADDRESSING_STYLE = "path"
+    AWS_S3_SIGNATURE_VERSION = "s3v4"
+    AWS_DEFAULT_ACL = None
+    AWS_QUERYSTRING_AUTH = env_bool("R2_QUERYSTRING_AUTH", True)
+    AWS_S3_FILE_OVERWRITE = False
+
+    # Keep certificate assets under a dedicated prefix in R2.
+    R2_MEDIA_LOCATION = os.getenv("R2_MEDIA_LOCATION", "media").strip() or "media"
+
+    required_r2_values = {
+        "R2_BUCKET_NAME": AWS_STORAGE_BUCKET_NAME,
+        "R2_ENDPOINT_URL": AWS_S3_ENDPOINT_URL,
+        "R2_ACCESS_KEY_ID": AWS_ACCESS_KEY_ID,
+        "R2_SECRET_ACCESS_KEY": AWS_SECRET_ACCESS_KEY,
+    }
+    missing_r2 = [key for key, value in required_r2_values.items() if not value]
+    if missing_r2:
+        missing_str = ", ".join(missing_r2)
+        raise ValueError(f"USE_R2_STORAGE is enabled but missing env vars: {missing_str}")
+
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.s3.S3Storage",
+            "OPTIONS": {
+                "bucket_name": AWS_STORAGE_BUCKET_NAME,
+                "location": R2_MEDIA_LOCATION,
+            },
+        },
+        "staticfiles": {
+            "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        },
+    }
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
