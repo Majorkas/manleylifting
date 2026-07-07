@@ -321,6 +321,7 @@ export default function PortalDashboardPage() {
   const [dashboardStatsError, setDashboardStatsError] = useState('')
   const [viewedReport, setViewedReport] = useState(null)
   const [selectedReportImage, setSelectedReportImage] = useState(null)
+  const [confirmRemoveReportImageId, setConfirmRemoveReportImageId] = useState('')
   const [showEditReportModal, setShowEditReportModal] = useState(false)
   const [showRevisionsModal, setShowRevisionsModal] = useState(false)
   const [reportForm, setReportForm] = useState(buildEmptyReportForm())
@@ -332,6 +333,7 @@ export default function PortalDashboardPage() {
   const [showCreateCustomerForm, setShowCreateCustomerForm] = useState(false)
   const [showEditCustomerForm, setShowEditCustomerForm] = useState(false)
   const [editingCustomer, setEditingCustomer] = useState(false)
+  const [confirmCustomerDeactivate, setConfirmCustomerDeactivate] = useState(false)
   const [customerEditForm, setCustomerEditForm] = useState(buildEmptyCustomerEditForm())
   const [customerEditError, setCustomerEditError] = useState('')
   const [, setCustomerEditSuccess] = useState('')
@@ -1351,6 +1353,7 @@ export default function PortalDashboardPage() {
     if (!isOwner || !item?.id) return
     setCustomerEditError('')
     setCustomerEditSuccess('')
+    setConfirmCustomerDeactivate(false)
     setCustomerEditForm({
       company_id: String(item.id),
       company_name: String(item.name || ''),
@@ -1365,6 +1368,11 @@ export default function PortalDashboardPage() {
   async function handleEditCustomer(event) {
     event.preventDefault()
     if (!isOwner || editingCustomer) return
+
+    if (customerEditForm.deactivate_customer && !confirmCustomerDeactivate) {
+      setConfirmCustomerDeactivate(true)
+      return
+    }
 
     setEditingCustomer(true)
     setCustomerEditError('')
@@ -1387,6 +1395,7 @@ export default function PortalDashboardPage() {
       setCompanies(refreshedCompanies)
       setCustomersLastUpdatedAt(Date.now())
       setShowEditCustomerForm(false)
+      setConfirmCustomerDeactivate(false)
       setCustomerEditForm(buildEmptyCustomerEditForm())
       const nextCustomerMessage = customerEditForm.deactivate_customer
         ? `Deactivated customer ${updated.name}.`
@@ -1623,6 +1632,7 @@ export default function PortalDashboardPage() {
   function handleStartEdit(report) {
     setShowCreateReportForm(false)
     setEditReportError('')
+    setConfirmRemoveReportImageId('')
     setShowEditReportModal(true)
     setReportForm({
       reportId: String(report.id),
@@ -1687,6 +1697,11 @@ export default function PortalDashboardPage() {
   }
 
   function handleRemoveReportImage(imageId) {
+    if (String(confirmRemoveReportImageId) !== String(imageId)) {
+      setConfirmRemoveReportImageId(String(imageId))
+      return
+    }
+
     setReportForm((current) => {
       const nextExistingImages = (current.existingImages || []).filter(
         (image) => String(image.id) !== String(imageId),
@@ -1705,6 +1720,7 @@ export default function PortalDashboardPage() {
         removedImageIds: [...nextRemovedImageIds, imageId],
       }
     })
+    setConfirmRemoveReportImageId('')
   }
 
   async function handleLoadRevisions(reportId) {
@@ -1727,6 +1743,7 @@ export default function PortalDashboardPage() {
   function handleCancelEdit() {
     setReportForm(buildEmptyReportForm())
     setEditReportError('')
+    setConfirmRemoveReportImageId('')
     setShowEditReportModal(false)
   }
 
@@ -1761,6 +1778,7 @@ export default function PortalDashboardPage() {
     setShowCreateReportForm(false)
     setShowCreateCertificateForm(false)
     setShowEditReportModal(false)
+    setConfirmRemoveReportImageId('')
     setCreateReportError('')
     setEditReportError('')
     setViewedReportError('')
@@ -2539,6 +2557,7 @@ export default function PortalDashboardPage() {
             open={showEditCustomerForm}
             onClose={() => {
               setShowEditCustomerForm(false)
+              setConfirmCustomerDeactivate(false)
               setCustomerEditForm(buildEmptyCustomerEditForm())
             }}
           >
@@ -2557,6 +2576,7 @@ export default function PortalDashboardPage() {
                   type="button"
                   onClick={() => {
                     setShowEditCustomerForm(false)
+                    setConfirmCustomerDeactivate(false)
                     setCustomerEditForm(buildEmptyCustomerEditForm())
                   }}
                   className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
@@ -2615,12 +2635,14 @@ export default function PortalDashboardPage() {
                   <input
                     type="checkbox"
                     checked={customerEditForm.deactivate_customer}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      const isChecked = event.target.checked
                       setCustomerEditForm((current) => ({
                         ...current,
-                        deactivate_customer: event.target.checked,
+                        deactivate_customer: isChecked,
                       }))
-                    }
+                      setConfirmCustomerDeactivate(false)
+                    }}
                     className="h-4 w-4 rounded border-slate-300"
                   />
                   Deactivate customer company (removes it from active portal lists)
@@ -2638,7 +2660,11 @@ export default function PortalDashboardPage() {
                 disabled={editingCustomer}
                 className="mt-4 rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168] disabled:opacity-70"
               >
-                {editingCustomer ? 'Saving changes...' : 'Save Changes'}
+                {editingCustomer
+                  ? 'Saving changes...'
+                  : customerEditForm.deactivate_customer && confirmCustomerDeactivate
+                    ? 'Confirm Deactivate Customer'
+                    : 'Save Changes'}
               </button>
             </form>
           </Modal>
@@ -3705,9 +3731,15 @@ export default function PortalDashboardPage() {
                             <button
                               type="button"
                               onClick={() => handleRemoveReportImage(image.id)}
-                              className="absolute right-2 top-2 rounded-full bg-white/95 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-rose-700 shadow-sm transition hover:bg-white"
+                              className={`absolute right-2 top-2 rounded-full px-2 py-1 text-[11px] font-semibold uppercase tracking-wide shadow-sm transition ${
+                                String(confirmRemoveReportImageId) === String(image.id)
+                                  ? 'bg-rose-600 text-white hover:bg-rose-500'
+                                  : 'bg-white/95 text-rose-700 hover:bg-white'
+                              }`}
                             >
-                              Remove
+                              {String(confirmRemoveReportImageId) === String(image.id)
+                                ? 'Confirm Remove'
+                                : 'Remove'}
                             </button>
                           </div>
                         ))}

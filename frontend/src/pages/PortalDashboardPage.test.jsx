@@ -25,6 +25,7 @@ vi.mock('../utils/portalApi', () => ({
   getStaffAssignments: vi.fn(),
   hasPortalSession: vi.fn(),
   portalLogout: vi.fn(),
+  updatePortalCustomer: vi.fn(),
   updateReport: vi.fn(),
 }))
 
@@ -42,6 +43,7 @@ import {
   reactivateStaffAssignment,
   getStaffAssignments,
   hasPortalSession,
+  updatePortalCustomer,
   updateReport,
 } from '../utils/portalApi'
 
@@ -100,6 +102,7 @@ describe('PortalDashboardPage', () => {
     getStaffAssignments.mockResolvedValue([])
     reactivateStaffAssignment.mockResolvedValue({})
     deleteStaffAssignment.mockResolvedValue({ ok: true })
+    updatePortalCustomer.mockResolvedValue({ id: 1, name: 'Acme Lifts' })
     updateReport.mockResolvedValue({})
   })
 
@@ -215,6 +218,130 @@ describe('PortalDashboardPage', () => {
     await waitFor(() => {
       expect(deleteStaffAssignment).toHaveBeenCalledWith(99)
     })
+  })
+
+  it('requires a second submit to confirm customer deactivation', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 31,
+      username: 'demo_owner',
+      email: 'owner@example.com',
+      fullName: 'Demo Owner',
+      role: 'owner',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      {
+        id: 1,
+        name: 'Acme Lifts',
+        contact_email: 'hello@acme.test',
+        contact_phone: '555-0100',
+        address: 'Dublin',
+      },
+    ])
+
+    renderDashboardPage('/portal')
+
+    expect(await screen.findByRole('heading', { name: 'Customer List' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Edit Customer' }))
+    expect(await screen.findByRole('heading', { name: 'Edit Customer' })).toBeInTheDocument()
+
+    await user.click(screen.getByLabelText('Deactivate customer company (removes it from active portal lists)'))
+    await user.click(screen.getByRole('button', { name: 'Save Changes' }))
+
+    expect(updatePortalCustomer).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Confirm Deactivate Customer' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Confirm Deactivate Customer' }))
+
+    await waitFor(() => {
+      expect(updatePortalCustomer).toHaveBeenCalledWith({
+        company_id: 1,
+        company_name: 'Acme Lifts',
+        company_contact_email: 'hello@acme.test',
+        company_contact_phone: '555-0100',
+        company_address: 'Dublin',
+        is_active: false,
+      })
+    })
+  })
+
+  it('requires a second click to confirm removing a report image', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 31,
+      username: 'demo_owner',
+      email: 'owner@example.com',
+      fullName: 'Demo Owner',
+      role: 'owner',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 101,
+        name: 'Warehouse Hoist',
+        asset_tag: 'WH-1',
+        serial_number: 'SN-101',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-09-01',
+      },
+    ])
+    getEquipmentReports.mockResolvedValue([
+      {
+        id: 2,
+        title: 'Submitted Hoist Inspection',
+        report_date: '2026-07-02',
+        status: 'submitted',
+        submitted_by: 21,
+        submitted_by_name: 'Demo Staff',
+        summary: 'Submitted summary',
+        findings: 'Findings',
+        recommendations: 'Recommendations',
+        images: [{ id: 77, image_url: 'https://example.com/report-image.jpg' }],
+      },
+    ])
+
+    renderDashboardPage('/portal?companyId=1')
+
+    await user.click(await screen.findByRole('button', { name: 'View' }))
+
+    const tables = screen.getAllByRole('table')
+    const reportsTable = tables[tables.length - 1]
+    await user.click(within(reportsTable).getByRole('button', { name: 'View' }))
+
+    expect(await screen.findByRole('heading', { name: 'Submitted Hoist Inspection' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Edit Report' }))
+    expect(await screen.findByRole('heading', { name: 'Edit Report' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Remove' }))
+    expect(screen.getByRole('button', { name: 'Confirm Remove' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Save Report' }))
+
+    expect(updateReport).toHaveBeenCalledWith('2', expect.objectContaining({ removed_image_ids: [] }))
+
+    updateReport.mockClear()
+    await user.click(screen.getByRole('button', { name: 'Edit Report' }))
+    expect(await screen.findByRole('heading', { name: 'Edit Report' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Remove' }))
+    await user.click(screen.getByRole('button', { name: 'Confirm Remove' }))
+    await user.click(screen.getByRole('button', { name: 'Save Report' }))
+
+    expect(updateReport).toHaveBeenCalledWith('2', expect.objectContaining({ removed_image_ids: [77] }))
   })
 
   it('redirects signed-out users to the portal login route', () => {
