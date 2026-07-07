@@ -1017,6 +1017,14 @@ class PortalRBACTests(TestCase):
         self.assertEqual(body["total_pages"], 3)
         self.assertEqual(len(body["results"]), 2)
 
+    def test_portal_companies_page_size_is_capped_at_100(self):
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.get("/api/portal/companies/?page=1&page_size=999")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["page_size"], 100)
+
     def test_owner_cannot_promote_assignment_to_owner(self):
         self.client.force_authenticate(user=self.owner_user)
 

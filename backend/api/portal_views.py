@@ -51,7 +51,7 @@ def _get_pagination_params(request, default_page_size=50):
         page_size = default_page_size
 
     page = max(1, page)
-    page_size = max(1, min(page_size, 500))  # Cap at 500 per page
+    page_size = max(1, min(page_size, 100))  # Cap at 100 per page
     return page, page_size
 
 
