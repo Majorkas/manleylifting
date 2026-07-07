@@ -62,7 +62,7 @@ CHECKOUT_ALLOWED_ORIGINS = set(
   _env_list("SHOP_CHECKOUT_ALLOWED_ORIGINS", getattr(settings, "CORS_ALLOWED_ORIGINS", []))
 )
 TURNSTILE_SECRET_KEY = os.getenv("SHOP_TURNSTILE_SECRET_KEY", "").strip()
-REQUIRE_TURNSTILE = _env_bool("SHOP_REQUIRE_TURNSTILE", bool(TURNSTILE_SECRET_KEY))
+REQUIRE_TURNSTILE = _env_bool("SHOP_REQUIRE_TURNSTILE", not bool(getattr(settings, "DEBUG", False)))
 TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 
 

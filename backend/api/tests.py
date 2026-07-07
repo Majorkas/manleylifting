@@ -175,6 +175,36 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         response = self.client.get("/api/payments/onsite-order-summary/?checkoutRef=x1&statusToken=tok_1")
         self.assertEqual(response.status_code, 404)
 
+    @patch("api.views._is_allowed_checkout_origin", return_value=True)
+    @patch("api.views._stripe_config_ok", return_value=True)
+    @patch("api.views.REQUIRE_TURNSTILE", True)
+    @patch("api.views.TURNSTILE_SECRET_KEY", "")
+    def test_onsite_intent_fails_when_turnstile_required_without_secret(self, _mock_cfg, _mock_origin):
+        CatalogProduct.objects.create(
+            product_ref="legacy-product-id",
+            variant_ref="legacy-variant-id",
+            handle="chain-block",
+            title="Chain Block",
+            price_amount="10.00",
+            currency_code="EUR",
+            is_active=True,
+        )
+
+        response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps(
+                {
+                    "checkoutRef": "onsite_turnstile_required",
+                    "customer": {"name": "Jane Doe", "email": "jane@example.com"},
+                    "items": [{"variantId": "legacy-variant-id", "quantity": 1}],
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json().get("error"), "Bot verification failed")
+
 
 class StripeWebhookTests(BaseApiTestCase):
     @patch("api.views.STRIPE_WEBHOOK_SECRET", "whsec_test")
