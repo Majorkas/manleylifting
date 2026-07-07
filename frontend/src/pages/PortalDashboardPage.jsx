@@ -41,6 +41,123 @@ import {
 const SESSION_WARNING_WINDOW_MS = 2 * 60 * 1000
 const SESSION_WARNING_CHECK_INTERVAL_MS = 15 * 1000
 const REPORT_DRAFT_STORAGE_KEY = 'manley-portal-report-draft-v1'
+const REPORT_CHECKLIST_STATUS_GOOD = 'good_order'
+const REPORT_CHECKLIST_STATUS_WORN = 'worn_serviceable'
+const REPORT_CHECKLIST_STATUS_ATTENTION = 'attention_required'
+const REPORT_TEMPLATE_CHECKLIST_LABELS = [
+  'Initial Test Run',
+  'Isolator',
+  'Pendant Cable Box',
+  'Pendant Suspension & Terminators',
+  'Conducts & Cables',
+  'Hoist Control Gear',
+  'Travel Control Gear',
+  'Traverse Control Gear',
+  'Downshop Conductors',
+  'Travel Wheels',
+  'Travel Gears',
+  'Travel Brakes',
+  'Travel Motors',
+  'Travel Gearbox/Oil Level',
+  'Travel Bearings',
+  'Travel Limits/Stops',
+  'Traverse Wheels',
+  'Traverse Gears',
+  'Traverse Brakes',
+  'Traverse Gear/Oil Level',
+  'Traverse Motor',
+  'Traverse Bearings - Bushes',
+  'Traverse Limits / Stops',
+  'Travel Buffers',
+  'Anti Collision',
+  'Pendant Controls',
+  'Remote Control',
+  'Slipping Clutch/Adjustment',
+  'Hoist Ropes',
+  'Rope Guide & Pressure Band',
+  'Return Sheave',
+  'Bottom Block & Hook',
+  'Hoist Motor',
+  'Hoist Brake',
+  'Hoist Gearbox/Oil Level',
+  'Hoist Limits',
+  'Hoist Bearing - Bushes',
+  'General Structure',
+  'Crane Platforms',
+  'Rail',
+  'Load Chain',
+  'Load Sprocket',
+  'Chain Guide',
+  'Chain Anchor Suspension',
+  'Suspension Hook / Eye',
+  'Suspension Pins / Bolts',
+  'Over Load Limiting Device',
+  'Over Load Protection',
+  'Control Panel',
+  'Cooling Fan/Cover',
+]
+
+function buildDefaultReportChecklistItems() {
+  return REPORT_TEMPLATE_CHECKLIST_LABELS.map((label) => ({
+    label,
+    status: REPORT_CHECKLIST_STATUS_GOOD,
+    note: '',
+  }))
+}
+
+function normalizeReportChecklistItems(items) {
+  const incomingItems = Array.isArray(items) ? items : []
+  const byLabel = new Map(
+    incomingItems
+      .map((item) => {
+        if (!item || typeof item !== 'object') return null
+        return [String(item.label || '').trim(), item]
+      })
+      .filter(Boolean),
+  )
+
+  return REPORT_TEMPLATE_CHECKLIST_LABELS.map((label) => {
+    const existing = byLabel.get(label)
+    const status = String(existing?.status || REPORT_CHECKLIST_STATUS_GOOD).trim()
+    const normalizedStatus = [
+      REPORT_CHECKLIST_STATUS_GOOD,
+      REPORT_CHECKLIST_STATUS_WORN,
+      REPORT_CHECKLIST_STATUS_ATTENTION,
+    ].includes(status)
+      ? status
+      : REPORT_CHECKLIST_STATUS_GOOD
+
+    return {
+      label,
+      status: normalizedStatus,
+      note: String(existing?.note || '').trim(),
+    }
+  })
+}
+
+function getChecklistStatusLabel(status) {
+  if (status === REPORT_CHECKLIST_STATUS_WORN) return 'Worn but Servicable'
+  if (status === REPORT_CHECKLIST_STATUS_ATTENTION) return 'Attention Required'
+  return 'Good Order'
+}
+
+function getChecklistSections(items) {
+  const normalized = normalizeReportChecklistItems(items)
+  return {
+    worn: normalized.filter((item) => item.status === REPORT_CHECKLIST_STATUS_WORN),
+    attention: normalized.filter((item) => item.status === REPORT_CHECKLIST_STATUS_ATTENTION),
+  }
+}
+
+function getMissingChecklistNoteLabel(items) {
+  const normalized = normalizeReportChecklistItems(items)
+  const missing = normalized.find(
+    (item) =>
+      item.status !== REPORT_CHECKLIST_STATUS_GOOD &&
+      String(item.note || '').trim() === '',
+  )
+  return missing?.label || ''
+}
 
 function parsePositiveInt(value, fallback = 1) {
   const parsed = Number.parseInt(String(value || ''), 10)
@@ -168,6 +285,7 @@ function buildEmptyReportForm() {
     recommendations: '',
     report_date: new Date().toISOString().slice(0, 10),
     status: 'draft',
+    checklist_items: buildDefaultReportChecklistItems(),
     images: [],
     existingImages: [],
     removedImageIds: [],
@@ -724,6 +842,9 @@ export default function PortalDashboardPage() {
       String(reportForm.recommendations || '').trim() !== '' ||
       String(reportForm.status || 'draft') !== 'draft' ||
       String(reportForm.report_date || createReportBaseDate) !== String(createReportBaseDate) ||
+      normalizeReportChecklistItems(reportForm.checklist_items).some(
+        (item) => item.status !== REPORT_CHECKLIST_STATUS_GOOD || String(item.note || '').trim() !== '',
+      ) ||
       (reportForm.images || []).length > 0,
     [reportForm, createReportBaseDate],
   )
@@ -745,6 +866,8 @@ export default function PortalDashboardPage() {
       String(reportForm.recommendations || '') !== String(initial.recommendations || '') ||
       String(reportForm.report_date || '') !== String(initial.report_date || '') ||
       String(reportForm.status || '') !== String(initial.status || '') ||
+      JSON.stringify(normalizeReportChecklistItems(reportForm.checklist_items)) !==
+        JSON.stringify(normalizeReportChecklistItems(initial.checklist_items)) ||
       (reportForm.images || []).length > 0 ||
       (reportForm.removedImageIds || []).length > 0
     )
@@ -824,6 +947,7 @@ export default function PortalDashboardPage() {
       setReportForm({
         ...baseReportForm,
         ...storedDraft.form,
+        checklist_items: normalizeReportChecklistItems(storedDraft.form?.checklist_items),
         images: [],
         existingImages: [],
         removedImageIds: [],
@@ -874,6 +998,7 @@ export default function PortalDashboardPage() {
           summary: reportForm.summary,
           findings: reportForm.findings,
           recommendations: reportForm.recommendations,
+          checklist_items: normalizeReportChecklistItems(reportForm.checklist_items),
           report_date: reportForm.report_date,
           status: reportForm.status,
         },
@@ -890,6 +1015,7 @@ export default function PortalDashboardPage() {
           summary: reportForm.summary,
           findings: reportForm.findings,
           recommendations: reportForm.recommendations,
+          checklist_items: normalizeReportChecklistItems(reportForm.checklist_items),
           report_date: reportForm.report_date,
           status: reportForm.status,
           removedImageIds: reportForm.removedImageIds || [],
@@ -1665,6 +1791,18 @@ export default function PortalDashboardPage() {
     event.preventDefault()
     if (creatingReport || savingReportEdit) return
 
+    const normalizedChecklistItems = normalizeReportChecklistItems(reportForm.checklist_items)
+    const missingChecklistNoteLabel = getMissingChecklistNoteLabel(normalizedChecklistItems)
+    if (missingChecklistNoteLabel) {
+      const message = `Add a note for '${missingChecklistNoteLabel}' before saving this report.`
+      if (isEditingReport) {
+        setEditReportError(message)
+      } else {
+        setCreateReportError(message)
+      }
+      return
+    }
+
     const refreshEquipmentList = async () => {
       const companyIdForRefresh = activeSelectedEquipment?.company_id || selectedCompanyId
       if (!companyIdForRefresh) return
@@ -1692,6 +1830,7 @@ export default function PortalDashboardPage() {
           summary: reportForm.summary,
           findings: reportForm.findings,
           recommendations: reportForm.recommendations,
+          checklist_items: normalizedChecklistItems,
           report_date: reportForm.report_date,
           status: reportForm.status,
           images: reportForm.images,
@@ -1728,7 +1867,10 @@ export default function PortalDashboardPage() {
     setCreatingReport(true)
     setCreateReportError('')
     try {
-      await createEquipmentReport(activeSelectedEquipment.id, reportForm)
+      await createEquipmentReport(activeSelectedEquipment.id, {
+        ...reportForm,
+        checklist_items: normalizedChecklistItems,
+      })
       const refreshed = await getEquipmentReports(activeSelectedEquipment.id)
       setReports(refreshed)
       await refreshEquipmentList()
@@ -2148,6 +2290,7 @@ export default function PortalDashboardPage() {
       recommendations: report.recommendations || '',
       report_date: report.report_date || new Date().toISOString().slice(0, 10),
       status: report.status || 'draft',
+      checklist_items: normalizeReportChecklistItems(report.checklist_items),
       images: [],
       existingImages: Array.isArray(report.images) ? report.images : [],
       removedImageIds: [],
@@ -2164,6 +2307,7 @@ export default function PortalDashboardPage() {
       setReportForm({
         ...nextEditReportForm,
         ...storedDraft.form,
+        checklist_items: normalizeReportChecklistItems(storedDraft.form?.checklist_items),
         images: [],
       })
       showSuccessToast('Restored your saved report draft.', 'Draft Restored')
@@ -2292,6 +2436,84 @@ export default function PortalDashboardPage() {
       { value: 'draft', label: 'Draft' },
       { value: 'submitted', label: 'Submitted' },
     ]
+  }
+
+  function renderReportChecklistEditor() {
+    const checklistItems = normalizeReportChecklistItems(reportForm.checklist_items)
+
+    return (
+      <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 md:col-span-2">
+        <div className="mb-3">
+          <h4 className="text-sm font-bold text-[#123A7A]">Inspection Template Checklist</h4>
+          <p className="mt-1 text-xs text-slate-600">
+            Mark each check item. Notes are required for Worn but Servicable and Attention Required.
+          </p>
+        </div>
+
+        <div className="space-y-3">
+          {checklistItems.map((item, index) => {
+            const needsNote = item.status !== REPORT_CHECKLIST_STATUS_GOOD
+
+            return (
+              <div key={item.label} className="rounded-md border border-slate-200 bg-white p-3">
+                <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_220px] md:items-start">
+                  <p className="text-sm font-semibold text-slate-800">{item.label}</p>
+                  <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                    Condition
+                    <select
+                      value={item.status}
+                      onChange={(event) => {
+                        const nextStatus = event.target.value
+                        setReportForm((current) => {
+                          const nextChecklistItems = normalizeReportChecklistItems(current.checklist_items)
+                          nextChecklistItems[index] = {
+                            ...nextChecklistItems[index],
+                            status: nextStatus,
+                          }
+                          return {
+                            ...current,
+                            checklist_items: nextChecklistItems,
+                          }
+                        })
+                      }}
+                      className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                    >
+                      <option value={REPORT_CHECKLIST_STATUS_GOOD}>Good Order</option>
+                      <option value={REPORT_CHECKLIST_STATUS_WORN}>Worn but Servicable</option>
+                      <option value={REPORT_CHECKLIST_STATUS_ATTENTION}>Attention Required</option>
+                    </select>
+                  </label>
+                </div>
+
+                {needsNote && (
+                  <label className="mt-2 block text-xs font-semibold uppercase tracking-wide text-slate-600">
+                    Note (required)
+                    <textarea
+                      value={item.note}
+                      onChange={(event) => {
+                        const nextNote = event.target.value
+                        setReportForm((current) => {
+                          const nextChecklistItems = normalizeReportChecklistItems(current.checklist_items)
+                          nextChecklistItems[index] = {
+                            ...nextChecklistItems[index],
+                            note: nextNote,
+                          }
+                          return {
+                            ...current,
+                            checklist_items: nextChecklistItems,
+                          }
+                        })
+                      }}
+                      className="mt-1 min-h-16 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                    />
+                  </label>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
   }
 
   function handleCloseEquipmentDetails() {
@@ -3788,6 +4010,7 @@ export default function PortalDashboardPage() {
                     ))}
                   </select>
                 </label>
+                {renderReportChecklistEditor()}
                 <label className="text-sm font-semibold text-slate-700 md:col-span-2">
                   Images
                   <input
@@ -3995,6 +4218,44 @@ export default function PortalDashboardPage() {
                 <p className="md:col-span-2"><span className="font-semibold">Findings:</span> {viewedReport.findings || '-'}</p>
                 <p className="md:col-span-2"><span className="font-semibold">Recommendations:</span> {viewedReport.recommendations || '-'}</p>
               </div>
+
+              {(() => {
+                const checklistSections = getChecklistSections(viewedReport.checklist_items)
+                return (
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                      <p className="text-sm font-semibold text-amber-800">Worn but Servicable</p>
+                      {checklistSections.worn.length === 0 ? (
+                        <p className="mt-2 text-xs text-amber-700">None reported.</p>
+                      ) : (
+                        <ul className="mt-2 space-y-2 text-xs text-amber-900">
+                          {checklistSections.worn.map((item) => (
+                            <li key={`worn-${item.label}`}>
+                              <p className="font-semibold">{item.label}</p>
+                              <p>{item.note || '-'}</p>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                    <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
+                      <p className="text-sm font-semibold text-rose-800">Attention Required</p>
+                      {checklistSections.attention.length === 0 ? (
+                        <p className="mt-2 text-xs text-rose-700">None reported.</p>
+                      ) : (
+                        <ul className="mt-2 space-y-2 text-xs text-rose-900">
+                          {checklistSections.attention.map((item) => (
+                            <li key={`attention-${item.label}`}>
+                              <p className="font-semibold">{item.label}</p>
+                              <p>{item.note || '-'}</p>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                )
+              })()}
 
               {viewedReportError && (
                 <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -4217,6 +4478,7 @@ export default function PortalDashboardPage() {
                       ))}
                     </select>
                   </label>
+                  {renderReportChecklistEditor()}
                   <label className="text-sm font-semibold text-slate-700 md:col-span-2">
                     Add Images
                     <input

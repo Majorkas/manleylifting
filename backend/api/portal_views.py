@@ -305,6 +305,7 @@ def _report_snapshot(report):
         "summary": report.summary,
         "findings": report.findings,
         "recommendations": report.recommendations,
+        "checklist_items": report.checklist_items,
         "report_date": report.report_date.isoformat() if report.report_date else None,
         "status": report.status,
     }

@@ -813,6 +813,58 @@ describe('PortalDashboardPage', () => {
     confirmSpy.mockRestore()
   })
 
+  it('requires a checklist note when a report item is marked non-good', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 21,
+      username: 'demo_staff',
+      email: 'staff@example.com',
+      fullName: 'Demo Staff',
+      role: 'staff',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 101,
+        name: 'Warehouse Hoist',
+        asset_tag: 'WH-1',
+        serial_number: 'SN-101',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-09-01',
+      },
+    ])
+    getEquipmentReports.mockResolvedValue([])
+
+    renderDashboardPage('/portal?companyId=1')
+
+    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await user.click(screen.getByRole('button', { name: 'Create New Report' }))
+
+    await user.type(screen.getByLabelText('Report Title'), 'Checklist Draft')
+
+    const checklistRow = screen.getByText('Initial Test Run').closest('div')
+    expect(checklistRow).not.toBeNull()
+    await user.selectOptions(within(checklistRow).getByRole('combobox'), 'attention_required')
+
+    await user.click(screen.getByRole('button', { name: 'Create Report' }))
+
+    expect(createEquipmentReport).not.toHaveBeenCalled()
+    expect(screen.getByText("Add a note for 'Initial Test Run' before saving this report.")).toBeInTheDocument()
+  })
+
   it('restores a saved create-report draft from localStorage', async () => {
     const user = userEvent.setup()
 
@@ -1461,7 +1513,7 @@ describe('PortalDashboardPage', () => {
     await user.click(screen.getByRole('button', { name: 'Save Report' }))
 
     await waitFor(() => {
-      expect(updateReport).toHaveBeenCalledWith('2', {
+      expect(updateReport).toHaveBeenCalledWith('2', expect.objectContaining({
         title: 'Updated Submitted Hoist Inspection',
         summary: 'Submitted summary',
         findings: 'Findings',
@@ -1470,7 +1522,7 @@ describe('PortalDashboardPage', () => {
         status: 'approved',
         images: [],
         removed_image_ids: [],
-      })
+      }))
     })
 
     expect(getEquipmentReports).not.toHaveBeenCalled()

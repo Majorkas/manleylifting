@@ -245,6 +245,7 @@ class InspectionReport(models.Model):
     summary = models.TextField(blank=True, default="")
     findings = models.TextField(blank=True, default="")
     recommendations = models.TextField(blank=True, default="")
+    checklist_items = models.JSONField(default=list, blank=True)
     report_date = models.DateField()
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT)
     edited_by = models.ForeignKey(

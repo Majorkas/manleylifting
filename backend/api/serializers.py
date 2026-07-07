@@ -3,10 +3,54 @@ from datetime import timedelta
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+import json
+
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
 
 from .models import Certificate, Company, Equipment, InspectionReport, ReportImage, ReportRevision, UserProfile
+
+REPORT_CHECKLIST_ALLOWED_STATUSES = {"good_order", "worn_serviceable", "attention_required"}
+
+
+def validate_report_checklist_items(items):
+    if items in (None, ""):
+        return []
+
+    if isinstance(items, str):
+        try:
+            items = json.loads(items)
+        except (TypeError, ValueError):
+            raise serializers.ValidationError("Checklist items must be valid JSON.")
+
+    if not isinstance(items, list):
+        raise serializers.ValidationError("Checklist items must be a list.")
+
+    validated_items = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise serializers.ValidationError(f"Checklist item {index + 1} must be an object.")
+
+        label = str(item.get("label") or "").strip()
+        status = str(item.get("status") or "good_order").strip()
+        note = str(item.get("note") or "").strip()
+
+        if not label:
+            raise serializers.ValidationError(f"Checklist item {index + 1} is missing a label.")
+
+        if status not in REPORT_CHECKLIST_ALLOWED_STATUSES:
+            raise serializers.ValidationError(
+                f"Checklist item '{label}' has an invalid status '{status}'."
+            )
+
+        if status in {"worn_serviceable", "attention_required"} and not note:
+            raise serializers.ValidationError(
+                f"Checklist item '{label}' requires a note when status is not Good Order."
+            )
+
+        validated_items.append({"label": label, "status": status, "note": note})
+
+    return validated_items
 
 
 class CompanyHeaderSerializer(serializers.ModelSerializer):
@@ -100,6 +144,7 @@ class InspectionReportSerializer(serializers.ModelSerializer):
             "summary",
             "findings",
             "recommendations",
+            "checklist_items",
             "report_date",
             "status",
             "submitted_by",
@@ -140,9 +185,13 @@ class InspectionReportCreateSerializer(serializers.ModelSerializer):
             "summary",
             "findings",
             "recommendations",
+            "checklist_items",
             "report_date",
             "status",
         ]
+
+    def validate_checklist_items(self, value):
+        return validate_report_checklist_items(value)
 
 
 class InspectionReportUpdateSerializer(serializers.ModelSerializer):
@@ -153,9 +202,13 @@ class InspectionReportUpdateSerializer(serializers.ModelSerializer):
             "summary",
             "findings",
             "recommendations",
+            "checklist_items",
             "report_date",
             "status",
         ]
+
+    def validate_checklist_items(self, value):
+        return validate_report_checklist_items(value)
 
 
 class InspectionReportOwnerEditSerializer(serializers.ModelSerializer):
@@ -166,9 +219,13 @@ class InspectionReportOwnerEditSerializer(serializers.ModelSerializer):
             "summary",
             "findings",
             "recommendations",
+            "checklist_items",
             "report_date",
             "status",
         ]
+
+    def validate_checklist_items(self, value):
+        return validate_report_checklist_items(value)
 
 
 class ReportRevisionSerializer(serializers.ModelSerializer):

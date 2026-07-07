@@ -566,6 +566,7 @@ export async function createEquipmentReport(equipmentId, payload) {
     formData.set('summary', String(payload?.summary || ''))
     formData.set('findings', String(payload?.findings || ''))
     formData.set('recommendations', String(payload?.recommendations || ''))
+    formData.set('checklist_items', JSON.stringify(Array.isArray(payload?.checklist_items) ? payload.checklist_items : []))
     formData.set('report_date', String(payload?.report_date || ''))
     formData.set('status', String(payload?.status || 'draft'))
     imageFiles.forEach((file) => {
@@ -604,6 +605,7 @@ export async function updateReport(reportId, payload) {
     formData.set('summary', String(payload?.summary || ''))
     formData.set('findings', String(payload?.findings || ''))
     formData.set('recommendations', String(payload?.recommendations || ''))
+    formData.set('checklist_items', JSON.stringify(Array.isArray(payload?.checklist_items) ? payload.checklist_items : []))
     formData.set('report_date', String(payload?.report_date || ''))
     formData.set('status', String(payload?.status || 'draft'))
     imageFiles.forEach((file) => {

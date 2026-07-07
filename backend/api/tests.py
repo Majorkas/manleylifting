@@ -728,6 +728,29 @@ class PortalRBACTests(TestCase):
         )
         self.assertEqual(blocked_response.status_code, 404)
 
+    def test_staff_cannot_submit_report_with_missing_checklist_note(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            f"/api/portal/equipment/{self.equipment_a.id}/reports/",
+            data={
+                "title": "Checklist report",
+                "summary": "Checklist in progress",
+                "report_date": "2026-06-30",
+                "status": InspectionReport.STATUS_SUBMITTED,
+                "checklist_items": [
+                    {
+                        "label": "Initial Test Run",
+                        "status": "attention_required",
+                        "note": "",
+                    }
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("requires a note", str(response.json()))
+
     def test_draft_report_does_not_clear_existing_next_due_date(self):
         self.equipment_a.next_inspection_due = date(2027, 1, 15)
         self.equipment_a.save(update_fields=["next_inspection_due", "updated_at"])
@@ -782,6 +805,37 @@ class PortalRBACTests(TestCase):
                 target_id=str(report.id),
             ).exists()
         )
+
+    def test_owner_cannot_save_missing_checklist_note(self):
+        report = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Initial report",
+            summary="Initial summary",
+            findings="Initial findings",
+            recommendations="Initial recommendation",
+            report_date="2026-06-25",
+            status=InspectionReport.STATUS_SUBMITTED,
+        )
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.patch(
+            f"/api/portal/reports/{report.id}/",
+            data={
+                "status": InspectionReport.STATUS_APPROVED,
+                "checklist_items": [
+                    {
+                        "label": "Hoist Brake",
+                        "status": "worn_serviceable",
+                        "note": "",
+                    }
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("requires a note", str(response.json()))
 
     def test_staff_can_edit_own_draft_report(self):
         report = InspectionReport.objects.create(
