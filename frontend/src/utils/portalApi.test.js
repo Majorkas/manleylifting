@@ -55,7 +55,7 @@ describe('portalApi error messaging', () => {
     savePortalAccessToken('test-access-token')
     fetch.mockResolvedValueOnce(
       mockJsonResponse(400, {
-        detail: 'username already exists',
+        detail: 'Username is unavailable',
         suggested_username: 'ops_staff2',
       }),
     )

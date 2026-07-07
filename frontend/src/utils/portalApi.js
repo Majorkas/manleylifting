@@ -100,7 +100,7 @@ function prettifyRawMessage(path, status, rawMessage, body) {
     return 'Your login session has expired. Please sign in again to continue.'
   }
 
-  if (normalized.includes('username already exists')) {
+  if (normalized.includes('username already exists') || normalized.includes('username is unavailable')) {
     const suggested = String(body?.suggested_username || '').trim()
     if (suggested) {
       return `That username is already taken. Try '${suggested}' instead.`

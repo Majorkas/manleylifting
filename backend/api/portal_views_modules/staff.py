@@ -81,7 +81,7 @@ def portal_staff_assignments(request):
         if user_model.objects.filter(username__iexact=username).exists():
             return Response(
                 {
-                    "detail": "username already exists",
+                    "detail": "Username is unavailable",
                     "suggested_username": _suggest_available_username(username),
                 },
                 status=status.HTTP_400_BAD_REQUEST,

@@ -1176,7 +1176,7 @@ class PortalRBACTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.json()["detail"], "username already exists")
+        self.assertEqual(response.json()["detail"], "Username is unavailable")
         self.assertEqual(response.json()["suggested_username"], f"{self.staff_user.username}2")
 
     def test_logout_blacklists_refresh_token(self):
