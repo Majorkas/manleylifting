@@ -92,6 +92,10 @@ function prettifyRawMessage(path, status, rawMessage, body) {
     return 'This account is disabled. Contact an administrator to restore access.'
   }
 
+  if (normalized.includes('temporarily locked') || normalized.includes('failed login attempts')) {
+    return 'Too many failed sign-in attempts. Please wait 15 minutes and try again.'
+  }
+
   if (normalized.includes('refresh token is required')) {
     return 'Your login session has expired. Please sign in again to continue.'
   }

@@ -6,6 +6,7 @@ from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase, override_settings
 from datetime import date
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -285,21 +286,58 @@ class PortalRBACTests(TestCase):
         self.assertNotIn("refresh", refresh_response.json())
 
     def test_login_errors_do_not_enumerate_usernames(self):
-        unknown_user_response = self.client.post(
-            "/api/auth/token/",
-            data={"username": "does-not-exist", "password": "testpass123"},
-            format="json",
-        )
-        wrong_password_response = self.client.post(
-            "/api/auth/token/",
-            data={"username": "owner", "password": "wrong-password"},
-            format="json",
-        )
+        cache.clear()
+        with patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"auth.token": "100/minute"}, clear=False):
+            unknown_user_response = self.client.post(
+                "/api/auth/token/",
+                data={"username": "does-not-exist", "password": "testpass123"},
+                format="json",
+            )
+            wrong_password_response = self.client.post(
+                "/api/auth/token/",
+                data={"username": "owner", "password": "wrong-password"},
+                format="json",
+            )
 
         self.assertEqual(unknown_user_response.status_code, 400)
         self.assertEqual(wrong_password_response.status_code, 400)
         self.assertEqual(unknown_user_response.json().get("detail"), ["Invalid credentials"])
         self.assertEqual(wrong_password_response.json().get("detail"), ["Invalid credentials"])
+
+    def test_login_lockout_after_five_failed_attempts(self):
+        cache.clear()
+
+        with patch.dict(ScopedRateThrottle.THROTTLE_RATES, {"auth.token": "100/minute"}, clear=False):
+            for _ in range(4):
+                response = self.client.post(
+                    "/api/auth/token/",
+                    data={"username": "owner", "password": "wrong-password"},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json().get("detail"), ["Invalid credentials"])
+
+            fifth_attempt = self.client.post(
+                "/api/auth/token/",
+                data={"username": "owner", "password": "wrong-password"},
+                format="json",
+            )
+            self.assertEqual(fifth_attempt.status_code, 400)
+            self.assertEqual(
+                fifth_attempt.json().get("detail"),
+                ["Account temporarily locked due to failed login attempts. Try again in 15 minutes."],
+            )
+
+            blocked_valid_attempt = self.client.post(
+                "/api/auth/token/",
+                data={"username": "owner", "password": "testpass123"},
+                format="json",
+            )
+            self.assertEqual(blocked_valid_attempt.status_code, 400)
+            self.assertEqual(
+                blocked_valid_attempt.json().get("detail"),
+                ["Account temporarily locked due to failed login attempts. Try again in 15 minutes."],
+            )
 
     def test_portal_read_requests_are_throttled(self):
         cache.clear()

@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
 
@@ -310,6 +311,13 @@ class PortalTokenObtainPairSerializer(TokenObtainPairSerializer):
         "no_active_account": "Invalid credentials",
     }
 
+    LOGIN_FAILURE_LIMIT = 5
+    LOCKOUT_SECONDS = 15 * 60
+
+    def _login_failure_cache_key(self, username):
+        normalized = str(username or "").strip().lower()
+        return f"portal_login_failures:{normalized}"
+
     def validate(self, attrs):
         username = str(attrs.get("username") or "").strip()
         password = attrs.get("password")
@@ -320,14 +328,29 @@ class PortalTokenObtainPairSerializer(TokenObtainPairSerializer):
         if not password:
             raise serializers.ValidationError({"detail": "Password is required"})
 
+        failure_key = self._login_failure_cache_key(username)
+        failed_attempts = int(cache.get(failure_key, 0) or 0)
+        if failed_attempts >= self.LOGIN_FAILURE_LIMIT:
+            raise serializers.ValidationError(
+                {"detail": "Account temporarily locked due to failed login attempts. Try again in 15 minutes."}
+            )
+
         user_model = get_user_model()
         user = user_model.objects.filter(username__iexact=username).first()
 
         if user is None or not user.check_password(password):
+            cache.set(failure_key, failed_attempts + 1, timeout=self.LOCKOUT_SECONDS)
+            next_attempt_count = failed_attempts + 1
+            if next_attempt_count >= self.LOGIN_FAILURE_LIMIT:
+                raise serializers.ValidationError(
+                    {"detail": "Account temporarily locked due to failed login attempts. Try again in 15 minutes."}
+                )
             raise serializers.ValidationError({"detail": "Invalid credentials"})
 
         if not user.is_active:
             raise serializers.ValidationError({"detail": "Account is disabled"})
+
+        cache.delete(failure_key)
 
         return super().validate(attrs)
 

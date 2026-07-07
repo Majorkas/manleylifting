@@ -119,4 +119,16 @@ describe('portalApi error messaging', () => {
       'You do not have permission to perform this action. Contact an account owner if you need access.',
     )
   })
+
+  it('shows temporary lockout guidance for repeated failed logins', async () => {
+    fetch.mockResolvedValueOnce(
+      mockJsonResponse(400, {
+        detail: 'Account temporarily locked due to failed login attempts. Try again in 15 minutes.',
+      }),
+    )
+
+    await expect(portalLogin('owner', 'wrong-password')).rejects.toThrow(
+      'Too many failed sign-in attempts. Please wait 15 minutes and try again.',
+    )
+  })
 })
