@@ -13,6 +13,7 @@ vi.mock('../utils/portalApi', () => ({
   createEquipmentReport: vi.fn(),
   changePortalPassword: vi.fn(),
   deleteStaffAssignment: vi.fn(),
+  getAccessToken: vi.fn(),
   getEquipmentReports: vi.fn(),
   getPortalDashboardStats: vi.fn(),
   getPortalCompanies: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock('../utils/portalApi', () => ({
   getStaffAssignments: vi.fn(),
   hasPortalSession: vi.fn(),
   portalLogout: vi.fn(),
+  refreshPortalSession: vi.fn(),
   updatePortalCustomer: vi.fn(),
   updateReport: vi.fn(),
 }))
@@ -33,6 +35,7 @@ import {
   createEquipmentReport,
   changePortalPassword,
   deleteStaffAssignment,
+  getAccessToken,
   getEquipmentReports,
   getPortalDashboardStats,
   getPortalCompanies,
@@ -43,6 +46,7 @@ import {
   reactivateStaffAssignment,
   getStaffAssignments,
   hasPortalSession,
+  refreshPortalSession,
   updatePortalCustomer,
   updateReport,
 } from '../utils/portalApi'
@@ -56,6 +60,13 @@ function renderDashboardPage(initialEntry = '/portal') {
       </Routes>
     </MemoryRouter>,
   )
+}
+
+function buildAccessTokenWithExpiry(expirationSeconds) {
+  const toBase64Url = (value) =>
+    btoa(JSON.stringify(value)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+
+  return `${toBase64Url({ alg: 'HS256', typ: 'JWT' })}.${toBase64Url({ exp: expirationSeconds })}.signature`
 }
 
 function mockCustomerData() {
@@ -100,8 +111,10 @@ describe('PortalDashboardPage', () => {
     getPortalEquipment.mockResolvedValue([])
     getPendingReportApprovals.mockResolvedValue([])
     getStaffAssignments.mockResolvedValue([])
+    getAccessToken.mockReturnValue('')
     reactivateStaffAssignment.mockResolvedValue({})
     deleteStaffAssignment.mockResolvedValue({ ok: true })
+    refreshPortalSession.mockResolvedValue('')
     updatePortalCustomer.mockResolvedValue({ id: 1, name: 'Acme Lifts' })
     updateReport.mockResolvedValue({})
   })
@@ -350,6 +363,33 @@ describe('PortalDashboardPage', () => {
     renderDashboardPage()
 
     expect(screen.getByText('Login Page')).toBeInTheDocument()
+  })
+
+  it('shows a pre-expiry warning modal and refreshes the session when requested', async () => {
+    const user = userEvent.setup()
+
+    mockCustomerData()
+
+    let accessToken = buildAccessTokenWithExpiry(Math.floor((Date.now() + 90 * 1000) / 1000))
+    getAccessToken.mockImplementation(() => accessToken)
+    refreshPortalSession.mockImplementation(async () => {
+      accessToken = buildAccessTokenWithExpiry(Math.floor((Date.now() + 30 * 60 * 1000) / 1000))
+      return accessToken
+    })
+
+    renderDashboardPage('/portal')
+
+    expect(await screen.findByText('Acme Lifts')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Session Expiring Soon' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Stay Logged In' }))
+
+    await waitFor(() => {
+      expect(refreshPortalSession).toHaveBeenCalledTimes(1)
+    })
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: 'Session Expiring Soon' })).not.toBeInTheDocument()
+    })
   })
 
   it('shows an auto-dismissing toast after a password update', async () => {

@@ -24,17 +24,22 @@ import {
   getPortalDashboardStats,
   getPortalEquipment,
   getPortalMe,
+  getAccessToken,
   getPendingReportApprovals,
   getReportRevisions,
   getStaffAssignments,
   hasPortalSession,
   portalLogout,
+  refreshPortalSession,
   uploadEquipmentCertificate,
   updatePortalCustomer,
   updateStaffAssignment,
   updateReport,
   updatePortalEquipment,
 } from '../utils/portalApi'
+
+const SESSION_WARNING_WINDOW_MS = 2 * 60 * 1000
+const SESSION_WARNING_CHECK_INTERVAL_MS = 15 * 1000
 
 function formatRevisionDateTime(value) {
   const date = new Date(value)
@@ -242,6 +247,27 @@ function formatLastUpdatedLabel(value, now) {
   return `${elapsedDays} day${elapsedDays === 1 ? '' : 's'} ago`
 }
 
+function getSessionExpiryMs(accessToken) {
+  const token = String(accessToken || '').trim()
+  if (!token) return 0
+
+  const segments = token.split('.')
+  if (segments.length < 2) return 0
+
+  try {
+    const base64Value = segments[1].replace(/-/g, '+').replace(/_/g, '/')
+    const paddingLength = (4 - (base64Value.length % 4)) % 4
+    const paddedBase64 = base64Value + '='.repeat(paddingLength)
+    const payloadText = atob(paddedBase64)
+    const payload = JSON.parse(payloadText)
+    const expiresAtSeconds = Number(payload?.exp || 0)
+    if (!Number.isFinite(expiresAtSeconds) || expiresAtSeconds <= 0) return 0
+    return expiresAtSeconds * 1000
+  } catch {
+    return 0
+  }
+}
+
 function buildUniqueEmployeeUsername(baseUsername, existingUsernames) {
   const base = String(baseUsername || '').trim().toLowerCase()
   if (!base) return ''
@@ -282,6 +308,9 @@ export default function PortalDashboardPage() {
   const [refreshingCustomers, setRefreshingCustomers] = useState(false)
   const [refreshingEquipment, setRefreshingEquipment] = useState(false)
   const [portalToast, setPortalToast] = useState(null)
+  const [showSessionExpiryWarning, setShowSessionExpiryWarning] = useState(false)
+  const [refreshingSession, setRefreshingSession] = useState(false)
+  const [sessionWarningError, setSessionWarningError] = useState('')
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [customersLastUpdatedAt, setCustomersLastUpdatedAt] = useState(0)
   const [equipmentLastUpdatedAt, setEquipmentLastUpdatedAt] = useState(0)
@@ -531,7 +560,8 @@ export default function PortalDashboardPage() {
       companyPickerUserId ||
         showChangePasswordModal ||
       showCreateEquipmentForm ||
-      showDecommissionConfirm,
+      showDecommissionConfirm ||
+      showSessionExpiryWarning,
   )
   const [isMobileViewport, setIsMobileViewport] = useState(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
@@ -586,6 +616,36 @@ export default function PortalDashboardPage() {
     window.addEventListener('portalSessionExpired', handleSessionExpired)
     return () => window.removeEventListener('portalSessionExpired', handleSessionExpired)
   }, [navigate])
+
+  useEffect(() => {
+    if (!isAuthenticated) return undefined
+
+    const updateSessionWarning = () => {
+      const expiresAtMs = getSessionExpiryMs(getAccessToken())
+      if (!expiresAtMs) {
+        setShowSessionExpiryWarning(false)
+        setSessionWarningError('')
+        return
+      }
+
+      const remainingMs = expiresAtMs - Date.now()
+      if (remainingMs <= 0) {
+        clearPortalSession()
+        return
+      }
+
+      if (remainingMs <= SESSION_WARNING_WINDOW_MS) {
+        setShowSessionExpiryWarning(true)
+      } else {
+        setShowSessionExpiryWarning(false)
+        setSessionWarningError('')
+      }
+    }
+
+    updateSessionWarning()
+    const interval = setInterval(updateSessionWarning, SESSION_WARNING_CHECK_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [isAuthenticated])
 
   useEffect(() => {
     if (equipmentPage > equipmentTotalPages) {
@@ -896,6 +956,22 @@ export default function PortalDashboardPage() {
       title: title || 'Updated',
       message,
     })
+  }
+
+  async function handleStayLoggedIn() {
+    if (refreshingSession) return
+
+    setRefreshingSession(true)
+    setSessionWarningError('')
+    try {
+      await refreshPortalSession()
+      setShowSessionExpiryWarning(false)
+      showSuccessToast('Your portal session has been extended.', 'Session Extended')
+    } catch (error) {
+      setSessionWarningError(String(error?.message || 'Unable to extend your session.'))
+    } finally {
+      setRefreshingSession(false)
+    }
   }
 
   async function refreshCustomerCompanies() {
@@ -1797,6 +1873,41 @@ export default function PortalDashboardPage() {
   return (
     <PortalLayout hideNavbar={isAnyModalOpen}>
       <PortalToast toast={portalToast} onClose={() => setPortalToast(null)} />
+      <Modal
+        open={showSessionExpiryWarning}
+        onClose={() => setShowSessionExpiryWarning(false)}
+        panelClassName="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+      >
+        <div onClick={(event) => event.stopPropagation()}>
+          <h3 className="text-lg font-bold text-[#123A7A]">Session Expiring Soon</h3>
+          <p className="mt-2 text-sm text-slate-600">
+            Your portal session will expire shortly. Stay signed in to keep working.
+          </p>
+          {sessionWarningError && (
+            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {sessionWarningError}
+            </div>
+          )}
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={handleLogout}
+              disabled={loggingOut || refreshingSession}
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-[#123A7A] hover:text-[#123A7A] disabled:opacity-70"
+            >
+              {loggingOut ? 'Signing Out...' : 'Sign Out'}
+            </button>
+            <button
+              type="button"
+              onClick={handleStayLoggedIn}
+              disabled={refreshingSession}
+              className="rounded-md bg-[#123A7A] px-3 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168] disabled:opacity-70"
+            >
+              {refreshingSession ? 'Refreshing Session...' : 'Stay Logged In'}
+            </button>
+          </div>
+        </div>
+      </Modal>
       <section className="mx-auto w-full max-w-7xl px-6 py-10 md:py-12">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>

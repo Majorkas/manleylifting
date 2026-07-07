@@ -271,6 +271,10 @@ async function refreshAccessToken() {
   return nextAccess
 }
 
+export async function refreshPortalSession() {
+  return refreshAccessToken()
+}
+
 async function authFetch(path, options = {}) {
   let access = getAccessToken()
 
