@@ -402,6 +402,8 @@ export default function PortalDashboardPage() {
   const [equipmentStatusDraft, setEquipmentStatusDraft] = useState('active')
   const [showDecommissionConfirm, setShowDecommissionConfirm] = useState(false)
   const [equipmentTableTab, setEquipmentTableTab] = useState('active')
+  const [equipmentSortKey, setEquipmentSortKey] = useState('next_due')
+  const [equipmentSortDirection, setEquipmentSortDirection] = useState('asc')
   const [expandedEquipmentCardId, setExpandedEquipmentCardId] = useState('')
   const [expandedReportCardId, setExpandedReportCardId] = useState('')
   const previousSelectedEquipmentIdRef = useRef('')
@@ -453,31 +455,39 @@ export default function PortalDashboardPage() {
     return equipment.find((item) => String(item.id) === String(selectedEquipment.id)) || null
   }, [equipment, selectedEquipment])
   const sortedEquipment = useMemo(() => {
-    const sorted = [...equipment].sort((left, right) => {
-      // Put decommissioned items at the end
-      const isLeftDecommissioned = left.status === 'decommissioned'
-      const isRightDecommissioned = right.status === 'decommissioned'
-      if (isLeftDecommissioned !== isRightDecommissioned) {
-        return isLeftDecommissioned ? 1 : -1
+    const sortDirection = equipmentSortDirection === 'desc' ? -1 : 1
+    const compareEquipment = (left, right) => {
+      if (equipmentSortKey === 'name') {
+        const nameComparison = String(left.name || '').localeCompare(String(right.name || ''))
+        if (nameComparison !== 0) return nameComparison * sortDirection
       }
 
-      const leftDue = getInspectionDueSortValue(left.next_inspection_due)
-      const rightDue = getInspectionDueSortValue(right.next_inspection_due)
+      if (equipmentSortKey === 'asset_tag') {
+        const assetTagComparison = String(left.asset_tag || '').localeCompare(String(right.asset_tag || ''))
+        if (assetTagComparison !== 0) return assetTagComparison * sortDirection
+      }
 
-      if (leftDue !== rightDue) return leftDue - rightDue
+      if (equipmentSortKey === 'next_due') {
+        const leftDue = getInspectionDueSortValue(left.next_inspection_due)
+        const rightDue = getInspectionDueSortValue(right.next_inspection_due)
+        if (leftDue !== rightDue) return (leftDue - rightDue) * sortDirection
+      }
 
-      const nameComparison = String(left.name || '').localeCompare(String(right.name || ''))
-      if (nameComparison !== 0) return nameComparison
+      const fallbackNameComparison = String(left.name || '').localeCompare(String(right.name || ''))
+      if (fallbackNameComparison !== 0) return fallbackNameComparison
 
       return Number(left.id) - Number(right.id)
-    })
-
-    // Split into active and decommissioned
-    return {
-      active: sorted.filter((item) => item.status !== 'decommissioned'),
-      decommissioned: sorted.filter((item) => item.status === 'decommissioned'),
     }
-  }, [equipment])
+
+    return {
+      active: equipment
+        .filter((item) => item.status !== 'decommissioned')
+        .sort(compareEquipment),
+      decommissioned: equipment
+        .filter((item) => item.status === 'decommissioned')
+        .sort(compareEquipment),
+    }
+  }, [equipment, equipmentSortDirection, equipmentSortKey])
 
   const activeEquipment = sortedEquipment.active || []
   const decommissionedEquipment = sortedEquipment.decommissioned || []
@@ -672,6 +682,10 @@ export default function PortalDashboardPage() {
   useEffect(() => {
     setEmployeePage(1)
   }, [employeeSearchInput, employeeControlsTab, showsCustomerPicker])
+
+  useEffect(() => {
+    setEquipmentPage(1)
+  }, [equipmentSortKey, equipmentSortDirection])
 
   useEffect(() => {
     setExpandedEquipmentCardId('')
@@ -972,6 +986,16 @@ export default function PortalDashboardPage() {
     } finally {
       setRefreshingSession(false)
     }
+  }
+
+  function handleToggleEquipmentSort(columnKey) {
+    if (equipmentSortKey === columnKey) {
+      setEquipmentSortDirection((current) => (current === 'asc' ? 'desc' : 'asc'))
+      return
+    }
+
+    setEquipmentSortKey(columnKey)
+    setEquipmentSortDirection('asc')
   }
 
   async function refreshCustomerCompanies() {
@@ -2133,6 +2157,9 @@ export default function PortalDashboardPage() {
               setEquipmentTableTab(tab)
               setEquipmentPage(1)
             }}
+            equipmentSortKey={equipmentSortKey}
+            equipmentSortDirection={equipmentSortDirection}
+            onToggleEquipmentSort={handleToggleEquipmentSort}
             activeEquipment={activeEquipment}
             decommissionedEquipment={decommissionedEquipment}
             isMobileViewport={isMobileViewport}

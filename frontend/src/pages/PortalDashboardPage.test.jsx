@@ -570,6 +570,74 @@ describe('PortalDashboardPage', () => {
     expect(screen.getByText('Page 2 of 2')).toBeInTheDocument()
   })
 
+  it('supports sorting equipment by table columns', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 11,
+      username: 'demo_customer',
+      email: 'customer@example.com',
+      fullName: 'Demo Customer',
+      role: 'customer',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 1,
+        name: 'Zeta Lift',
+        asset_tag: 'ZZ-100',
+        serial_number: 'SN-1',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-01-01',
+      },
+      {
+        id: 2,
+        name: 'Alpha Lift',
+        asset_tag: 'AA-200',
+        serial_number: 'SN-2',
+        location: 'Bay 2',
+        status: 'active',
+        next_inspection_due: '2026-01-03',
+      },
+      {
+        id: 3,
+        name: 'Beta Lift',
+        asset_tag: 'BB-300',
+        serial_number: 'SN-3',
+        location: 'Bay 3',
+        status: 'active',
+        next_inspection_due: '2026-01-02',
+      },
+    ])
+
+    renderDashboardPage('/portal')
+
+    expect(await screen.findByText('Zeta Lift')).toBeInTheDocument()
+    const equipmentTable = await screen.findByRole('table')
+    const equipmentRows = within(equipmentTable).getAllByRole('row').slice(1)
+    expect(within(equipmentRows[0]).getByText('Zeta Lift')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /Name/ }))
+
+    const rowsAfterNameSort = within(equipmentTable).getAllByRole('row').slice(1)
+    expect(within(rowsAfterNameSort[0]).getByText('Alpha Lift')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /Asset Tag/ }))
+    await user.click(screen.getByRole('button', { name: /Asset Tag/ }))
+
+    const rowsAfterAssetSortDesc = within(equipmentTable).getAllByRole('row').slice(1)
+    expect(within(rowsAfterAssetSortDesc[0]).getByText('Zeta Lift')).toBeInTheDocument()
+  })
+
   it('refreshes the equipment table after a report is submitted', async () => {
     const user = userEvent.setup()
 

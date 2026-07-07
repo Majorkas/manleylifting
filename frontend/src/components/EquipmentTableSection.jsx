@@ -15,6 +15,9 @@ export default function EquipmentTableSection({
   equipment,
   equipmentTableTab,
   onSetEquipmentTableTab,
+  equipmentSortKey,
+  equipmentSortDirection,
+  onToggleEquipmentSort,
   activeEquipment,
   decommissionedEquipment,
   isMobileViewport,
@@ -53,6 +56,11 @@ export default function EquipmentTableSection({
   onEquipmentPagePrevious,
   onEquipmentPageNext,
 }) {
+  function getSortIndicator(columnKey) {
+    if (equipmentSortKey !== columnKey) return ''
+    return equipmentSortDirection === 'asc' ? ' ▲' : ' ▼'
+  }
+
   return (
     <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -405,15 +413,39 @@ export default function EquipmentTableSection({
               <table className="w-full min-w-[920px] border-collapse text-left text-sm">
                 <thead className="bg-[#123A7A] text-white">
                   <tr>
-                    <th className="px-4 py-3 font-semibold">Name</th>
-                    <th className="px-4 py-3 font-semibold">Asset Tag</th>
+                    <th className="px-4 py-3 font-semibold">
+                      <button
+                        type="button"
+                        onClick={() => onToggleEquipmentSort('name')}
+                        className="font-semibold"
+                      >
+                        Name{getSortIndicator('name')}
+                      </button>
+                    </th>
+                    <th className="px-4 py-3 font-semibold">
+                      <button
+                        type="button"
+                        onClick={() => onToggleEquipmentSort('asset_tag')}
+                        className="font-semibold"
+                      >
+                        Asset Tag{getSortIndicator('asset_tag')}
+                      </button>
+                    </th>
                     <th className="px-4 py-3 font-semibold">Serial</th>
                     {equipmentTableTab === 'active' && <th className="px-4 py-3 font-semibold">Location</th>}
                     <th className="px-4 py-3 font-semibold">Status</th>
                     {equipmentTableTab === 'active' && (
                       <>
                         <th className="px-4 py-3 font-semibold">Inspection Status</th>
-                        <th className="px-4 py-3 font-semibold">Next Due</th>
+                        <th className="px-4 py-3 font-semibold">
+                          <button
+                            type="button"
+                            onClick={() => onToggleEquipmentSort('next_due')}
+                            className="font-semibold"
+                          >
+                            Next Due{getSortIndicator('next_due')}
+                          </button>
+                        </th>
                       </>
                     )}
                     {equipmentTableTab === 'decommissioned' && (
