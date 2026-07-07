@@ -28,10 +28,29 @@ def portal_staff_assignments(request):
         return Response({"detail": "Only owner can manage assignments"}, status=status.HTTP_403_FORBIDDEN)
 
     if request.method == "GET":
+        status_filter = str(request.GET.get("status") or "active").strip().lower()
+        is_active_filter = None
+        if status_filter == "active":
+            is_active_filter = True
+        elif status_filter == "inactive":
+            is_active_filter = False
+        elif status_filter != "all":
+            return Response(
+                {"detail": "status must be active, inactive, or all"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        profile_filters = {
+            "role__in": [UserProfile.ROLE_ENGINEER, UserProfile.ROLE_STAFF, UserProfile.ROLE_OFFICE_STAFF],
+        }
+        if is_active_filter is not None:
+            profile_filters["user__is_active"] = is_active_filter
+
         profiles = (
             UserProfile.objects.select_related("user")
             .prefetch_related("allowed_companies")
-            .filter(role__in=[UserProfile.ROLE_ENGINEER, UserProfile.ROLE_STAFF, UserProfile.ROLE_OFFICE_STAFF])
+            .filter(**profile_filters)
+            .exclude(user_id=request.user.id)
             .order_by("-id")
         )
         page, page_size = _get_pagination_params(request)
@@ -139,6 +158,10 @@ def portal_staff_assignments(request):
             )
         profile.role = payload["role"]
         profile.save(update_fields=["role", "updated_at"])
+
+    if "is_active" in payload:
+        profile.user.is_active = bool(payload["is_active"])
+        profile.user.save(update_fields=["is_active"])
 
     if "allowed_company_ids" in payload:
         visible_ids = _visible_company_ids(request.user)

@@ -11,6 +11,7 @@ import {
   createStaffAssignment,
   downloadCertificate,
   deleteStaffAssignment,
+  reactivateStaffAssignment,
   createPortalCustomer,
   createPortalEquipment,
   clearPortalSession,
@@ -265,6 +266,10 @@ export default function PortalDashboardPage() {
   const [reportYearFilter, setReportYearFilter] = useState('')
   const [reportsLoading, setReportsLoading] = useState(false)
   const [reportError, setReportError] = useState('')
+  const [createReportError, setCreateReportError] = useState('')
+  const [editReportError, setEditReportError] = useState('')
+  const [viewedReportError, setViewedReportError] = useState('')
+  const [revisionsError, setRevisionsError] = useState('')
   const [certificates, setCertificates] = useState([])
   const [certificatesLoading, setCertificatesLoading] = useState(false)
   const [certificateError, setCertificateError] = useState('')
@@ -310,16 +315,19 @@ export default function PortalDashboardPage() {
   const [customerPage, setCustomerPage] = useState(1)
   const [showCreateEmployeeForm, setShowCreateEmployeeForm] = useState(false)
   const [employeeForm, setEmployeeForm] = useState(buildEmptyEmployeeForm())
-  const [staffAssignments, setStaffAssignments] = useState([])
+  const [activeStaffAssignments, setActiveStaffAssignments] = useState([])
+  const [inactiveStaffAssignments, setInactiveStaffAssignments] = useState([])
   const [staffAssignmentsLoading, setStaffAssignmentsLoading] = useState(false)
   const [staffAssignmentsError, setStaffAssignmentsError] = useState('')
   const [staffAssignmentsSuccess, setStaffAssignmentsSuccess] = useState('')
+  const [employeeControlsTab, setEmployeeControlsTab] = useState('active')
   const [employeeSearchInput, setEmployeeSearchInput] = useState('')
   const [employeePage, setEmployeePage] = useState(1)
   const [companyPickerUserId, setCompanyPickerUserId] = useState('')
   const [companyPickerSearchInput, setCompanyPickerSearchInput] = useState('')
   const [savingStaffUserId, setSavingStaffUserId] = useState(0)
   const [removingStaffUserId, setRemovingStaffUserId] = useState(0)
+  const [reactivatingStaffUserId, setReactivatingStaffUserId] = useState(0)
   const [creatingStaffAssignment, setCreatingStaffAssignment] = useState(false)
   const [confirmRemoveUserId, setConfirmRemoveUserId] = useState(0)
   const [showCreateEquipmentForm, setShowCreateEquipmentForm] = useState(false)
@@ -349,8 +357,8 @@ export default function PortalDashboardPage() {
     [employeeForm.first_name, employeeForm.last_name],
   )
   const existingEmployeeUsernames = useMemo(
-    () => staffAssignments.map((assignment) => assignment.username),
-    [staffAssignments],
+    () => [...activeStaffAssignments, ...inactiveStaffAssignments].map((assignment) => assignment.username),
+    [activeStaffAssignments, inactiveStaffAssignments],
   )
   const generatedEmployeeUsername = useMemo(
     () => buildUniqueEmployeeUsername(generatedEmployeeBaseUsername, existingEmployeeUsernames),
@@ -455,15 +463,19 @@ export default function PortalDashboardPage() {
   const visibleCustomers = filteredCustomers.slice(customerStartIndex, customerStartIndex + customerPageSize)
 
   const normalizedEmployeeSearch = employeeSearchInput.trim().toLowerCase()
+  const currentStaffAssignments = useMemo(
+    () => (employeeControlsTab === 'inactive' ? inactiveStaffAssignments : activeStaffAssignments),
+    [employeeControlsTab, activeStaffAssignments, inactiveStaffAssignments],
+  )
   const filteredStaffAssignments = useMemo(() => {
-    if (!normalizedEmployeeSearch) return staffAssignments
-    return staffAssignments.filter((assignment) => {
+    if (!normalizedEmployeeSearch) return currentStaffAssignments
+    return currentStaffAssignments.filter((assignment) => {
       const haystack = [assignment.username, assignment.email, assignment.full_name]
         .map((value) => String(value || '').toLowerCase())
         .join(' ')
       return haystack.includes(normalizedEmployeeSearch)
     })
-  }, [staffAssignments, normalizedEmployeeSearch])
+  }, [currentStaffAssignments, normalizedEmployeeSearch])
   const employeeTotalPages = Math.max(1, Math.ceil(filteredStaffAssignments.length / employeePageSize))
   const employeeStartIndex = (employeePage - 1) * employeePageSize
   const visibleStaffAssignments = filteredStaffAssignments.slice(
@@ -471,8 +483,8 @@ export default function PortalDashboardPage() {
     employeeStartIndex + employeePageSize,
   )
   const activeCompanyPickerAssignment = useMemo(
-    () => staffAssignments.find((item) => String(item.user_id) === String(companyPickerUserId)) || null,
-    [staffAssignments, companyPickerUserId],
+    () => activeStaffAssignments.find((item) => String(item.user_id) === String(companyPickerUserId)) || null,
+    [activeStaffAssignments, companyPickerUserId],
   )
   const filteredCompanyPickerCompanies = useMemo(() => {
     const query = companyPickerSearchInput.trim().toLowerCase()
@@ -548,7 +560,7 @@ export default function PortalDashboardPage() {
 
   useEffect(() => {
     setEmployeePage(1)
-  }, [employeeSearchInput, showsCustomerPicker])
+  }, [employeeSearchInput, employeeControlsTab, showsCustomerPicker])
 
   useEffect(() => {
     setExpandedEquipmentCardId('')
@@ -613,8 +625,11 @@ export default function PortalDashboardPage() {
   useEffect(() => {
     if (!activeSelectedEquipment) {
       setViewedReport(null)
+      setViewedReportError('')
       setShowEditReportModal(false)
+      setEditReportError('')
       setShowRevisionsModal(false)
+      setRevisionsError('')
       setShowCreateCertificateForm(false)
     }
   }, [activeSelectedEquipment])
@@ -656,10 +671,12 @@ export default function PortalDashboardPage() {
         setShowRevisionsModal(false)
         setRevisionReportId('')
         setReportRevisions([])
+        setRevisionsError('')
         return
       }
 
       if (viewedReport) {
+        setViewedReportError('')
         setViewedReport(null)
       }
     }
@@ -711,6 +728,7 @@ export default function PortalDashboardPage() {
       if (showCreateReportForm) {
         setShowCreateReportForm(false)
         setReportForm(buildEmptyReportForm())
+        setCreateReportError('')
       }
 
       if (showCreateCertificateForm) {
@@ -804,13 +822,18 @@ export default function PortalDashboardPage() {
     setStaffAssignmentsLoading(true)
     setStaffAssignmentsError('')
     try {
-      const assignments = await getStaffAssignments()
-      setStaffAssignments(assignments)
+      const [activeAssignments, inactiveAssignments] = await Promise.all([
+        getStaffAssignments({ status: 'active' }),
+        getStaffAssignments({ status: 'inactive' }),
+      ])
+      setActiveStaffAssignments(activeAssignments)
+      setInactiveStaffAssignments(inactiveAssignments)
     } catch (error) {
       if (Number(error?.status || 0) !== 403) {
         setStaffAssignmentsError(String(error?.message || 'Unable to load employee assignments.'))
       }
-      setStaffAssignments([])
+      setActiveStaffAssignments([])
+      setInactiveStaffAssignments([])
     } finally {
       setStaffAssignmentsLoading(false)
     }
@@ -820,7 +843,7 @@ export default function PortalDashboardPage() {
     if (!viewedReport?.id || !isOwner || approvingReport) return
 
     setApprovingReport(true)
-    setReportError('')
+    setViewedReportError('')
 
     try {
       const updatedReport = await updateReport(viewedReport.id, { status: 'approved' })
@@ -845,7 +868,7 @@ export default function PortalDashboardPage() {
         }
       })
     } catch (error) {
-      setReportError(String(error?.message || 'Unable to approve report.'))
+      setViewedReportError(String(error?.message || 'Unable to approve report.'))
     } finally {
       setApprovingReport(false)
     }
@@ -948,7 +971,8 @@ export default function PortalDashboardPage() {
             refreshDashboardStats(true),
           ])
         } else {
-          setStaffAssignments([])
+          setActiveStaffAssignments([])
+          setInactiveStaffAssignments([])
           setPendingReportApprovals([])
           setDashboardStats({
             overdue_count: 0,
@@ -1075,7 +1099,7 @@ export default function PortalDashboardPage() {
 
     if (isEditingReport) {
       setSavingReportEdit(true)
-      setReportError('')
+      setEditReportError('')
       try {
         const updatedReport = await updateReport(reportForm.reportId, {
           title: reportForm.title,
@@ -1105,7 +1129,7 @@ export default function PortalDashboardPage() {
         setReportForm(buildEmptyReportForm())
         setShowEditReportModal(false)
       } catch (error) {
-        setReportError(String(error?.message || 'Unable to save report changes.'))
+        setEditReportError(String(error?.message || 'Unable to save report changes.'))
       } finally {
         setSavingReportEdit(false)
       }
@@ -1115,7 +1139,7 @@ export default function PortalDashboardPage() {
     if (!activeSelectedEquipment?.id) return
 
     setCreatingReport(true)
-    setReportError('')
+    setCreateReportError('')
     try {
       await createEquipmentReport(activeSelectedEquipment.id, reportForm)
       const refreshed = await getEquipmentReports(activeSelectedEquipment.id)
@@ -1124,7 +1148,7 @@ export default function PortalDashboardPage() {
       setReportForm(buildEmptyReportForm())
       setShowCreateReportForm(false)
     } catch (error) {
-      setReportError(String(error?.message || 'Unable to create report.'))
+      setCreateReportError(String(error?.message || 'Unable to create report.'))
     } finally {
       setCreatingReport(false)
     }
@@ -1320,7 +1344,7 @@ export default function PortalDashboardPage() {
     if (!assignment?.user_id || savingStaffUserId || removingStaffUserId) return
 
     const previousRole = assignment.role
-    setStaffAssignments((current) =>
+    setActiveStaffAssignments((current) =>
       current.map((item) =>
         item.user_id === assignment.user_id
           ? { ...item, role: nextRole }
@@ -1340,7 +1364,7 @@ export default function PortalDashboardPage() {
       setStaffAssignmentsSuccess(`Updated employee type for ${assignment.username}.`)
       await refreshStaffAssignments(true)
     } catch (error) {
-      setStaffAssignments((current) =>
+      setActiveStaffAssignments((current) =>
         current.map((item) =>
           item.user_id === assignment.user_id
             ? { ...item, role: previousRole }
@@ -1360,12 +1384,29 @@ export default function PortalDashboardPage() {
     setStaffAssignmentsSuccess('')
     try {
       await deleteStaffAssignment(assignment.user_id)
-      setStaffAssignmentsSuccess(`Removed employee ${assignment.username}.`)
+      setStaffAssignmentsSuccess(`Deactivated employee ${assignment.username}.`)
       await refreshStaffAssignments(true)
     } catch (error) {
       setStaffAssignmentsError(String(error?.message || 'Unable to remove employee account.'))
     } finally {
       setRemovingStaffUserId(0)
+    }
+  }
+
+  async function handleReactivateEmployeeAssignment(assignment) {
+    if (!assignment?.user_id || reactivatingStaffUserId) return
+
+    setReactivatingStaffUserId(Number(assignment.user_id))
+    setStaffAssignmentsError('')
+    setStaffAssignmentsSuccess('')
+    try {
+      await reactivateStaffAssignment(assignment.user_id)
+      setStaffAssignmentsSuccess(`Reactivated employee ${assignment.username}.`)
+      await refreshStaffAssignments(true)
+    } catch (error) {
+      setStaffAssignmentsError(String(error?.message || 'Unable to reactivate employee account.'))
+    } finally {
+      setReactivatingStaffUserId(0)
     }
   }
 
@@ -1422,8 +1463,10 @@ export default function PortalDashboardPage() {
         setSelectedEquipment(nextSelectedEquipment || null)
       }
       setEquipmentPage(1)
+      return true
     } catch (error) {
       setEquipmentStatusError(String(error?.message || 'Unable to update equipment status.'))
+      return false
     } finally {
       setUpdatingEquipmentStatus(false)
     }
@@ -1443,12 +1486,15 @@ export default function PortalDashboardPage() {
 
   async function handleConfirmDecommission() {
     if (!activeSelectedEquipment?.id || updatingEquipmentStatus) return
-    setShowDecommissionConfirm(false)
-    await handleUpdateEquipmentStatus('decommissioned', activeSelectedEquipment.id)
+    const updated = await handleUpdateEquipmentStatus('decommissioned', activeSelectedEquipment.id)
+    if (updated) {
+      setShowDecommissionConfirm(false)
+    }
   }
 
   function handleStartEdit(report) {
     setShowCreateReportForm(false)
+    setEditReportError('')
     setShowEditReportModal(true)
     setReportForm({
       reportId: String(report.id),
@@ -1520,12 +1566,12 @@ export default function PortalDashboardPage() {
     setRevisionReportId(String(reportId))
     setReportRevisions([])
     setRevisionsLoading(true)
-    setReportError('')
+    setRevisionsError('')
     try {
       const revisions = await getReportRevisions(reportId)
       setReportRevisions(revisions)
     } catch (error) {
-      setReportError(String(error?.message || 'Unable to load revision history.'))
+      setRevisionsError(String(error?.message || 'Unable to load revision history.'))
     } finally {
       setRevisionsLoading(false)
     }
@@ -1533,6 +1579,7 @@ export default function PortalDashboardPage() {
 
   function handleCancelEdit() {
     setReportForm(buildEmptyReportForm())
+    setEditReportError('')
     setShowEditReportModal(false)
   }
 
@@ -1567,6 +1614,10 @@ export default function PortalDashboardPage() {
     setShowCreateReportForm(false)
     setShowCreateCertificateForm(false)
     setShowEditReportModal(false)
+    setCreateReportError('')
+    setEditReportError('')
+    setViewedReportError('')
+    setRevisionsError('')
     setShowRevisionsModal(false)
     setRevisionReportId('')
     setReportRevisions([])
@@ -1684,13 +1735,18 @@ export default function PortalDashboardPage() {
             staffAssignmentsError={staffAssignmentsError}
             staffAssignmentsSuccess={staffAssignmentsSuccess}
             staffAssignmentsLoading={staffAssignmentsLoading}
-            staffAssignments={staffAssignments}
+            employeeControlsTab={employeeControlsTab}
+            onSetEmployeeControlsTab={setEmployeeControlsTab}
+            activeStaffAssignments={activeStaffAssignments}
+            inactiveStaffAssignments={inactiveStaffAssignments}
+            staffAssignments={currentStaffAssignments}
             filteredStaffAssignments={filteredStaffAssignments}
             visibleStaffAssignments={visibleStaffAssignments}
             companies={companies}
             onEmployeeRoleChange={handleEmployeeRoleChange}
             savingStaffUserId={savingStaffUserId}
             removingStaffUserId={removingStaffUserId}
+            reactivatingStaffUserId={reactivatingStaffUserId}
             onOpenCompanyPicker={(userId) => {
               setCompanyPickerUserId(String(userId))
               setCompanyPickerSearchInput('')
@@ -1699,6 +1755,7 @@ export default function PortalDashboardPage() {
             onConfirmRemoveUser={(userId) => setConfirmRemoveUserId(Number(userId))}
             onCancelRemoveUser={() => setConfirmRemoveUserId(0)}
             onRemoveEmployeeAssignment={handleRemoveEmployeeAssignment}
+            onReactivateEmployeeAssignment={handleReactivateEmployeeAssignment}
             employeeStartIndex={employeeStartIndex}
             employeePageSize={employeePageSize}
             employeePage={employeePage}
@@ -1714,7 +1771,10 @@ export default function PortalDashboardPage() {
             pendingApprovalsLoading={pendingApprovalsLoading}
             pendingApprovalsError={pendingApprovalsError}
             onRefresh={refreshPendingReportApprovals}
-            onReviewReport={(report) => setViewedReport(report)}
+            onReviewReport={(report) => {
+              setViewedReportError('')
+              setViewedReport(report)
+            }}
             getReportStatusBadge={getReportStatusBadge}
           />
         )}
@@ -1830,6 +1890,7 @@ export default function PortalDashboardPage() {
             }}
             onOpenCreateReport={() => {
               setReportForm(buildEmptyReportForm())
+              setCreateReportError('')
               setShowCreateReportForm(true)
             }}
             certificatesLoading={certificatesLoading}
@@ -1839,7 +1900,10 @@ export default function PortalDashboardPage() {
             reportsLoading={reportsLoading}
             reports={reports}
             getReportStatusBadge={getReportStatusBadge}
-            onViewReport={(report) => setViewedReport(report)}
+            onViewReport={(report) => {
+              setViewedReportError('')
+              setViewedReport(report)
+            }}
             currentTableEquipment={currentTableEquipment}
             equipmentRangeStart={equipmentRangeStart}
             equipmentRangeEnd={equipmentRangeEnd}
@@ -1958,6 +2022,7 @@ export default function PortalDashboardPage() {
                   type="button"
                   onClick={() => {
                     setReportForm(buildEmptyReportForm())
+                    setCreateReportError('')
                     setShowCreateReportForm(true)
                   }}
                   className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
@@ -2096,7 +2161,10 @@ export default function PortalDashboardPage() {
                         <div className="flex justify-end">
                         <button
                           type="button"
-                          onClick={() => setViewedReport(report)}
+                          onClick={() => {
+                            setViewedReportError('')
+                            setViewedReport(report)
+                          }}
                           className="rounded border border-[#123A7A] px-2 py-1 text-xs font-semibold text-[#123A7A]"
                         >
                           View
@@ -2155,7 +2223,10 @@ export default function PortalDashboardPage() {
                             <td className="px-4 py-3 text-slate-700">
                               <button
                                 type="button"
-                                onClick={() => setViewedReport(report)}
+                                onClick={() => {
+                                  setViewedReportError('')
+                                  setViewedReport(report)
+                                }}
                                 className="rounded border border-[#123A7A] px-2 py-1 text-xs font-semibold text-[#123A7A]"
                               >
                                 View
@@ -2302,6 +2373,12 @@ export default function PortalDashboardPage() {
                 </label>
               </div>
 
+              {customerCreateError && (
+                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {customerCreateError}
+                </div>
+              )}
+
               <button
                 type="submit"
                 disabled={creatingCustomer}
@@ -2405,6 +2482,12 @@ export default function PortalDashboardPage() {
                   Deactivate customer company (removes it from active portal lists)
                 </label>
               </div>
+
+              {customerEditError && (
+                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {customerEditError}
+                </div>
+              )}
 
               <button
                 type="submit"
@@ -2540,6 +2623,12 @@ export default function PortalDashboardPage() {
                 </div>
               </div>
 
+              {staffAssignmentsError && (
+                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {staffAssignmentsError}
+                </div>
+              )}
+
               <div className="mt-4 flex justify-end">
                 <button
                   type="submit"
@@ -2611,7 +2700,7 @@ export default function PortalDashboardPage() {
                             type="checkbox"
                             checked={checked}
                             onChange={(event) =>
-                              setStaffAssignments((current) =>
+                              setActiveStaffAssignments((current) =>
                                 current.map((item) => {
                                   if (String(item.user_id) !== String(activeCompanyPickerAssignment.user_id)) {
                                     return item
@@ -2637,6 +2726,12 @@ export default function PortalDashboardPage() {
                   </div>
                 )}
               </div>
+
+              {staffAssignmentsError && (
+                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {staffAssignmentsError}
+                </div>
+              )}
 
               <div className="mt-4 flex justify-end gap-2">
                 <button
@@ -2777,6 +2872,12 @@ export default function PortalDashboardPage() {
                 </label>
               </div>
 
+              {equipmentCreateError && (
+                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {equipmentCreateError}
+                </div>
+              )}
+
               <button
                 type="submit"
                 disabled={creatingEquipment}
@@ -2898,6 +2999,7 @@ export default function PortalDashboardPage() {
             onClick={() => {
               setShowCreateReportForm(false)
               setReportForm(buildEmptyReportForm())
+              setCreateReportError('')
             }}
           >
             <form
@@ -2912,6 +3014,7 @@ export default function PortalDashboardPage() {
                   onClick={() => {
                     setShowCreateReportForm(false)
                     setReportForm(buildEmptyReportForm())
+                    setCreateReportError('')
                   }}
                   className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
                 >
@@ -3006,6 +3109,13 @@ export default function PortalDashboardPage() {
                   )}
                 </label>
               </div>
+
+              {createReportError && (
+                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {createReportError}
+                </div>
+              )}
+
               <button
                 type="submit"
                 disabled={creatingReport}
@@ -3125,6 +3235,12 @@ export default function PortalDashboardPage() {
                 </label>
               </div>
 
+              {certificateError && (
+                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {certificateError}
+                </div>
+              )}
+
               <button
                 type="submit"
                 disabled={creatingCertificate}
@@ -3139,7 +3255,10 @@ export default function PortalDashboardPage() {
         {viewedReport && (
           <div
             className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
-            onClick={() => setViewedReport(null)}
+            onClick={() => {
+              setViewedReportError('')
+              setViewedReport(null)
+            }}
           >
             <div
               className="max-h-[calc(100vh-7rem)] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
@@ -3152,7 +3271,10 @@ export default function PortalDashboardPage() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => setViewedReport(null)}
+                  onClick={() => {
+                    setViewedReportError('')
+                    setViewedReport(null)
+                  }}
                   className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
                 >
                   Close
@@ -3168,6 +3290,12 @@ export default function PortalDashboardPage() {
                 <p className="md:col-span-2"><span className="font-semibold">Findings:</span> {viewedReport.findings || '-'}</p>
                 <p className="md:col-span-2"><span className="font-semibold">Recommendations:</span> {viewedReport.recommendations || '-'}</p>
               </div>
+
+              {viewedReportError && (
+                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {viewedReportError}
+                </div>
+              )}
 
               {Array.isArray(viewedReport.images) && viewedReport.images.length > 0 && (
                 <div className="mt-5">
@@ -3441,6 +3569,11 @@ export default function PortalDashboardPage() {
                     </div>
                   )}
                 </div>
+                {editReportError && (
+                  <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    {editReportError}
+                  </div>
+                )}
                 <div className="mt-4 flex justify-end">
                   <button
                     type="submit"
@@ -3462,6 +3595,7 @@ export default function PortalDashboardPage() {
               setShowRevisionsModal(false)
               setRevisionReportId('')
               setReportRevisions([])
+              setRevisionsError('')
             }}
           >
             <div
@@ -3476,6 +3610,7 @@ export default function PortalDashboardPage() {
                     setShowRevisionsModal(false)
                     setRevisionReportId('')
                     setReportRevisions([])
+                    setRevisionsError('')
                   }}
                   className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
                 >
@@ -3507,6 +3642,11 @@ export default function PortalDashboardPage() {
                   ))}
                 </ul>
               )}
+              {revisionsError && (
+                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {revisionsError}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -3529,6 +3669,11 @@ export default function PortalDashboardPage() {
                 {' '}
                 into the decommissioned tab. You can reactivate it later from that tab if this was accidental.
               </p>
+              {equipmentStatusError && (
+                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {equipmentStatusError}
+                </div>
+              )}
               <div className="mt-5 flex justify-end gap-2">
                 <button
                   type="button"

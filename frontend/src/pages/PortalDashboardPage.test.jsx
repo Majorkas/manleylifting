@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -19,6 +19,7 @@ vi.mock('../utils/portalApi', () => ({
   getPortalEquipment: vi.fn(),
   getPortalMe: vi.fn(),
   getPendingReportApprovals: vi.fn(),
+  reactivateStaffAssignment: vi.fn(),
   getReportRevisions: vi.fn(),
   getStaffAssignments: vi.fn(),
   hasPortalSession: vi.fn(),
@@ -36,6 +37,7 @@ import {
   getPortalEquipment,
   getPortalMe,
   getPendingReportApprovals,
+  reactivateStaffAssignment,
   getStaffAssignments,
   hasPortalSession,
   updateReport,
@@ -85,6 +87,7 @@ function mockCustomerData() {
 describe('PortalDashboardPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    window.scrollTo = vi.fn()
     hasPortalSession.mockReturnValue(true)
     getPortalCompanies.mockResolvedValue([])
     getPortalDashboardStats.mockResolvedValue({ overdue_count: 0, due_soon_count: 0, pending_approvals_count: 0 })
@@ -93,6 +96,7 @@ describe('PortalDashboardPage', () => {
     getPortalEquipment.mockResolvedValue([])
     getPendingReportApprovals.mockResolvedValue([])
     getStaffAssignments.mockResolvedValue([])
+    reactivateStaffAssignment.mockResolvedValue({})
     deleteStaffAssignment.mockResolvedValue({ ok: true })
     updateReport.mockResolvedValue({})
   })
@@ -103,7 +107,9 @@ describe('PortalDashboardPage', () => {
     renderDashboardPage('/portal')
     expect(await screen.findByText('Acme Lifts')).toBeInTheDocument()
 
-    window.dispatchEvent(new CustomEvent('portalSessionExpired'))
+    act(() => {
+      window.dispatchEvent(new CustomEvent('portalSessionExpired'))
+    })
 
     expect(await screen.findByText('Login Page')).toBeInTheDocument()
   })
@@ -197,12 +203,12 @@ describe('PortalDashboardPage', () => {
     renderDashboardPage('/portal')
 
     expect(await screen.findByRole('heading', { name: 'Employee Controls' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Remove Employee' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Deactivate Employee' })).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Remove Employee' }))
-    expect(screen.getByRole('button', { name: 'Confirm Remove' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Deactivate Employee' }))
+    expect(screen.getByRole('button', { name: 'Confirm Deactivate' })).toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Confirm Remove' }))
+    await user.click(screen.getByRole('button', { name: 'Confirm Deactivate' }))
 
     await waitFor(() => {
       expect(deleteStaffAssignment).toHaveBeenCalledWith(99)
@@ -356,7 +362,7 @@ describe('PortalDashboardPage', () => {
     await user.selectOptions(screen.getByRole('combobox', { name: 'Status' }), 'submitted')
     await user.click(screen.getByRole('button', { name: 'Create Report' }))
 
-    expect(await screen.findAllByText('2027-06-30')).toHaveLength(2)
+    expect(await screen.findAllByText('30-06-2027')).toHaveLength(2)
   })
 
   it('only shows draft report editing for staff on their own drafts', async () => {

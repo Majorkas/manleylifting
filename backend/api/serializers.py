@@ -222,6 +222,7 @@ class UserProfileAssignmentSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source="user.username", read_only=True)
     email = serializers.EmailField(source="user.email", read_only=True)
     full_name = serializers.SerializerMethodField()
+    is_active = serializers.BooleanField(source="user.is_active", read_only=True)
     allowed_company_ids = serializers.SerializerMethodField()
 
     class Meta:
@@ -231,6 +232,7 @@ class UserProfileAssignmentSerializer(serializers.ModelSerializer):
             "username",
             "email",
             "full_name",
+            "is_active",
             "role",
             "allowed_company_ids",
         ]
@@ -245,6 +247,7 @@ class UserProfileAssignmentSerializer(serializers.ModelSerializer):
 class UserProfileAssignmentUpdateSerializer(serializers.Serializer):
     user_id = serializers.IntegerField()
     role = serializers.ChoiceField(choices=UserProfile.ROLE_CHOICES, required=False)
+    is_active = serializers.BooleanField(required=False)
     allowed_company_ids = serializers.ListField(
         child=serializers.IntegerField(min_value=1),
         required=False,

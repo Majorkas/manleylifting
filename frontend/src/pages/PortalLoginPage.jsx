@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Link, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import PortalLayout from '../components/PortalLayout'
 import { hasPortalSession, portalLogin } from '../utils/portalApi'
@@ -6,21 +6,17 @@ import { hasPortalSession, portalLogin } from '../utils/portalApi'
 export default function PortalLoginPage() {
   const navigate = useNavigate()
   const location = useLocation()
+  const sessionExpired = Boolean(location.state?.sessionExpired)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  const [errorMessage, setErrorMessage] = useState('')
+  const [errorMessage, setErrorMessage] = useState(() =>
+    sessionExpired ? 'Your session has expired. Please sign in again.' : '',
+  )
   const [submitting, setSubmitting] = useState(false)
 
   if (hasPortalSession()) {
     return <Navigate to="/portal" replace />
   }
-
-  // Show session expiry message if redirected from dashboard
-  useEffect(() => {
-    if (location.state?.sessionExpired) {
-      setErrorMessage('Your session has expired. Please sign in again.')
-    }
-  }, [location.state?.sessionExpired])
 
   async function onSubmit(event) {
     event.preventDefault()

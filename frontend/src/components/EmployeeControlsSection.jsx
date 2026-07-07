@@ -9,6 +9,10 @@ export default function EmployeeControlsSection({
   staffAssignmentsError,
   staffAssignmentsSuccess,
   staffAssignmentsLoading,
+  employeeControlsTab,
+  onSetEmployeeControlsTab,
+  activeStaffAssignments,
+  inactiveStaffAssignments,
   staffAssignments,
   filteredStaffAssignments,
   visibleStaffAssignments,
@@ -16,11 +20,13 @@ export default function EmployeeControlsSection({
   onEmployeeRoleChange,
   savingStaffUserId,
   removingStaffUserId,
+  reactivatingStaffUserId,
   onOpenCompanyPicker,
   confirmRemoveUserId,
   onConfirmRemoveUser,
   onCancelRemoveUser,
   onRemoveEmployeeAssignment,
+  onReactivateEmployeeAssignment,
   employeeStartIndex,
   employeePageSize,
   employeePage,
@@ -56,6 +62,33 @@ export default function EmployeeControlsSection({
         />
       </div>
 
+      <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
+        <div className="flex items-end gap-1 border-b border-slate-300 bg-slate-50 px-3 pt-2">
+          <button
+            type="button"
+            onClick={() => onSetEmployeeControlsTab('active')}
+            className={`-mb-px rounded-t-lg border px-4 py-2.5 text-sm font-semibold transition ${
+              employeeControlsTab === 'active'
+                ? 'border-slate-300 border-b-white bg-white text-[#123A7A] shadow-sm'
+                : 'border-transparent bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800'
+            }`}
+          >
+            Active Employees ({activeStaffAssignments.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => onSetEmployeeControlsTab('inactive')}
+            className={`-mb-px rounded-t-lg border px-4 py-2.5 text-sm font-semibold transition ${
+              employeeControlsTab === 'inactive'
+                ? 'border-slate-300 border-b-white bg-white text-[#123A7A] shadow-sm'
+                : 'border-transparent bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800'
+            }`}
+          >
+            Inactive Employees ({inactiveStaffAssignments.length})
+          </button>
+        </div>
+      </div>
+
       {staffAssignmentsError && (
         <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
           {staffAssignmentsError}
@@ -71,7 +104,9 @@ export default function EmployeeControlsSection({
         <EmployeeAssignmentsSkeleton />
       ) : staffAssignments.length === 0 ? (
         <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-          No employee accounts found yet.
+          {employeeControlsTab === 'active'
+            ? 'No active employee accounts found.'
+            : 'No inactive employee accounts found.'}
         </div>
       ) : filteredStaffAssignments.length === 0 ? (
         <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
@@ -80,6 +115,29 @@ export default function EmployeeControlsSection({
       ) : (
         <div className="mt-4 space-y-3">
           {visibleStaffAssignments.map((assignment) => {
+            if (employeeControlsTab === 'inactive') {
+              return (
+                <article key={assignment.user_id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <h3 className="text-base font-bold text-[#123A7A]">{assignment.full_name || '-'}</h3>
+                      <p className="text-sm text-slate-600">{assignment.email || '-'}</p>
+                      <p className="text-sm text-slate-600">{assignment.username}</p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => onReactivateEmployeeAssignment(assignment)}
+                      disabled={reactivatingStaffUserId === Number(assignment.user_id)}
+                      className="rounded-md border border-emerald-600 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-emerald-700 transition hover:bg-emerald-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {reactivatingStaffUserId === Number(assignment.user_id) ? 'Reactivating...' : 'Reactivate'}
+                    </button>
+                  </div>
+                </article>
+              )
+            }
+
             const assignedCompanyNames = companies
               .filter((item) => (assignment.allowed_company_ids || []).includes(item.id))
               .map((item) => item.name)
@@ -168,7 +226,7 @@ export default function EmployeeControlsSection({
                         disabled={removingStaffUserId === Number(assignment.user_id)}
                         className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        {removingStaffUserId === Number(assignment.user_id) ? 'Removing...' : 'Confirm Remove'}
+                        {removingStaffUserId === Number(assignment.user_id) ? 'Deactivating...' : 'Confirm Deactivate'}
                       </button>
                       <button
                         type="button"
@@ -186,7 +244,7 @@ export default function EmployeeControlsSection({
                       disabled={removingStaffUserId === Number(assignment.user_id)}
                       className="rounded-md border border-rose-300 bg-rose-600 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      Remove Employee
+                      Deactivate Employee
                     </button>
                   )}
                 </div>

@@ -738,6 +738,23 @@ class PortalRBACTests(TestCase):
         updated_profile = UserProfile.objects.get(user=self.staff_user)
         self.assertEqual(list(updated_profile.allowed_companies.values_list("id", flat=True)), [self.company_b.id])
 
+    def test_office_staff_does_not_see_self_in_staff_assignments(self):
+        office_user = get_user_model().objects.create_user(
+            username="office_assignment_user",
+            password="testpass123",
+            email="office_assignment_user@example.com",
+        )
+        office_profile = UserProfile.objects.create(user=office_user, role=UserProfile.ROLE_OFFICE_STAFF)
+        office_profile.allowed_companies.add(self.company_a, self.company_b)
+
+        self.client.force_authenticate(user=office_user)
+        response = self.client.get("/api/portal/staff-assignments/")
+
+        self.assertEqual(response.status_code, 200)
+        results = response.json()["results"]
+        returned_user_ids = {item["user_id"] for item in results}
+        self.assertNotIn(office_user.id, returned_user_ids)
+
     def test_owner_can_create_employee_assignment(self):
         self.client.force_authenticate(user=self.owner_user)
 
@@ -778,6 +795,31 @@ class PortalRBACTests(TestCase):
         self.assertEqual(delete_response.status_code, 200)
         self.staff_user.refresh_from_db()
         self.assertFalse(self.staff_user.is_active)
+
+        list_response = self.client.get("/api/portal/staff-assignments/")
+        self.assertEqual(list_response.status_code, 200)
+        returned_user_ids = {item["user_id"] for item in list_response.json()["results"]}
+        self.assertNotIn(self.staff_user.id, returned_user_ids)
+
+    def test_owner_can_list_and_reactivate_inactive_employee_assignment(self):
+        self.client.force_authenticate(user=self.owner_user)
+        self.staff_user.is_active = False
+        self.staff_user.save(update_fields=["is_active"])
+
+        inactive_list_response = self.client.get("/api/portal/staff-assignments/?status=inactive")
+        self.assertEqual(inactive_list_response.status_code, 200)
+        inactive_ids = {item["user_id"] for item in inactive_list_response.json()["results"]}
+        self.assertIn(self.staff_user.id, inactive_ids)
+
+        reactivate_response = self.client.patch(
+            "/api/portal/staff-assignments/",
+            data={"user_id": self.staff_user.id, "is_active": True},
+            format="json",
+        )
+        self.assertEqual(reactivate_response.status_code, 200)
+
+        self.staff_user.refresh_from_db()
+        self.assertTrue(self.staff_user.is_active)
 
     def test_portal_companies_pagination_metadata(self):
         self.client.force_authenticate(user=self.owner_user)

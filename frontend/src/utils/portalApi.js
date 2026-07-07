@@ -17,15 +17,192 @@ function parseJsonSafe(raw) {
   }
 }
 
+function formatFieldLabel(fieldName) {
+  const knownLabels = {
+    company_id: 'Company',
+    allowed_company_ids: 'Allowed companies',
+    user_id: 'Employee',
+    issue_date: 'Issue date',
+    expiry_date: 'Expiry date',
+    report_date: 'Report date',
+    customer_email: 'Customer email',
+    customer_username: 'Customer username',
+    customer_password: 'Customer password',
+    company_name: 'Company name',
+    username: 'Username',
+    password: 'Password',
+    email: 'Email',
+    current_password: 'Current password',
+    new_password: 'New password',
+  }
+
+  if (knownLabels[fieldName]) return knownLabels[fieldName]
+  return String(fieldName || '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+}
+
+function toMessageList(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean)
+  }
+  if (value && typeof value === 'object') {
+    return Object.values(value)
+      .flatMap((item) => toMessageList(item))
+      .filter(Boolean)
+  }
+  const text = String(value || '').trim()
+  return text ? [text] : []
+}
+
+function extractValidationMessage(body) {
+  if (!body || typeof body !== 'object') return ''
+
+  const ignoredKeys = new Set(['detail', 'error', 'status', 'code'])
+  const parts = []
+
+  for (const [field, rawValue] of Object.entries(body)) {
+    if (ignoredKeys.has(field)) continue
+    const messages = toMessageList(rawValue)
+    if (messages.length === 0) continue
+    const label = formatFieldLabel(field)
+    parts.push(`${label}: ${messages.join(' ')}`)
+  }
+
+  return parts.join(' ')
+}
+
+function prettifyRawMessage(path, status, rawMessage, body) {
+  const message = String(rawMessage || '').trim()
+  const normalized = message.toLowerCase()
+
+  if (status === 401) {
+    return 'Your session has expired. Please sign in again.'
+  }
+
+  if (status === 403) {
+    return 'You do not have permission to perform this action. Contact an account owner if you need access.'
+  }
+
+  if (normalized.includes('incorrect username')) {
+    return 'That username was not found. Check the username and try again.'
+  }
+
+  if (normalized.includes('incorrect password')) {
+    return 'The password is incorrect. Re-enter your password and try again.'
+  }
+
+  if (normalized.includes('account is disabled')) {
+    return 'This account is disabled. Contact an administrator to restore access.'
+  }
+
+  if (normalized.includes('refresh token is required')) {
+    return 'Your login session has expired. Please sign in again to continue.'
+  }
+
+  if (normalized.includes('username already exists')) {
+    const suggested = String(body?.suggested_username || '').trim()
+    if (suggested) {
+      return `That username is already taken. Try '${suggested}' instead.`
+    }
+    return 'That username is already taken. Choose a different username.'
+  }
+
+  if (normalized.includes('email already exists')) {
+    return 'That email address is already in use. Use a different email address.'
+  }
+
+  if (normalized.includes('title is required')) {
+    return 'A title is required. Add a clear title and try again.'
+  }
+
+  if (normalized.includes('company_id is required')) {
+    return 'Please select a company before continuing.'
+  }
+
+  if (normalized.includes('company_id must be a valid integer')) {
+    return 'The selected company is invalid. Refresh the page, select a company again, and retry.'
+  }
+
+  if (normalized.includes('report is invalid for equipment')) {
+    return 'The selected report does not belong to this equipment. Pick a report from this equipment only.'
+  }
+
+  if (normalized.includes('issue_date must be yyyy-mm-dd')) {
+    return 'Issue date must be in YYYY-MM-DD format. Update the date and try again.'
+  }
+
+  if (normalized.includes('expiry_date must be yyyy-mm-dd')) {
+    return 'Expiry date must be in YYYY-MM-DD format. Update the date and try again.'
+  }
+
+  if (normalized.includes('must be 10mb or smaller')) {
+    return 'The selected file is too large. Please upload a file that is 10MB or smaller.'
+  }
+
+  if (normalized.includes('certificate file type must')) {
+    return 'Unsupported certificate file type. Upload a PDF, PNG, JPG, or JPEG file.'
+  }
+
+  if (normalized.includes('report images must')) {
+    return 'Unsupported image type. Upload PNG, JPG, JPEG, or WEBP images only.'
+  }
+
+  if (normalized.includes('only owner can')) {
+    return 'Only account owners can perform this action.'
+  }
+
+  if (normalized.includes('insufficient permissions')) {
+    return 'You do not have permission to perform this action with your current role.'
+  }
+
+  if (normalized.includes('only employee accounts can be')) {
+    return 'This action only applies to employee accounts.'
+  }
+
+  if (normalized.includes('you cannot remove your own account')) {
+    return 'You cannot deactivate your own account. Ask another owner to manage your account.'
+  }
+
+  if (normalized.includes('no valid changes provided')) {
+    return 'No changes were detected. Update at least one field before saving.'
+  }
+
+  if (normalized.includes('current password is incorrect')) {
+    return 'Current password is incorrect. Enter your existing password and try again.'
+  }
+
+  if (normalized.includes('invalid status value')) {
+    return 'The selected status is invalid. Choose one of the available status options and retry.'
+  }
+
+  if (status === 404 && path.includes('/portal/')) {
+    return 'The requested item was not found. It may have been removed or you may no longer have access to it.'
+  }
+
+  if (message) return message
+
+  const validationMessage = extractValidationMessage(body)
+  if (validationMessage) return validationMessage
+
+  if (status >= 500) {
+    return 'Something went wrong on the server. Please try again in a moment.'
+  }
+
+  return 'Request failed. Please review your input and try again.'
+}
+
 async function parseResponse(response, path) {
   const rawText = await response.text().catch(() => '')
   const body = rawText ? parseJsonSafe(rawText) : {}
 
   if (!response.ok) {
-    const message =
-      String(body?.detail || '').trim() ||
-      String(body?.error || '').trim() ||
-      'Request failed'
+    const message = prettifyRawMessage(
+      path,
+      Number(response.status || 0),
+      String(body?.detail || body?.error || '').trim(),
+      body,
+    )
     const error = new Error(message)
     error.status = response.status
     error.path = path
@@ -87,7 +264,21 @@ async function refreshAccessToken() {
 }
 
 async function authFetch(path, options = {}) {
-  const access = getAccessToken()
+  let access = getAccessToken()
+
+  // On reload, access token is memory-only. If we still have a session flag,
+  // refresh first to avoid an expected 401 on the initial protected request.
+  if (!access && options.retry !== false && typeof window !== 'undefined') {
+    const hasSessionFlag = window.localStorage.getItem(SESSION_FLAG_KEY) === '1'
+    if (hasSessionFlag) {
+      try {
+        access = await refreshAccessToken()
+      } catch {
+        clearPortalSession()
+      }
+    }
+  }
+
   const headers = {
     Accept: 'application/json',
     ...(options.headers || {}),
@@ -120,7 +311,7 @@ async function authFetch(path, options = {}) {
       headers: retryHeaders,
       retry: false,
     })
-  } catch (error) {
+  } catch {
     clearPortalSession()
     return response
   }
@@ -228,8 +419,11 @@ export async function getPendingReportApprovals() {
   return Array.isArray(body?.results) ? body.results : []
 }
 
-export async function getStaffAssignments() {
-  const path = '/portal/staff-assignments/'
+export async function getStaffAssignments({ status = 'active' } = {}) {
+  const params = new URLSearchParams()
+  if (status) params.set('status', String(status))
+  const query = params.toString()
+  const path = '/portal/staff-assignments/' + (query ? '?' + query : '')
   const response = await authFetch(path)
   const body = await parseResponse(response, path)
   return Array.isArray(body?.results) ? body.results : []
@@ -267,6 +461,18 @@ export async function deleteStaffAssignment(userId) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ user_id: userId }),
+  })
+  return parseResponse(response, path)
+}
+
+export async function reactivateStaffAssignment(userId) {
+  const path = '/portal/staff-assignments/'
+  const response = await authFetch(path, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ user_id: userId, is_active: true }),
   })
   return parseResponse(response, path)
 }
