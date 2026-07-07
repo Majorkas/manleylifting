@@ -9,6 +9,7 @@ export default function PortalLoginPage() {
   const sessionExpired = Boolean(location.state?.sessionExpired)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [errorMessage, setErrorMessage] = useState(() =>
     sessionExpired ? 'Your session has expired. Please sign in again.' : '',
   )
@@ -85,14 +86,24 @@ export default function PortalLoginPage() {
 
               <label className="block">
                 <span className="mb-1 block text-sm font-semibold text-slate-700">Password</span>
-                <input
-                  type="password"
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  className="w-full rounded-md border border-slate-300 px-3 py-2.5 text-slate-900 outline-none ring-0 transition focus:border-[#123A7A]"
-                  required
-                />
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    className="w-full rounded-md border border-slate-300 px-3 py-2.5 pr-24 text-slate-900 outline-none ring-0 transition focus:border-[#123A7A]"
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((current) => !current)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700 transition hover:bg-slate-50"
+                  >
+                    {showPassword ? 'Hide' : 'Show'}
+                  </button>
+                </div>
               </label>
 
               <button

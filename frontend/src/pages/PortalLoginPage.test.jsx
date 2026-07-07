@@ -61,4 +61,20 @@ describe('PortalLoginPage', () => {
 
     expect(portalLogin).toHaveBeenCalledWith('DemoUser', 'testpass123')
   })
+
+  it('toggles password visibility', async () => {
+    hasPortalSession.mockReturnValue(false)
+    const user = userEvent.setup()
+
+    renderLoginPage()
+
+    const passwordInput = screen.getByLabelText('Password')
+    expect(passwordInput).toHaveAttribute('type', 'password')
+
+    await user.click(screen.getByRole('button', { name: 'Show password' }))
+    expect(passwordInput).toHaveAttribute('type', 'text')
+
+    await user.click(screen.getByRole('button', { name: 'Hide password' }))
+    expect(passwordInput).toHaveAttribute('type', 'password')
+  })
 })
