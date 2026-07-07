@@ -45,6 +45,12 @@ TEST_CACHES = {
 class BaseApiTestCase(TestCase):
     def setUp(self):
         cache.clear()
+
+    def test_csp_report_only_header_is_set(self):
+        response = self.client.get("/api/hello/")
+        self.assertEqual(response.status_code, 200)
+        header_value = str(response.headers.get("Content-Security-Policy-Report-Only") or "")
+        self.assertIn("default-src 'self'", header_value)
         self.client = Client()
 
 

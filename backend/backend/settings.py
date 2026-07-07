@@ -101,6 +101,7 @@ if USE_R2_STORAGE:
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "api.middleware.ContentSecurityPolicyReportOnlyMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -299,6 +300,13 @@ JWT_REFRESH_COOKIE_SAMESITE = os.getenv(
     "None" if JWT_REFRESH_COOKIE_SECURE else "Lax",
 )
 JWT_REFRESH_COOKIE_MAX_AGE = int(SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"].total_seconds())
+
+CONTENT_SECURITY_POLICY_REPORT_ONLY = os.getenv(
+    "CONTENT_SECURITY_POLICY_REPORT_ONLY",
+    "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; "
+    "script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; "
+    "font-src 'self' data:; connect-src 'self' https:",
+).strip()
 
 CLOUDINARY_URL = os.getenv("CLOUDINARY_URL", "").strip()
 CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
