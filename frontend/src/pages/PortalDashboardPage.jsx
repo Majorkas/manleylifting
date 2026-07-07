@@ -159,6 +159,87 @@ function getMissingChecklistNoteLabel(items) {
   return missing?.label || ''
 }
 
+function buildReportSnapshot(source) {
+  return {
+    title: String(source?.title || ''),
+    summary: String(source?.summary || ''),
+    findings: String(source?.findings || ''),
+    recommendations: String(source?.recommendations || ''),
+    report_date: String(source?.report_date || ''),
+    status: String(source?.status || ''),
+    checklist_items: normalizeReportChecklistItems(source?.checklist_items),
+  }
+}
+
+function getChecklistChangeRows(beforeItems, afterItems) {
+  const beforeByLabel = new Map(
+    normalizeReportChecklistItems(beforeItems).map((item) => [item.label, item]),
+  )
+  const afterByLabel = new Map(
+    normalizeReportChecklistItems(afterItems).map((item) => [item.label, item]),
+  )
+
+  return REPORT_TEMPLATE_CHECKLIST_LABELS
+    .map((label) => {
+      const before = beforeByLabel.get(label) || {
+        label,
+        status: REPORT_CHECKLIST_STATUS_GOOD,
+        note: '',
+      }
+      const after = afterByLabel.get(label) || {
+        label,
+        status: REPORT_CHECKLIST_STATUS_GOOD,
+        note: '',
+      }
+
+      if (
+        String(before.status) === String(after.status) &&
+        String(before.note || '') === String(after.note || '')
+      ) {
+        return null
+      }
+
+      return {
+        label,
+        beforeStatus: before.status,
+        afterStatus: after.status,
+        beforeNote: String(before.note || ''),
+        afterNote: String(after.note || ''),
+      }
+    })
+    .filter(Boolean)
+}
+
+function getRevisionFieldChanges(beforeSnapshot, afterSnapshot) {
+  const fieldDefinitions = [
+    { key: 'title', label: 'Title' },
+    { key: 'summary', label: 'Summary' },
+    { key: 'findings', label: 'Findings' },
+    { key: 'recommendations', label: 'Recommendations' },
+    { key: 'report_date', label: 'Report Date' },
+    { key: 'status', label: 'Status' },
+  ]
+
+  const fieldChanges = fieldDefinitions
+    .map(({ key, label }) => {
+      const beforeValue = String(beforeSnapshot?.[key] || '')
+      const afterValue = String(afterSnapshot?.[key] || '')
+      if (beforeValue === afterValue) return null
+      return {
+        key,
+        label,
+        beforeValue,
+        afterValue,
+      }
+    })
+    .filter(Boolean)
+
+  return {
+    fieldChanges,
+    checklistChanges: getChecklistChangeRows(beforeSnapshot?.checklist_items, afterSnapshot?.checklist_items),
+  }
+}
+
 const ReportChecklistEditor = memo(function ReportChecklistEditor({ checklistItems, onChange }) {
   const [localItems, setLocalItems] = useState(() => normalizeReportChecklistItems(checklistItems))
 
@@ -611,6 +692,7 @@ export default function PortalDashboardPage() {
   const [approvingReport, setApprovingReport] = useState(false)
   const [revisionReportId, setRevisionReportId] = useState('')
   const [reportRevisions, setReportRevisions] = useState([])
+  const [selectedRevisionPreview, setSelectedRevisionPreview] = useState(null)
   const [revisionsLoading, setRevisionsLoading] = useState(false)
   const [pendingReportApprovals, setPendingReportApprovals] = useState([])
   const [pendingApprovalsLoading, setPendingApprovalsLoading] = useState(false)
@@ -2483,6 +2565,7 @@ export default function PortalDashboardPage() {
     setShowRevisionsModal(true)
     setRevisionReportId(String(reportId))
     setReportRevisions([])
+    setSelectedRevisionPreview(null)
     setRevisionsLoading(true)
     setRevisionsError('')
     try {
@@ -2493,6 +2576,25 @@ export default function PortalDashboardPage() {
     } finally {
       setRevisionsLoading(false)
     }
+  }
+
+  function openRevisionPreview(revisionIndex) {
+    const revision = reportRevisions[revisionIndex]
+    if (!revision) return
+
+    const beforeSnapshot = buildReportSnapshot(revision.previous_data)
+    const nextNewerRevision = revisionIndex > 0 ? reportRevisions[revisionIndex - 1] : null
+    const afterSource = nextNewerRevision?.previous_data || viewedReport || revision.previous_data
+    const afterSnapshot = buildReportSnapshot(afterSource)
+    const { fieldChanges, checklistChanges } = getRevisionFieldChanges(beforeSnapshot, afterSnapshot)
+
+    setSelectedRevisionPreview({
+      revision,
+      beforeSnapshot,
+      afterSnapshot,
+      fieldChanges,
+      checklistChanges,
+    })
   }
 
   function handleCancelEdit(force = false) {
@@ -4589,21 +4691,25 @@ export default function PortalDashboardPage() {
               setShowRevisionsModal(false)
               setRevisionReportId('')
               setReportRevisions([])
+              setSelectedRevisionPreview(null)
               setRevisionsError('')
             }}
           >
             <div
-              className="max-h-[calc(100vh-7rem)] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
+              className="max-h-[calc(100vh-7rem)] w-full max-w-4xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-center justify-between gap-3">
-                <h3 className="text-lg font-bold text-[#123A7A]">Revision History</h3>
+                <h3 className="text-lg font-bold text-[#123A7A]">
+                  {selectedRevisionPreview ? 'Revision Details' : 'Revision History'}
+                </h3>
                 <button
                   type="button"
                   onClick={() => {
                     setShowRevisionsModal(false)
                     setRevisionReportId('')
                     setReportRevisions([])
+                    setSelectedRevisionPreview(null)
                     setRevisionsError('')
                   }}
                   className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
@@ -4611,27 +4717,147 @@ export default function PortalDashboardPage() {
                   Close
                 </button>
               </div>
-              {revisionsLoading ? (
+
+              {selectedRevisionPreview ? (
+                <div className="mt-3 space-y-4 text-sm text-slate-700">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="font-semibold text-slate-800">
+                      {selectedRevisionPreview.revision.edited_by_name || 'Unknown user'}
+                      {' '}
+                      <span className="text-slate-400">-</span>
+                      {' '}
+                      <span className="font-medium text-slate-600">
+                        {formatRevisionDateTime(selectedRevisionPreview.revision.changed_at)}
+                      </span>
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedRevisionPreview(null)}
+                      className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
+                    >
+                      Back to Revisions
+                    </button>
+                  </div>
+
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-sm font-semibold text-slate-800">Exactly What Changed</p>
+                    {selectedRevisionPreview.fieldChanges.length === 0 &&
+                    selectedRevisionPreview.checklistChanges.length === 0 ? (
+                      <p className="mt-2 text-xs text-slate-600">No field-level differences detected.</p>
+                    ) : (
+                      <div className="mt-2 space-y-2 text-xs text-slate-700">
+                        {selectedRevisionPreview.fieldChanges.map((change) => (
+                          <div key={change.key} className="rounded border border-slate-200 bg-white p-2">
+                            <p className="font-semibold text-slate-800">{change.label}</p>
+                            <p><span className="font-semibold">Before:</span> {change.beforeValue || '-'}</p>
+                            <p><span className="font-semibold">After:</span> {change.afterValue || '-'}</p>
+                          </div>
+                        ))}
+
+                        {selectedRevisionPreview.checklistChanges.length > 0 && (
+                          <div className="rounded border border-slate-200 bg-white p-2">
+                            <p className="font-semibold text-slate-800">Checklist Changes</p>
+                            <ul className="mt-1 space-y-2">
+                              {selectedRevisionPreview.checklistChanges.map((change) => (
+                                <li key={`check-change-${change.label}`}>
+                                  <p className="font-semibold">{change.label}</p>
+                                  <p>
+                                    <span className="font-semibold">Status:</span>{' '}
+                                    {getChecklistStatusLabel(change.beforeStatus)} {'->'} {getChecklistStatusLabel(change.afterStatus)}
+                                  </p>
+                                  <p><span className="font-semibold">Note Before:</span> {change.beforeNote || '-'}</p>
+                                  <p><span className="font-semibold">Note After:</span> {change.afterNote || '-'}</p>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="rounded-lg border border-slate-200 bg-white p-3">
+                    <p className="text-sm font-semibold text-slate-800">Full Report After This Revision</p>
+                    <div className="mt-2 grid gap-2 text-sm text-slate-700 md:grid-cols-2">
+                      <p><span className="font-semibold">Title:</span> {selectedRevisionPreview.afterSnapshot.title || '-'}</p>
+                      <p><span className="font-semibold">Status:</span> {selectedRevisionPreview.afterSnapshot.status || '-'}</p>
+                      <p><span className="font-semibold">Report Date:</span> {selectedRevisionPreview.afterSnapshot.report_date || '-'}</p>
+                      <p className="md:col-span-2"><span className="font-semibold">Summary:</span> {selectedRevisionPreview.afterSnapshot.summary || '-'}</p>
+                      <p className="md:col-span-2"><span className="font-semibold">Findings:</span> {selectedRevisionPreview.afterSnapshot.findings || '-'}</p>
+                      <p className="md:col-span-2"><span className="font-semibold">Recommendations:</span> {selectedRevisionPreview.afterSnapshot.recommendations || '-'}</p>
+                    </div>
+
+                    {(() => {
+                      const checklistSections = getChecklistSections(selectedRevisionPreview.afterSnapshot.checklist_items)
+                      return (
+                        <div className="mt-3 grid gap-3 md:grid-cols-2">
+                          <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                            <p className="text-sm font-semibold text-amber-800">Worn but Servicable</p>
+                            {checklistSections.worn.length === 0 ? (
+                              <p className="mt-2 text-xs text-amber-700">None reported.</p>
+                            ) : (
+                              <ul className="mt-2 space-y-2 text-xs text-amber-900">
+                                {checklistSections.worn.map((item) => (
+                                  <li key={`rev-worn-${item.label}`}>
+                                    <p className="font-semibold">{item.label}</p>
+                                    <p>{item.note || '-'}</p>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                          <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
+                            <p className="text-sm font-semibold text-rose-800">Attention Required</p>
+                            {checklistSections.attention.length === 0 ? (
+                              <p className="mt-2 text-xs text-rose-700">None reported.</p>
+                            ) : (
+                              <ul className="mt-2 space-y-2 text-xs text-rose-900">
+                                {checklistSections.attention.map((item) => (
+                                  <li key={`rev-attention-${item.label}`}>
+                                    <p className="font-semibold">{item.label}</p>
+                                    <p>{item.note || '-'}</p>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })()}
+                  </div>
+                </div>
+              ) : revisionsLoading ? (
                 <p className="mt-2 text-sm text-slate-500">Loading revisions...</p>
               ) : reportRevisions.length === 0 ? (
                 <p className="mt-2 text-sm text-slate-500">No revisions recorded yet for this report.</p>
               ) : (
                 <ul className="mt-3 space-y-2 text-sm text-slate-700">
-                  {reportRevisions.map((revision) => (
+                  {reportRevisions.map((revision, index) => (
                     <li key={revision.id} className="rounded border border-slate-200 bg-white p-3">
-                      <p className="font-semibold text-slate-800">
-                        {revision.edited_by_name || 'Unknown user'}
-                        {' '}
-                        <span className="text-slate-400">-</span>
-                        {' '}
-                        <span className="font-medium text-slate-600">
-                          {formatRevisionDateTime(revision.changed_at)}
-                        </span>
-                      </p>
-                      <p className="mt-1 text-slate-600">
-                        Previous title: {revision.previous_data?.title || '-'} | Status:{' '}
-                        {revision.previous_data?.status || '-'}
-                      </p>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="font-semibold text-slate-800">
+                            {revision.edited_by_name || 'Unknown user'}
+                            {' '}
+                            <span className="text-slate-400">-</span>
+                            {' '}
+                            <span className="font-medium text-slate-600">
+                              {formatRevisionDateTime(revision.changed_at)}
+                            </span>
+                          </p>
+                          <p className="mt-1 text-slate-600">
+                            Previous title: {revision.previous_data?.title || '-'} | Status:{' '}
+                            {revision.previous_data?.status || '-'}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => openRevisionPreview(index)}
+                          className="rounded border border-[#123A7A] bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                        >
+                          View
+                        </button>
+                      </div>
                     </li>
                   ))}
                 </ul>

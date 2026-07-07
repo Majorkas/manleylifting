@@ -44,6 +44,7 @@ import {
   getPortalEquipment,
   getPortalMe,
   getPendingReportApprovals,
+  getReportRevisions,
   reactivateStaffAssignment,
   getStaffAssignments,
   hasPortalSession,
@@ -112,6 +113,7 @@ describe('PortalDashboardPage', () => {
     getPortalCompanyHeader.mockResolvedValue({})
     getPortalEquipment.mockResolvedValue([])
     getPendingReportApprovals.mockResolvedValue([])
+    getReportRevisions.mockResolvedValue([])
     getStaffAssignments.mockResolvedValue([])
     getAccessToken.mockReturnValue('')
     reactivateStaffAssignment.mockResolvedValue({})
@@ -1144,6 +1146,114 @@ describe('PortalDashboardPage', () => {
     expect(screen.getByRole('option', { name: 'Submitted' })).toBeInTheDocument()
     expect(screen.getByRole('option', { name: 'Approved' })).toBeInTheDocument()
     expect(screen.queryByRole('option', { name: 'Draft' })).not.toBeInTheDocument()
+  })
+
+  it('shows full revision details with exact before and after changes', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 31,
+      username: 'demo_owner',
+      email: 'owner@example.com',
+      fullName: 'Demo Owner',
+      role: 'owner',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 101,
+        name: 'Warehouse Hoist',
+        asset_tag: 'WH-1',
+        serial_number: 'SN-101',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-09-01',
+      },
+    ])
+    getEquipmentReports.mockResolvedValue([
+      {
+        id: 2,
+        title: 'Updated Hoist Inspection',
+        report_date: '2026-07-02',
+        status: 'approved',
+        submitted_by: 21,
+        submitted_by_name: 'Demo Staff',
+        summary: 'Updated summary',
+        findings: 'Updated findings',
+        recommendations: 'Updated recommendations',
+        checklist_items: [
+          {
+            label: 'Hoist Brake',
+            status: 'attention_required',
+            note: 'Brake chatter under load',
+          },
+        ],
+      },
+    ])
+    getReportRevisions.mockResolvedValue([
+      {
+        id: 9,
+        edited_by_name: 'Demo Owner',
+        changed_at: '2026-07-02T10:30:00Z',
+        previous_data: {
+          title: 'Submitted Hoist Inspection',
+          summary: 'Submitted summary',
+          findings: 'Submitted findings',
+          recommendations: 'Submitted recommendations',
+          report_date: '2026-07-01',
+          status: 'submitted',
+          checklist_items: [
+            {
+              label: 'Hoist Brake',
+              status: 'worn_serviceable',
+              note: 'Slight wear observed',
+            },
+          ],
+        },
+      },
+    ])
+
+    renderDashboardPage('/portal?companyId=1')
+
+    await user.click(await screen.findByRole('button', { name: 'View' }))
+
+    const tables = screen.getAllByRole('table')
+    const reportsTable = tables[tables.length - 1]
+    await user.click(within(reportsTable).getByRole('button', { name: 'View' }))
+
+    await user.click(screen.getByRole('button', { name: 'Revisions' }))
+    expect(await screen.findByRole('heading', { name: 'Revision History' })).toBeInTheDocument()
+
+    const revisionRowSummary = await screen.findByText(/Previous title:/)
+    const revisionRow = revisionRowSummary.closest('li')
+    expect(revisionRow).not.toBeNull()
+    await user.click(within(revisionRow).getByRole('button', { name: 'View' }))
+
+    expect(await screen.findByRole('heading', { name: 'Revision Details' })).toBeInTheDocument()
+    expect(screen.getByText('Exactly What Changed')).toBeInTheDocument()
+
+    const checklistChangesHeading = screen.getByText('Checklist Changes')
+    const checklistChangesCard = checklistChangesHeading.closest('div')
+    expect(checklistChangesCard).not.toBeNull()
+    expect(within(checklistChangesCard).getByText('Hoist Brake')).toBeInTheDocument()
+    expect(within(checklistChangesCard).getByText('Note Before:')).toBeInTheDocument()
+    expect(within(checklistChangesCard).getByText('Slight wear observed')).toBeInTheDocument()
+    expect(within(checklistChangesCard).getByText('Note After:')).toBeInTheDocument()
+    expect(within(checklistChangesCard).getByText('Brake chatter under load')).toBeInTheDocument()
+    expect(screen.getByText('Full Report After This Revision')).toBeInTheDocument()
+    expect(screen.getAllByText('Attention Required').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Brake chatter under load').length).toBeGreaterThan(0)
   })
 
   it('lets owners approve submitted reports directly from the review modal', async () => {
