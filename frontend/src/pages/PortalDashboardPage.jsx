@@ -42,6 +42,24 @@ const SESSION_WARNING_WINDOW_MS = 2 * 60 * 1000
 const SESSION_WARNING_CHECK_INTERVAL_MS = 15 * 1000
 const REPORT_DRAFT_STORAGE_KEY = 'manley-portal-report-draft-v1'
 
+function parsePositiveInt(value, fallback = 1) {
+  const parsed = Number.parseInt(String(value || ''), 10)
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback
+  return parsed
+}
+
+function parseEnum(value, validOptions, fallback) {
+  if (validOptions.includes(value)) return value
+  return fallback
+}
+
+function buildStableQueryString(params) {
+  const sortedEntries = Array.from(params.entries()).sort(([leftKey], [rightKey]) =>
+    leftKey.localeCompare(rightKey),
+  )
+  return new URLSearchParams(sortedEntries).toString()
+}
+
 function formatRevisionDateTime(value) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return String(value || '-')
@@ -340,6 +358,17 @@ function buildUniqueEmployeeUsername(baseUsername, existingUsernames) {
 export default function PortalDashboardPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
+  const initialSearchQuery = String(searchParams.get('q') || '').trim()
+  const initialReportYearFilter = String(searchParams.get('reportYear') || '').trim()
+  const initialEquipmentTab = parseEnum(searchParams.get('eqTab'), ['active', 'decommissioned'], 'active')
+  const initialInspectionUrgency = parseEnum(
+    searchParams.get('eqUrgency'),
+    ['all', 'overdue', 'due_soon', 'on_schedule'],
+    'all',
+  )
+  const initialEquipmentPage = parsePositiveInt(searchParams.get('eqPage'), 1)
+  const initialCustomerPage = parsePositiveInt(searchParams.get('customersPage'), 1)
+  const initialEmployeePage = parsePositiveInt(searchParams.get('employeesPage'), 1)
   const isAuthenticated = hasPortalSession()
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
@@ -347,8 +376,8 @@ export default function PortalDashboardPage() {
   const [companies, setCompanies] = useState([])
   const [company, setCompany] = useState(null)
   const [equipment, setEquipment] = useState([])
-  const [searchInput, setSearchInput] = useState('')
-  const [searchQuery, setSearchQuery] = useState('')
+  const [searchInput, setSearchInput] = useState(initialSearchQuery)
+  const [searchQuery, setSearchQuery] = useState(initialSearchQuery)
   const [loggingOut, setLoggingOut] = useState(false)
   const [refreshingCustomers, setRefreshingCustomers] = useState(false)
   const [refreshingEquipment, setRefreshingEquipment] = useState(false)
@@ -362,7 +391,7 @@ export default function PortalDashboardPage() {
   const [pendingApprovalsLastUpdatedAt, setPendingApprovalsLastUpdatedAt] = useState(0)
   const [selectedEquipment, setSelectedEquipment] = useState(null)
   const [reports, setReports] = useState([])
-  const [reportYearFilter, setReportYearFilter] = useState('')
+  const [reportYearFilter, setReportYearFilter] = useState(initialReportYearFilter)
   const [reportsLoading, setReportsLoading] = useState(false)
   const [reportError, setReportError] = useState('')
   const [createReportError, setCreateReportError] = useState('')
@@ -413,7 +442,7 @@ export default function PortalDashboardPage() {
   const [, setCustomerEditSuccess] = useState('')
   const [customerStatsFilter, setCustomerStatsFilter] = useState('all')
   const [customerSearchInput, setCustomerSearchInput] = useState('')
-  const [customerPage, setCustomerPage] = useState(1)
+  const [customerPage, setCustomerPage] = useState(initialCustomerPage)
   const [showCreateEmployeeForm, setShowCreateEmployeeForm] = useState(false)
   const [employeeForm, setEmployeeForm] = useState(buildEmptyEmployeeForm())
   const [activeStaffAssignments, setActiveStaffAssignments] = useState([])
@@ -423,7 +452,7 @@ export default function PortalDashboardPage() {
   const [, setStaffAssignmentsSuccess] = useState('')
   const [employeeControlsTab, setEmployeeControlsTab] = useState('active')
   const [employeeSearchInput, setEmployeeSearchInput] = useState('')
-  const [employeePage, setEmployeePage] = useState(1)
+  const [employeePage, setEmployeePage] = useState(initialEmployeePage)
   const [companyPickerUserId, setCompanyPickerUserId] = useState('')
   const [companyPickerSearchInput, setCompanyPickerSearchInput] = useState('')
   const [savingStaffUserId, setSavingStaffUserId] = useState(0)
@@ -441,19 +470,22 @@ export default function PortalDashboardPage() {
   const [equipmentCreateError, setEquipmentCreateError] = useState('')
   const [, setEquipmentCreateSuccess] = useState('')
   const [equipmentForm, setEquipmentForm] = useState(buildEmptyEquipmentForm())
-  const [equipmentPage, setEquipmentPage] = useState(1)
+  const [equipmentPage, setEquipmentPage] = useState(initialEquipmentPage)
   const [updatingEquipmentStatus, setUpdatingEquipmentStatus] = useState(false)
   const [equipmentStatusError, setEquipmentStatusError] = useState('')
   const [equipmentStatusDraft, setEquipmentStatusDraft] = useState('active')
   const [showDecommissionConfirm, setShowDecommissionConfirm] = useState(false)
-  const [equipmentTableTab, setEquipmentTableTab] = useState('active')
+  const [equipmentTableTab, setEquipmentTableTab] = useState(initialEquipmentTab)
   const [equipmentSortKey, setEquipmentSortKey] = useState('next_due')
   const [equipmentSortDirection, setEquipmentSortDirection] = useState('asc')
-  const [inspectionUrgencyFilter, setInspectionUrgencyFilter] = useState('all')
+  const [inspectionUrgencyFilter, setInspectionUrgencyFilter] = useState(initialInspectionUrgency)
   const [expandedEquipmentCardId, setExpandedEquipmentCardId] = useState('')
   const [expandedReportCardId, setExpandedReportCardId] = useState('')
   const previousSelectedEquipmentIdRef = useRef('')
   const previousDesktopSelectedEquipmentIdRef = useRef('')
+  const hasInitializedCustomerPageResetRef = useRef(false)
+  const hasInitializedEmployeePageResetRef = useRef(false)
+  const hasInitializedEquipmentPageResetRef = useRef(false)
   const initialCustomerEditFormRef = useRef(buildEmptyCustomerEditForm())
   const initialReportEditFormRef = useRef(buildEmptyReportForm())
   const employeeControlsSectionRef = useRef(null)
@@ -926,6 +958,41 @@ export default function PortalDashboardPage() {
   }, [isAuthenticated])
 
   useEffect(() => {
+    const nextParams = new URLSearchParams()
+
+    if (selectedCompanyId) nextParams.set('companyId', selectedCompanyId)
+
+    if (searchQuery) nextParams.set('q', searchQuery)
+
+    if (reportYearFilter) nextParams.set('reportYear', reportYearFilter)
+
+    if (equipmentTableTab !== 'active') nextParams.set('eqTab', equipmentTableTab)
+
+    if (inspectionUrgencyFilter !== 'all') nextParams.set('eqUrgency', inspectionUrgencyFilter)
+
+    if (equipmentPage > 1) nextParams.set('eqPage', String(equipmentPage))
+
+    if (customerPage > 1) nextParams.set('customersPage', String(customerPage))
+
+    if (employeePage > 1) nextParams.set('employeesPage', String(employeePage))
+
+    if (buildStableQueryString(nextParams) !== buildStableQueryString(searchParams)) {
+      setSearchParams(nextParams, { replace: true })
+    }
+  }, [
+    customerPage,
+    employeePage,
+    equipmentPage,
+    equipmentTableTab,
+    inspectionUrgencyFilter,
+    reportYearFilter,
+    selectedCompanyId,
+    searchParams,
+    searchQuery,
+    setSearchParams,
+  ])
+
+  useEffect(() => {
     if (equipmentPage > equipmentTotalPages) {
       setEquipmentPage(equipmentTotalPages)
     }
@@ -944,14 +1011,26 @@ export default function PortalDashboardPage() {
   }, [employeePage, employeeTotalPages])
 
   useEffect(() => {
+    if (!hasInitializedCustomerPageResetRef.current) {
+      hasInitializedCustomerPageResetRef.current = true
+      return
+    }
     setCustomerPage(1)
   }, [customerSearchInput, customerStatsFilter, showsCustomerPicker])
 
   useEffect(() => {
+    if (!hasInitializedEmployeePageResetRef.current) {
+      hasInitializedEmployeePageResetRef.current = true
+      return
+    }
     setEmployeePage(1)
   }, [employeeSearchInput, employeeControlsTab, showsCustomerPicker])
 
   useEffect(() => {
+    if (!hasInitializedEquipmentPageResetRef.current) {
+      hasInitializedEquipmentPageResetRef.current = true
+      return
+    }
     setEquipmentPage(1)
   }, [equipmentSortKey, equipmentSortDirection, inspectionUrgencyFilter])
 

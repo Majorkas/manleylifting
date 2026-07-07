@@ -573,6 +573,52 @@ describe('PortalDashboardPage', () => {
     expect(screen.getByText('Page 2 of 2')).toBeInTheDocument()
   })
 
+  it('hydrates company selection and equipment filters from URL params', async () => {
+    getPortalMe.mockResolvedValue({
+      id: 11,
+      username: 'demo_customer',
+      email: 'customer@example.com',
+      fullName: 'Demo Customer',
+      role: 'customer',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 1,
+        name: 'Active Lift',
+        asset_tag: 'AC-001',
+        serial_number: 'SN-ACTIVE',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-10-01',
+      },
+      ...Array.from({ length: 11 }, (_, index) => ({
+        id: index + 100,
+        name: `Decom ${String(index + 1).padStart(2, '0')}`,
+        asset_tag: `DC-${String(index + 1).padStart(2, '0')}`,
+        serial_number: `SN-DC-${String(index + 1).padStart(2, '0')}`,
+        location: 'Retired Yard',
+        status: 'decommissioned',
+        next_inspection_due: '2026-10-01',
+      })),
+    ])
+
+    renderDashboardPage('/portal?companyId=1&q=Decom&eqTab=decommissioned&eqPage=2')
+
+    expect(await screen.findByText('Acme Lifts')).toBeInTheDocument()
+    expect(getPortalEquipment).toHaveBeenCalledWith({ companyId: 1, search: 'Decom' })
+    expect(screen.getByRole('searchbox')).toHaveValue('Decom')
+    expect(screen.getByText('Decommissioned Equipment (11)')).toBeInTheDocument()
+  })
+
   it('supports sorting equipment by table columns', async () => {
     const user = userEvent.setup()
 
