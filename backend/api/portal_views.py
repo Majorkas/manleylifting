@@ -356,6 +356,12 @@ def portal_change_password(request):
     current_password = payload["current_password"]
     new_password = payload["new_password"]
 
+    if _is_staff_or_owner(request.user) and len(new_password) < 12:
+        return Response(
+            {"detail": "Staff and owner passwords must be at least 12 characters long"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     if not request.user.check_password(current_password):
         return Response({"detail": "Current password is incorrect"}, status=status.HTTP_400_BAD_REQUEST)
 

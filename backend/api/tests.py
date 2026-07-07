@@ -1200,6 +1200,38 @@ class PortalRBACTests(TestCase):
         self.assertEqual(response.json()["detail"], "Username is unavailable")
         self.assertEqual(response.json()["suggested_username"], f"{self.staff_user.username}2")
 
+    def test_owner_create_employee_requires_12_char_password(self):
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.post(
+            "/api/portal/staff-assignments/",
+            data={
+                "username": "shortpwd_staff",
+                "email": "shortpwd_staff@example.com",
+                "password": "Short123!",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("password", response.json())
+
+    def test_owner_change_password_requires_12_char_new_password(self):
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.post(
+            "/api/portal/me/change-password/",
+            data={
+                "current_password": "testpass123",
+                "new_password": "Short123!",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json().get("detail"),
+            "Staff and owner passwords must be at least 12 characters long",
+        )
+
     def test_logout_blacklists_refresh_token(self):
         self.client.force_authenticate(user=self.owner_user)
         refresh = RefreshToken.for_user(self.owner_user)

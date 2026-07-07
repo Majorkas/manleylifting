@@ -258,7 +258,7 @@ class UserProfileAssignmentUpdateSerializer(serializers.Serializer):
 class UserProfileAssignmentCreateSerializer(serializers.Serializer):
     username = serializers.CharField(max_length=150)
     email = serializers.EmailField()
-    password = serializers.CharField(write_only=True, min_length=8, max_length=128)
+    password = serializers.CharField(write_only=True, min_length=12, max_length=128)
     first_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
     last_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
     role = serializers.ChoiceField(choices=UserProfile.ROLE_CHOICES, required=False)

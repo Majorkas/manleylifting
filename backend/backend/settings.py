@@ -89,6 +89,12 @@ ALLOWED_HOSTS = env_list(
     ["localhost", "127.0.0.1"] if DEBUG else [],
 )
 
+ADMIN_URL_PATH = os.getenv("DJANGO_ADMIN_URL", "admin/").strip().lstrip("/")
+if not ADMIN_URL_PATH:
+    ADMIN_URL_PATH = "admin/"
+if not ADMIN_URL_PATH.endswith("/"):
+    ADMIN_URL_PATH = f"{ADMIN_URL_PATH}/"
+
 TRUST_X_FORWARDED_FOR = env_bool("DJANGO_TRUST_X_FORWARDED_FOR", False)
 TRUSTED_PROXY_IPS = env_list("DJANGO_TRUSTED_PROXY_IPS", [])
 
