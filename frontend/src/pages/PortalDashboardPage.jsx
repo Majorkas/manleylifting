@@ -1313,6 +1313,27 @@ export default function PortalDashboardPage() {
     setApprovingReport(true)
     setViewedReportError('')
 
+    const previousReports = reports
+    const previousViewedReport = viewedReport
+    const previousPendingApprovals = pendingReportApprovals
+    const previousDashboardStats = dashboardStats
+    const wasSubmitted = String(viewedReport.status || '').toLowerCase() === 'submitted'
+
+    if (wasSubmitted) {
+      const optimisticReport = { ...viewedReport, status: 'approved' }
+      setReports((current) =>
+        current.map((report) => (String(report.id) === String(optimisticReport.id) ? optimisticReport : report)),
+      )
+      setViewedReport(optimisticReport)
+      setPendingReportApprovals((current) =>
+        current.filter((report) => String(report.id) !== String(optimisticReport.id)),
+      )
+      setDashboardStats((current) => ({
+        ...current,
+        pending_approvals_count: Math.max(0, Number(current.pending_approvals_count || 0) - 1),
+      }))
+    }
+
     try {
       const updatedReport = await updateReport(viewedReport.id, { status: 'approved' })
       const refreshedReports = reports.map((report) =>
@@ -1320,22 +1341,37 @@ export default function PortalDashboardPage() {
       )
       setReports(refreshedReports)
       setViewedReport(updatedReport)
+
       if (!selectedCompanyId) {
-        await Promise.all([refreshPendingReportApprovals(), refreshDashboardStats()])
+        await Promise.all([
+          refreshPendingReportApprovals().catch(() => {}),
+          refreshDashboardStats().catch(() => {}),
+        ])
       }
-      await getPortalEquipment({
-        companyId: activeSelectedEquipment?.company_id || selectedCompanyId,
-        search: searchQuery,
-      }).then((refreshedEquipment) => {
-        setEquipment(refreshedEquipment)
-        if (selectedEquipment) {
-          const nextSelectedEquipment = refreshedEquipment.find(
-            (item) => String(item.id) === String(selectedEquipment.id),
-          )
-          setSelectedEquipment(nextSelectedEquipment || null)
-        }
-      })
+
+      try {
+        await getPortalEquipment({
+          companyId: activeSelectedEquipment?.company_id || selectedCompanyId,
+          search: searchQuery,
+        }).then((refreshedEquipment) => {
+          setEquipment(refreshedEquipment)
+          if (selectedEquipment) {
+            const nextSelectedEquipment = refreshedEquipment.find(
+              (item) => String(item.id) === String(selectedEquipment.id),
+            )
+            setSelectedEquipment(nextSelectedEquipment || null)
+          }
+        })
+      } catch {
+        // Keep the optimistic/final report status update even if equipment refresh fails.
+      }
     } catch (error) {
+      if (wasSubmitted) {
+        setReports(previousReports)
+        setViewedReport(previousViewedReport)
+        setPendingReportApprovals(previousPendingApprovals)
+        setDashboardStats(previousDashboardStats)
+      }
       setViewedReportError(String(error?.message || 'Unable to approve report.'))
     } finally {
       setApprovingReport(false)
@@ -1945,9 +1981,33 @@ export default function PortalDashboardPage() {
     if (!targetEquipmentId || updatingEquipmentStatus) return
     const companyIdForRefresh = activeSelectedEquipment?.company_id || selectedCompanyId
     const selectedEquipmentIdToMaintain = selectedEquipment?.id || null
+    const previousEquipment = equipment
+    const previousSelectedEquipment = selectedEquipment
+
+    const optimisticEquipment = equipment.map((item) =>
+      String(item.id) === String(targetEquipmentId)
+        ? {
+            ...item,
+            status: newStatus,
+          }
+        : item,
+    )
 
     setUpdatingEquipmentStatus(true)
     setEquipmentStatusError('')
+    setEquipment(optimisticEquipment)
+    setEquipmentLastUpdatedAt(Date.now())
+    if (selectedEquipmentIdToMaintain && String(selectedEquipmentIdToMaintain) === String(targetEquipmentId)) {
+      setSelectedEquipment((current) =>
+        current
+          ? {
+              ...current,
+              status: newStatus,
+            }
+          : current,
+      )
+    }
+
     try {
       await updatePortalEquipment(targetEquipmentId, { status: newStatus })
       const refreshedEquipment = await getPortalEquipment({
@@ -1965,6 +2025,10 @@ export default function PortalDashboardPage() {
       setEquipmentPage(1)
       return true
     } catch (error) {
+      setEquipment(previousEquipment)
+      if (selectedEquipmentIdToMaintain) {
+        setSelectedEquipment(previousSelectedEquipment)
+      }
       setEquipmentStatusError(String(error?.message || 'Unable to update equipment status.'))
       return false
     } finally {

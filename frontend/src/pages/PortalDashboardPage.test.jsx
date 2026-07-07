@@ -28,6 +28,7 @@ vi.mock('../utils/portalApi', () => ({
   portalLogout: vi.fn(),
   refreshPortalSession: vi.fn(),
   updatePortalCustomer: vi.fn(),
+  updatePortalEquipment: vi.fn(),
   updateReport: vi.fn(),
 }))
 
@@ -48,6 +49,7 @@ import {
   hasPortalSession,
   refreshPortalSession,
   updatePortalCustomer,
+  updatePortalEquipment,
   updateReport,
 } from '../utils/portalApi'
 
@@ -116,6 +118,7 @@ describe('PortalDashboardPage', () => {
     deleteStaffAssignment.mockResolvedValue({ ok: true })
     refreshPortalSession.mockResolvedValue('')
     updatePortalCustomer.mockResolvedValue({ id: 1, name: 'Acme Lifts' })
+    updatePortalEquipment.mockResolvedValue({})
     updateReport.mockResolvedValue({})
   })
 
@@ -1117,6 +1120,168 @@ describe('PortalDashboardPage', () => {
     await user.click(screen.getByRole('button', { name: 'Approve Report' }))
 
     expect(updateReport).toHaveBeenCalledWith(2, { status: 'approved' })
+  })
+
+  it('updates approval UI optimistically and rolls back if approval fails', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 31,
+      username: 'demo_owner',
+      email: 'owner@example.com',
+      fullName: 'Demo Owner',
+      role: 'owner',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 101,
+        name: 'Warehouse Hoist',
+        asset_tag: 'WH-1',
+        serial_number: 'SN-101',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-09-01',
+      },
+    ])
+    getEquipmentReports.mockResolvedValue([
+      {
+        id: 2,
+        title: 'Submitted Hoist Inspection',
+        report_date: '2026-07-02',
+        status: 'submitted',
+        submitted_by: 21,
+        submitted_by_name: 'Demo Staff',
+        summary: 'Submitted summary',
+        findings: 'Findings',
+        recommendations: 'Recommendations',
+      },
+    ])
+
+    let rejectApproval
+    const approvalPromise = new Promise((_, reject) => {
+      rejectApproval = reject
+    })
+    updateReport.mockReturnValue(approvalPromise)
+
+    renderDashboardPage('/portal?companyId=1')
+
+    await user.click(await screen.findByRole('button', { name: 'View' }))
+    const tables = screen.getAllByRole('table')
+    const reportsTable = tables[tables.length - 1]
+    await user.click(within(reportsTable).getByRole('button', { name: 'View' }))
+
+    expect(await screen.findByRole('button', { name: 'Approve Report' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Approve Report' }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Approve Report' })).not.toBeInTheDocument()
+    })
+
+    rejectApproval(new Error('Approval failed'))
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Approve Report' })).toBeInTheDocument()
+      expect(screen.getByText('Approval failed')).toBeInTheDocument()
+    })
+  })
+
+  it('updates equipment counts optimistically when decommissioning from details', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 21,
+      username: 'demo_staff',
+      email: 'staff@example.com',
+      fullName: 'Demo Staff',
+      role: 'staff',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment
+      .mockResolvedValueOnce([
+        {
+          id: 101,
+          company_id: 1,
+          name: 'Warehouse Hoist',
+          asset_tag: 'WH-1',
+          serial_number: 'SN-101',
+          location: 'Bay 1',
+          status: 'active',
+          next_inspection_due: '2026-09-01',
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 101,
+          company_id: 1,
+          name: 'Warehouse Hoist',
+          asset_tag: 'WH-1',
+          serial_number: 'SN-101',
+          location: 'Bay 1',
+          status: 'decommissioned',
+          next_inspection_due: '2026-09-01',
+        },
+      ])
+    getEquipmentReports.mockResolvedValue([])
+
+    let resolveStatusUpdate
+    updatePortalEquipment.mockReturnValue(
+      new Promise((resolve) => {
+        resolveStatusUpdate = resolve
+      }),
+    )
+
+    renderDashboardPage('/portal?companyId=1')
+
+    expect(await screen.findByText('Active Equipment (1)')).toBeInTheDocument()
+    expect(screen.getByText('Decommissioned Equipment (0)')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'View' }))
+    const equipmentDetailsHeading = await screen.findByRole('heading', {
+      name: 'Equipment Details: Warehouse Hoist',
+    })
+    const equipmentDetailsSection = equipmentDetailsHeading.closest('section')
+    expect(equipmentDetailsSection).not.toBeNull()
+    const statusSelect = equipmentDetailsSection?.querySelector(
+      'select.rounded-md.border.border-slate-300.px-2.py-1.text-xs',
+    )
+    expect(statusSelect).not.toBeNull()
+    await user.selectOptions(statusSelect, 'decommissioned')
+    await user.click(screen.getByRole('button', { name: 'Update Status' }))
+    await user.click(await screen.findByRole('button', { name: 'Yes, Decommission' }))
+
+    await waitFor(() => {
+      expect(screen.getByText('Active Equipment (0)')).toBeInTheDocument()
+      expect(screen.getByText('Decommissioned Equipment (1)')).toBeInTheDocument()
+    })
+
+    resolveStatusUpdate({})
+    await waitFor(() => {
+      expect(updatePortalEquipment).toHaveBeenCalledWith(101, { status: 'decommissioned' })
+    })
   })
 
   it('refreshes the pending approvals list when the owner clicks refresh', async () => {
