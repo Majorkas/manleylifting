@@ -1521,6 +1521,25 @@ export default function PortalDashboardPage() {
     setSelectedReportImage(null)
   }
 
+  function handleGoToReportEquipment() {
+    if (!viewedReport?.equipment_id) return
+
+    const targetEquipment = equipment.find((item) => String(item.id) === String(viewedReport.equipment_id))
+    if (targetEquipment) {
+      setSelectedEquipment(targetEquipment)
+      setEquipmentTableTab(targetEquipment.status === 'decommissioned' ? 'decommissioned' : 'active')
+      setSearchInput('')
+      setEquipmentPage(1)
+    } else {
+      setSearchInput(String(viewedReport.equipment_name || ''))
+      setEquipmentTableTab('active')
+      setEquipmentPage(1)
+    }
+
+    setViewedReportError('')
+    setViewedReport(null)
+  }
+
   function handleMoveReportImage(direction) {
     if (!selectedReportImage) return
 
@@ -3284,6 +3303,19 @@ export default function PortalDashboardPage() {
               <div className="mt-4 grid gap-2 text-sm text-slate-700 md:grid-cols-2">
                 <p><span className="font-semibold">Date:</span> {viewedReport.report_date || '-'}</p>
                 <p><span className="font-semibold">Status:</span> {viewedReport.status || '-'}</p>
+                <p>
+                  <span className="font-semibold">Equipment:</span>{' '}
+                  {viewedReport.equipment_name || '-'}
+                  {viewedReport.equipment_id && (
+                    <button
+                      type="button"
+                      onClick={handleGoToReportEquipment}
+                      className="ml-2 rounded border border-[#123A7A] bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                    >
+                      Go to equipment
+                    </button>
+                  )}
+                </p>
                 <p><span className="font-semibold">Inspector:</span> {viewedReport.submitted_by_name || '-'}</p>
                 <p><span className="font-semibold">Report ID:</span> {viewedReport.id}</p>
                 <p className="md:col-span-2"><span className="font-semibold">Summary:</span> {viewedReport.summary || '-'}</p>

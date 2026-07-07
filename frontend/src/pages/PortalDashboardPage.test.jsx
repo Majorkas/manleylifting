@@ -223,6 +223,46 @@ describe('PortalDashboardPage', () => {
     expect(screen.getByText('Login Page')).toBeInTheDocument()
   })
 
+  it('lets owners jump from a report modal to the matching equipment', async () => {
+    const user = userEvent.setup()
+    mockCustomerData()
+    getEquipmentReports.mockResolvedValue([
+      {
+        id: 55,
+        equipment_id: 101,
+        equipment_name: 'Hoist A',
+        title: 'Inspection 55',
+        report_date: '2027-06-30',
+        status: 'submitted',
+        summary: 'Summary',
+        findings: 'Findings',
+        recommendations: 'Recommendations',
+        submitted_by_name: 'Inspector',
+        images: [],
+      },
+    ])
+
+    renderDashboardPage('/portal')
+
+    expect(await screen.findByRole('heading', { name: 'Managed Equipment' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'View' }))
+    const equipmentDetailsHeading = await screen.findByRole('heading', {
+      name: 'Equipment Details: Warehouse Hoist',
+    })
+    const equipmentDetailsSection = equipmentDetailsHeading.closest('section')
+    expect(equipmentDetailsSection).not.toBeNull()
+
+    expect(equipmentDetailsSection).toHaveTextContent('Inspection 55')
+    await user.click(within(equipmentDetailsSection).getByRole('button', { name: 'View' }))
+
+    expect(await screen.findByRole('button', { name: 'Go to equipment' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Go to equipment' }))
+
+    expect(screen.getByRole('heading', { name: 'Equipment Details: Warehouse Hoist' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Go to equipment' })).not.toBeInTheDocument()
+  })
+
   it('shows the customer picker for staff users before a company is selected', async () => {
     getPortalMe.mockResolvedValue({
       id: 21,
