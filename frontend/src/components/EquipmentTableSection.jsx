@@ -18,6 +18,8 @@ export default function EquipmentTableSection({
   equipmentSortKey,
   equipmentSortDirection,
   onToggleEquipmentSort,
+  inspectionUrgencyFilter,
+  onInspectionUrgencyFilterChange,
   activeEquipment,
   decommissionedEquipment,
   isMobileViewport,
@@ -153,6 +155,21 @@ export default function EquipmentTableSection({
             >
               Decommissioned Equipment ({decommissionedEquipment.length})
             </button>
+            <div className="ml-auto pb-2">
+              <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
+                Urgency
+                <select
+                  value={inspectionUrgencyFilter}
+                  onChange={(event) => onInspectionUrgencyFilterChange(event.target.value)}
+                  className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700"
+                >
+                  <option value="all">All</option>
+                  <option value="overdue">Overdue</option>
+                  <option value="due_soon">Due Soon</option>
+                  <option value="on_schedule">On Schedule</option>
+                </select>
+              </label>
+            </div>
           </div>
 
           {isMobileViewport && (

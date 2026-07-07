@@ -404,6 +404,7 @@ export default function PortalDashboardPage() {
   const [equipmentTableTab, setEquipmentTableTab] = useState('active')
   const [equipmentSortKey, setEquipmentSortKey] = useState('next_due')
   const [equipmentSortDirection, setEquipmentSortDirection] = useState('asc')
+  const [inspectionUrgencyFilter, setInspectionUrgencyFilter] = useState('all')
   const [expandedEquipmentCardId, setExpandedEquipmentCardId] = useState('')
   const [expandedReportCardId, setExpandedReportCardId] = useState('')
   const previousSelectedEquipmentIdRef = useRef('')
@@ -491,13 +492,28 @@ export default function PortalDashboardPage() {
 
   const activeEquipment = sortedEquipment.active || []
   const decommissionedEquipment = sortedEquipment.decommissioned || []
-  const currentTableEquipment = equipmentTableTab === 'active' ? activeEquipment : decommissionedEquipment
+  const currentTableEquipment = useMemo(() => {
+    if (equipmentTableTab === 'decommissioned') return decommissionedEquipment
+    if (equipmentTableTab === 'all') return [...activeEquipment, ...decommissionedEquipment]
+    return activeEquipment
+  }, [activeEquipment, decommissionedEquipment, equipmentTableTab])
+  const urgencyFilteredEquipment = useMemo(() => {
+    if (inspectionUrgencyFilter === 'all') return currentTableEquipment
 
-  const equipmentTotalPages = Math.max(1, Math.ceil(currentTableEquipment.length / equipmentPageSize))
+    return currentTableEquipment.filter((item) => {
+      const urgencyLabel = String(getInspectionStatusBadge(item.next_inspection_due).label || '').toLowerCase()
+      if (inspectionUrgencyFilter === 'overdue') return urgencyLabel === 'overdue'
+      if (inspectionUrgencyFilter === 'due_soon') return urgencyLabel === 'inspection due'
+      if (inspectionUrgencyFilter === 'on_schedule') return urgencyLabel === 'on schedule'
+      return true
+    })
+  }, [currentTableEquipment, inspectionUrgencyFilter])
+
+  const equipmentTotalPages = Math.max(1, Math.ceil(urgencyFilteredEquipment.length / equipmentPageSize))
   const equipmentStartIndex = (equipmentPage - 1) * equipmentPageSize
-  const visibleEquipment = currentTableEquipment.slice(equipmentStartIndex, equipmentStartIndex + equipmentPageSize)
-  const equipmentRangeStart = currentTableEquipment.length === 0 ? 0 : equipmentStartIndex + 1
-  const equipmentRangeEnd = Math.min(equipmentStartIndex + equipmentPageSize, currentTableEquipment.length)
+  const visibleEquipment = urgencyFilteredEquipment.slice(equipmentStartIndex, equipmentStartIndex + equipmentPageSize)
+  const equipmentRangeStart = urgencyFilteredEquipment.length === 0 ? 0 : equipmentStartIndex + 1
+  const equipmentRangeEnd = Math.min(equipmentStartIndex + equipmentPageSize, urgencyFilteredEquipment.length)
   const equipmentNextDuePreview = useMemo(
     () => calculateNextInspectionDue(equipmentForm.last_inspected_at, equipmentForm.inspection_interval_days),
     [equipmentForm.inspection_interval_days, equipmentForm.last_inspected_at],
@@ -685,7 +701,7 @@ export default function PortalDashboardPage() {
 
   useEffect(() => {
     setEquipmentPage(1)
-  }, [equipmentSortKey, equipmentSortDirection])
+  }, [equipmentSortKey, equipmentSortDirection, inspectionUrgencyFilter])
 
   useEffect(() => {
     setExpandedEquipmentCardId('')
@@ -2160,6 +2176,8 @@ export default function PortalDashboardPage() {
             equipmentSortKey={equipmentSortKey}
             equipmentSortDirection={equipmentSortDirection}
             onToggleEquipmentSort={handleToggleEquipmentSort}
+            inspectionUrgencyFilter={inspectionUrgencyFilter}
+            onInspectionUrgencyFilterChange={setInspectionUrgencyFilter}
             activeEquipment={activeEquipment}
             decommissionedEquipment={decommissionedEquipment}
             isMobileViewport={isMobileViewport}
@@ -2210,7 +2228,7 @@ export default function PortalDashboardPage() {
               setViewedReportError('')
               setViewedReport(report)
             }}
-            currentTableEquipment={currentTableEquipment}
+            currentTableEquipment={urgencyFilteredEquipment}
             equipmentRangeStart={equipmentRangeStart}
             equipmentRangeEnd={equipmentRangeEnd}
             equipmentPage={equipmentPage}

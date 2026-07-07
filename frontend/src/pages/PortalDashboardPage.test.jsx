@@ -187,7 +187,7 @@ describe('PortalDashboardPage', () => {
     expect(await screen.findByText('Inspection 2026')).toBeInTheDocument()
     expect(screen.getByText('Inspection 2025')).toBeInTheDocument()
 
-    await user.selectOptions(screen.getByRole('combobox'), '2025')
+    await user.selectOptions(screen.getByLabelText('Filter by Year:'), '2025')
 
     expect(await screen.findByText('Inspection 2025')).toBeInTheDocument()
     expect(screen.queryByText('Inspection 2026')).not.toBeInTheDocument()
@@ -636,6 +636,73 @@ describe('PortalDashboardPage', () => {
 
     const rowsAfterAssetSortDesc = within(equipmentTable).getAllByRole('row').slice(1)
     expect(within(rowsAfterAssetSortDesc[0]).getByText('Zeta Lift')).toBeInTheDocument()
+  })
+
+  it('filters equipment by inspection urgency', async () => {
+    const user = userEvent.setup()
+
+    const today = new Date()
+    const pastDate = new Date(today)
+    pastDate.setDate(today.getDate() - 3)
+    const dueSoonDate = new Date(today)
+    dueSoonDate.setDate(today.getDate() + 7)
+    const onScheduleDate = new Date(today)
+    onScheduleDate.setDate(today.getDate() + 45)
+
+    getPortalMe.mockResolvedValue({
+      id: 11,
+      username: 'demo_customer',
+      email: 'customer@example.com',
+      fullName: 'Demo Customer',
+      role: 'customer',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 1,
+        name: 'Overdue Lift',
+        asset_tag: 'OD-100',
+        serial_number: 'SN-1',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: pastDate.toISOString().slice(0, 10),
+      },
+      {
+        id: 2,
+        name: 'Due Soon Lift',
+        asset_tag: 'DS-200',
+        serial_number: 'SN-2',
+        location: 'Bay 2',
+        status: 'active',
+        next_inspection_due: dueSoonDate.toISOString().slice(0, 10),
+      },
+      {
+        id: 3,
+        name: 'On Schedule Lift',
+        asset_tag: 'OS-300',
+        serial_number: 'SN-3',
+        location: 'Bay 3',
+        status: 'active',
+        next_inspection_due: onScheduleDate.toISOString().slice(0, 10),
+      },
+    ])
+
+    renderDashboardPage('/portal')
+
+    expect(await screen.findByText('Overdue Lift')).toBeInTheDocument()
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Urgency' }), 'overdue')
+
+    expect(await screen.findByText('Overdue Lift')).toBeInTheDocument()
+    expect(screen.queryByText('Due Soon Lift')).not.toBeInTheDocument()
+    expect(screen.queryByText('On Schedule Lift')).not.toBeInTheDocument()
   })
 
   it('refreshes the equipment table after a report is submitted', async () => {
