@@ -51,54 +51,66 @@ export default function CustomerListSection({
             Last updated {lastUpdatedLabel}
           </p>
         </div>
-        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
-          <button
-            type="button"
-            onClick={onRefreshCustomers}
-            disabled={refreshingCustomers}
-            className="rounded-md border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
-          >
-            {refreshingCustomers ? 'Refreshing Customers...' : 'Refresh Customers'}
-          </button>
-          <button
-            type="button"
-            onClick={onExportCustomers}
-            className="rounded-md border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
-          >
-            Export Customers CSV
-          </button>
-          {isOwner && (
-            <>
-              <button
-                type="button"
-                onClick={onToggleSelectAllCustomers}
-                disabled={filteredCustomers.length === 0 || bulkDeactivatingCustomers}
-                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 transition hover:border-[#123A7A] hover:text-[#123A7A] disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                {allSelected ? 'Clear Selection' : 'Select All'}
-              </button>
-              <button
-                type="button"
-                onClick={onBulkDeactivateCustomers}
-                disabled={selectedCount === 0 || bulkDeactivatingCustomers}
-                className="rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-red-700 transition hover:bg-red-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                {bulkDeactivatingCustomers ? 'Deactivating...' : `Deactivate Selected (${selectedCount})`}
-              </button>
-            </>
-          )}
-          {isOwner && (
+        <div className="w-full lg:ml-auto lg:max-w-4xl">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <button
               type="button"
-              onClick={onAddCustomer}
+              onClick={onRefreshCustomers}
+              disabled={refreshingCustomers}
+              className="rounded-md border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {refreshingCustomers ? 'Refreshing Customers...' : 'Refresh Customers'}
+            </button>
+            <button
+              type="button"
+              onClick={onExportCustomers}
               className="rounded-md border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
             >
-              Add Customer
+              Export Customers CSV
             </button>
-          )}
-          <span className="rounded-full border border-slate-300 bg-slate-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700">
-            {companies.length} customer{companies.length === 1 ? '' : 's'}
-          </span>
+            {isOwner && (
+              <>
+                <button
+                  type="button"
+                  onClick={onToggleSelectAllCustomers}
+                  disabled={filteredCustomers.length === 0 || bulkDeactivatingCustomers}
+                  className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 transition hover:border-[#123A7A] hover:text-[#123A7A] disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {allSelected ? 'Clear Selection' : 'Select All'}
+                </button>
+                <button
+                  type="button"
+                  onClick={onBulkDeactivateCustomers}
+                  disabled={selectedCount === 0 || bulkDeactivatingCustomers}
+                  className="rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-red-700 transition hover:bg-red-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {bulkDeactivatingCustomers ? 'Deactivating...' : `Deactivate Selected (${selectedCount})`}
+                </button>
+              </>
+            )}
+            {isOwner && (
+              <button
+                type="button"
+                onClick={onAddCustomer}
+                className="rounded-md border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+              >
+                Add Customer
+              </button>
+            )}
+            <span className="rounded-full border border-slate-300 bg-slate-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700">
+              {companies.length} customer{companies.length === 1 ? '' : 's'}
+            </span>
+          </div>
+
+          <div className="mt-2 sm:mt-3">
+            <input
+              type="search"
+              value={customerSearchInput}
+              onChange={(event) => onCustomerSearchChange(event.target.value)}
+              placeholder="Search customers by name, email, phone"
+              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#123A7A]"
+            />
+          </div>
         </div>
       </div>
 
@@ -159,16 +171,6 @@ export default function CustomerListSection({
           )}
         </>
       )}
-
-      <div className="mt-4 w-full max-w-md">
-        <input
-          type="search"
-          value={customerSearchInput}
-          onChange={(event) => onCustomerSearchChange(event.target.value)}
-          placeholder="Search customers by name, email, phone"
-          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#123A7A]"
-        />
-      </div>
 
       {customerCreateError && (
         <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">

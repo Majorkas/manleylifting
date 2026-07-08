@@ -87,44 +87,47 @@ export default function EquipmentTableSection({
           </p>
         </div>
 
-        <div className="flex w-full max-w-sm gap-2">
-          <button
-            type="button"
-            onClick={onRefreshEquipment}
-            disabled={refreshingEquipment}
-            className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
-          >
-            {refreshingEquipment ? 'Refreshing Equipment...' : 'Refresh Equipment'}
-          </button>
-          <button
-            type="button"
-            onClick={onExportEquipment}
-            className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
-          >
-            Export Equipment CSV
-          </button>
-          {canBulkDecommission && (
-            <>
-              <button
-                type="button"
-                onClick={onToggleSelectAllEquipment}
-                disabled={activeEquipment.length === 0 || bulkDecommissioning}
-                className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-[#123A7A] hover:text-[#123A7A] disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                {allSelected ? 'Clear Selection' : 'Select All'}
-              </button>
-              <button
-                type="button"
-                onClick={onBulkDecommissionEquipment}
-                disabled={selectedCount === 0 || bulkDecommissioning}
-                className="rounded-md border border-red-300 bg-white px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                {bulkDecommissioning ? 'Decommissioning...' : `Decommission Selected (${selectedCount})`}
-              </button>
-            </>
-          )}
+        <div className="w-full lg:ml-auto lg:max-w-4xl">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={onRefreshEquipment}
+              disabled={refreshingEquipment}
+              className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {refreshingEquipment ? 'Refreshing Equipment...' : 'Refresh Equipment'}
+            </button>
+            <button
+              type="button"
+              onClick={onExportEquipment}
+              className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+            >
+              Export Equipment CSV
+            </button>
+            {canBulkDecommission && (
+              <>
+                <button
+                  type="button"
+                  onClick={onToggleSelectAllEquipment}
+                  disabled={activeEquipment.length === 0 || bulkDecommissioning}
+                  className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-[#123A7A] hover:text-[#123A7A] disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {allSelected ? 'Clear Selection' : 'Select All'}
+                </button>
+                <button
+                  type="button"
+                  onClick={onBulkDecommissionEquipment}
+                  disabled={selectedCount === 0 || bulkDecommissioning}
+                  className="rounded-md border border-red-300 bg-white px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {bulkDecommissioning ? 'Decommissioning...' : `Decommission Selected (${selectedCount})`}
+                </button>
+              </>
+            )}
+          </div>
+
           <form
-            className="flex w-full gap-2"
+            className="mt-2 flex w-full gap-2 sm:mt-3"
             onSubmit={(event) => {
               event.preventDefault()
               onSearchSubmit()
@@ -135,11 +138,11 @@ export default function EquipmentTableSection({
               value={searchInput}
               onChange={(event) => onSearchInputChange(event.target.value)}
               placeholder="Search by name, asset tag, serial"
-              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#123A7A]"
+              className="min-w-0 flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-[#123A7A]"
             />
             <button
               type="submit"
-              className="rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168]"
+              className="shrink-0 rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168]"
             >
               Search
             </button>
@@ -405,69 +408,78 @@ export default function EquipmentTableSection({
                           </div>
                         )}
 
-                        <div className="mt-3 space-y-2">
-                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Certificates</p>
-                          {certificatesLoading ? (
-                            <InlineListSkeleton />
-                          ) : certificates.length === 0 ? (
-                            <p className="text-xs text-slate-500">No certificates uploaded for this equipment.</p>
-                          ) : (
-                            certificates.map((certificate) => (
-                              <article key={certificate.id} className="rounded border border-slate-200 bg-white p-2.5">
-                                <div className="flex items-start justify-between gap-2">
-                                  <div>
-                                    <p className="text-xs font-semibold text-slate-800">{certificate.title || `Certificate ${certificate.id}`}</p>
-                                    <p className="mt-1 text-[11px] text-slate-600">
-                                      Issued: {certificate.issue_date || '-'} | Expires: {certificate.expiry_date || '-'}
-                                    </p>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => onDownloadCertificate(certificate)}
-                                    disabled={downloadingCertificateId === Number(certificate.id)}
-                                    className="rounded border border-[#123A7A] px-2 py-1 text-[10px] font-semibold text-[#123A7A] disabled:cursor-not-allowed disabled:opacity-60"
-                                  >
-                                    {downloadingCertificateId === Number(certificate.id) ? 'Downloading...' : 'Download'}
-                                  </button>
-                                </div>
-                              </article>
-                            ))
-                          )}
-                        </div>
-
-                        <div className="mt-3 space-y-2">
-                          {reportsLoading ? (
-                            <InlineListSkeleton />
-                          ) : reports.length === 0 ? (
-                            <p className="text-xs text-slate-500">No reports have been submitted for this equipment.</p>
-                          ) : (
-                            reports.map((report) => {
-                              const statusBadge = getReportStatusBadge(report.status)
-                              return (
-                                <article key={report.id} className="rounded border border-slate-200 bg-white p-2.5">
+                        <details className="mt-3 rounded border border-slate-200 bg-white">
+                          <summary className="cursor-pointer px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-700">
+                            Certificates
+                          </summary>
+                          <div className="space-y-2 border-t border-slate-200 p-3">
+                            {certificatesLoading ? (
+                              <InlineListSkeleton />
+                            ) : certificates.length === 0 ? (
+                              <p className="text-xs text-slate-500">No certificates uploaded for this equipment.</p>
+                            ) : (
+                              certificates.map((certificate) => (
+                                <article key={certificate.id} className="rounded border border-slate-200 bg-white p-2.5">
                                   <div className="flex items-start justify-between gap-2">
-                                    <p className="text-xs font-semibold text-slate-800">{report.title || 'Untitled report'}</p>
-                                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusBadge.color}`}>
-                                      {statusBadge.label}
-                                    </span>
-                                  </div>
-                                  <p className="mt-1 text-[11px] text-slate-600">
-                                    <span className="font-semibold text-slate-700">Date:</span> {report.report_date || '-'}
-                                  </p>
-                                  <div className="mt-2 flex justify-end">
+                                    <div>
+                                      <p className="text-xs font-semibold text-slate-800">{certificate.title || `Certificate ${certificate.id}`}</p>
+                                      <p className="mt-1 text-[11px] text-slate-600">
+                                        Issued: {certificate.issue_date || '-'} | Expires: {certificate.expiry_date || '-'}
+                                      </p>
+                                    </div>
                                     <button
                                       type="button"
-                                      onClick={() => onViewReport(report)}
-                                      className="rounded border border-[#123A7A] px-2 py-1 text-[10px] font-semibold text-[#123A7A]"
+                                      onClick={() => onDownloadCertificate(certificate)}
+                                      disabled={downloadingCertificateId === Number(certificate.id)}
+                                      className="rounded border border-[#123A7A] px-2 py-1 text-[10px] font-semibold text-[#123A7A] disabled:cursor-not-allowed disabled:opacity-60"
                                     >
-                                      View
+                                      {downloadingCertificateId === Number(certificate.id) ? 'Downloading...' : 'Download'}
                                     </button>
                                   </div>
                                 </article>
-                              )
-                            })
-                          )}
-                        </div>
+                              ))
+                            )}
+                          </div>
+                        </details>
+
+                        <details className="mt-3 rounded border border-slate-200 bg-white" open>
+                          <summary className="cursor-pointer px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-700">
+                            Reports
+                          </summary>
+                          <div className="space-y-2 border-t border-slate-200 p-3">
+                            {reportsLoading ? (
+                              <InlineListSkeleton />
+                            ) : reports.length === 0 ? (
+                              <p className="text-xs text-slate-500">No reports have been submitted for this equipment.</p>
+                            ) : (
+                              reports.map((report) => {
+                                const statusBadge = getReportStatusBadge(report.status)
+                                return (
+                                  <article key={report.id} className="rounded border border-slate-200 bg-white p-2.5">
+                                    <div className="flex items-start justify-between gap-2">
+                                      <p className="text-xs font-semibold text-slate-800">{report.title || 'Untitled report'}</p>
+                                      <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusBadge.color}`}>
+                                        {statusBadge.label}
+                                      </span>
+                                    </div>
+                                    <p className="mt-1 text-[11px] text-slate-600">
+                                      <span className="font-semibold text-slate-700">Date:</span> {report.report_date || '-'}
+                                    </p>
+                                    <div className="mt-2 flex justify-end">
+                                      <button
+                                        type="button"
+                                        onClick={() => onViewReport(report)}
+                                        className="rounded border border-[#123A7A] px-2 py-1 text-[10px] font-semibold text-[#123A7A]"
+                                      >
+                                        View
+                                      </button>
+                                    </div>
+                                  </article>
+                                )
+                              })
+                            )}
+                          </div>
+                        </details>
                       </div>
                     )}
                   </article>
