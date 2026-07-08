@@ -1623,14 +1623,15 @@ export default function PortalDashboardPage() {
     action()
   }
 
-  function handleUnsavedPromptSave() {
+  async function handleUnsavedPromptSave() {
     if (unsavedChangesPrompt === 'createCustomer') {
       clearPromptAndRun(() => closeCreateCustomerForm(true))
       return
     }
 
     if (unsavedChangesPrompt === 'editCustomer') {
-      clearPromptAndRun(() => closeEditCustomerForm(true))
+      setUnsavedChangesPrompt('')
+      await saveEditCustomer()
       return
     }
 
@@ -2861,8 +2862,7 @@ export default function PortalDashboardPage() {
     setShowEditCustomerForm(true)
   }
 
-  async function handleEditCustomer(event) {
-    event.preventDefault()
+  async function saveEditCustomer() {
     if (!isOwner || editingCustomer) return
 
     if (customerEditForm.deactivate_customer && !confirmCustomerDeactivate) {
@@ -2906,6 +2906,11 @@ export default function PortalDashboardPage() {
     } finally {
       setEditingCustomer(false)
     }
+  }
+
+  async function handleEditCustomer(event) {
+    event.preventDefault()
+    await saveEditCustomer()
   }
 
   async function handleCreateEmployeeAssignment(event) {
