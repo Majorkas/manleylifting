@@ -639,6 +639,15 @@ export async function updateReport(reportId, payload) {
   return parseResponse(response, path)
 }
 
+export async function deleteReport(reportId) {
+  const path = '/portal/reports/' + encodeURIComponent(String(reportId)) + '/'
+  const response = await authFetch(path, {
+    method: 'DELETE',
+  })
+  if (response.status === 204) return { ok: true }
+  return parseResponse(response, path)
+}
+
 export async function getReportRevisions(reportId) {
   const path = '/portal/reports/' + encodeURIComponent(String(reportId)) + '/revisions/'
   const response = await authFetch(path)

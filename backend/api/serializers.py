@@ -13,7 +13,7 @@ from .models import Certificate, Company, Equipment, InspectionReport, ReportIma
 REPORT_CHECKLIST_ALLOWED_STATUSES = {"good_order", "worn_serviceable", "attention_required"}
 
 
-def validate_report_checklist_items(items):
+def validate_report_checklist_items(items, require_notes=True):
     if items in (None, ""):
         return []
 
@@ -43,7 +43,7 @@ def validate_report_checklist_items(items):
                 f"Checklist item '{label}' has an invalid status '{status}'."
             )
 
-        if status in {"worn_serviceable", "attention_required"} and not note:
+        if require_notes and status in {"worn_serviceable", "attention_required"} and not note:
             raise serializers.ValidationError(
                 f"Checklist item '{label}' requires a note when status is not Good Order."
             )
@@ -191,7 +191,9 @@ class InspectionReportCreateSerializer(serializers.ModelSerializer):
         ]
 
     def validate_checklist_items(self, value):
-        return validate_report_checklist_items(value)
+            initial_data = getattr(self, "initial_data", {}) or {}
+            status_value = str(initial_data.get("status") or InspectionReport.STATUS_DRAFT).strip()
+            return validate_report_checklist_items(value, require_notes=status_value != InspectionReport.STATUS_DRAFT)
 
 
 class InspectionReportUpdateSerializer(serializers.ModelSerializer):
@@ -208,7 +210,12 @@ class InspectionReportUpdateSerializer(serializers.ModelSerializer):
         ]
 
     def validate_checklist_items(self, value):
-        return validate_report_checklist_items(value)
+            initial_data = getattr(self, "initial_data", {}) or {}
+            status_value = str(initial_data.get("status") or getattr(self.instance, "status", InspectionReport.STATUS_DRAFT)).strip()
+            require_notes = status_value != InspectionReport.STATUS_DRAFT
+            if self.instance and self.instance.status != InspectionReport.STATUS_DRAFT and status_value == self.instance.status:
+                require_notes = False
+            return validate_report_checklist_items(value, require_notes=require_notes)
 
 
 class InspectionReportOwnerEditSerializer(serializers.ModelSerializer):
@@ -225,7 +232,12 @@ class InspectionReportOwnerEditSerializer(serializers.ModelSerializer):
         ]
 
     def validate_checklist_items(self, value):
-        return validate_report_checklist_items(value)
+            initial_data = getattr(self, "initial_data", {}) or {}
+            status_value = str(initial_data.get("status") or getattr(self.instance, "status", InspectionReport.STATUS_DRAFT)).strip()
+            require_notes = status_value != InspectionReport.STATUS_DRAFT
+            if self.instance and self.instance.status != InspectionReport.STATUS_DRAFT and status_value == self.instance.status:
+                require_notes = False
+            return validate_report_checklist_items(value, require_notes=require_notes)
 
 
 class ReportRevisionSerializer(serializers.ModelSerializer):

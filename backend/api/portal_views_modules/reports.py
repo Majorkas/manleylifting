@@ -158,7 +158,7 @@ def portal_dashboard_stats(request):
     )
 
 
-@api_view(["PATCH"])
+@api_view(["PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_report_owner_edit(request, report_id):
@@ -168,6 +168,33 @@ def portal_report_owner_edit(request, report_id):
 
     if report.equipment.company_id not in _visible_company_ids(request.user):
         return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == "DELETE":
+        if report.status != InspectionReport.STATUS_DRAFT:
+            return Response(
+                {"detail": "Only draft reports can be deleted"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if report.submitted_by_id != request.user.id:
+            return Response(
+                {"detail": "Only the draft creator can delete this report"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        equipment_id = report.equipment_id
+        company = report.equipment.company
+        deleted_report_id = report.id
+        report.delete()
+        log_portal_audit_event(
+            request=request,
+            action="report.deleted",
+            target_type="report",
+            target_id=deleted_report_id,
+            company=company,
+            details={"equipment_id": equipment_id, "status": InspectionReport.STATUS_DRAFT},
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     if _is_owner(request.user):
         report_images = request.FILES.getlist("images")
@@ -182,9 +209,13 @@ def portal_report_owner_edit(request, report_id):
         serializer.is_valid(raise_exception=True)
 
         status_value = serializer.validated_data.get("status", report.status)
-        if status_value not in {InspectionReport.STATUS_SUBMITTED, InspectionReport.STATUS_APPROVED}:
+        allowed_statuses = {InspectionReport.STATUS_SUBMITTED, InspectionReport.STATUS_APPROVED}
+        if report.status == InspectionReport.STATUS_DRAFT:
+            allowed_statuses.add(InspectionReport.STATUS_DRAFT)
+
+        if status_value not in allowed_statuses:
             return Response(
-                {"detail": "Owner reports can only be marked as submitted or approved"},
+                {"detail": "Owner reports can only be marked as draft, submitted or approved"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
