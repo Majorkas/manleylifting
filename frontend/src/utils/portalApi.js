@@ -556,6 +556,13 @@ export async function getEquipmentReports(equipmentId) {
   return Array.isArray(body?.results) ? body.results : []
 }
 
+export async function getEquipmentActivity(equipmentId) {
+  const path = '/portal/equipment/' + encodeURIComponent(String(equipmentId)) + '/activity/'
+  const response = await authFetch(path)
+  const body = await parseResponse(response, path)
+  return Array.isArray(body?.results) ? body.results : []
+}
+
 export async function createEquipmentReport(equipmentId, payload) {
   const path = '/portal/equipment/' + encodeURIComponent(String(equipmentId)) + '/reports/'
   const imageFiles = Array.isArray(payload?.images) ? payload.images.filter(Boolean) : []

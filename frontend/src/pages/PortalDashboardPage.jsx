@@ -19,6 +19,7 @@ import {
   createPortalEquipment,
   clearPortalSession,
   createEquipmentReport,
+  getEquipmentActivity,
   getEquipmentCertificates,
   getEquipmentReports,
   getPortalCompanies,
@@ -481,6 +482,31 @@ function getReportStatusBadge(status) {
   return { label: fallbackLabel, color: 'bg-slate-100 text-slate-700 border-slate-300' }
 }
 
+function getActivityActionLabel(action) {
+  const normalized = String(action || '').trim().toLowerCase()
+  if (normalized === 'equipment.status_changed') return 'Equipment status changed'
+  if (normalized === 'certificate.uploaded') return 'Certificate uploaded'
+  if (normalized === 'report.approved') return 'Report approved'
+
+  return normalized
+    ? normalized
+        .replace(/[._-]+/g, ' ')
+        .replace(/\b\w/g, (char) => char.toUpperCase())
+    : 'Activity updated'
+}
+
+function formatActivityTimestamp(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  return date.toLocaleString()
+}
+
+function isKeyboardEditableTarget(target) {
+  if (!target || typeof target !== 'object') return false
+  const tagName = String(target.tagName || '').toLowerCase()
+  return Boolean(target.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select')
+}
+
 function buildEmptyReportForm() {
   return {
     reportId: '',
@@ -730,6 +756,9 @@ export default function PortalDashboardPage() {
   const [certificates, setCertificates] = useState([])
   const [certificatesLoading, setCertificatesLoading] = useState(false)
   const [certificateError, setCertificateError] = useState('')
+  const [equipmentActivity, setEquipmentActivity] = useState([])
+  const [equipmentActivityLoading, setEquipmentActivityLoading] = useState(false)
+  const [equipmentActivityError, setEquipmentActivityError] = useState('')
   const [, setCertificateSuccess] = useState('')
   const [downloadingCertificateId, setDownloadingCertificateId] = useState(0)
   const [showCreateCertificateForm, setShowCreateCertificateForm] = useState(false)
@@ -745,6 +774,12 @@ export default function PortalDashboardPage() {
   const [pendingReportApprovals, setPendingReportApprovals] = useState([])
   const [pendingApprovalsLoading, setPendingApprovalsLoading] = useState(false)
   const [pendingApprovalsError, setPendingApprovalsError] = useState('')
+  const [selectedPendingApprovalIds, setSelectedPendingApprovalIds] = useState([])
+  const [bulkApprovingReports, setBulkApprovingReports] = useState(false)
+  const [selectedEquipmentIds, setSelectedEquipmentIds] = useState([])
+  const [bulkDecommissioningEquipment, setBulkDecommissioningEquipment] = useState(false)
+  const [selectedCustomerIds, setSelectedCustomerIds] = useState([])
+  const [bulkDeactivatingCustomers, setBulkDeactivatingCustomers] = useState(false)
   const [dashboardStats, setDashboardStats] = useState({
     overdue_count: 0,
     due_soon_count: 0,
@@ -924,6 +959,16 @@ export default function PortalDashboardPage() {
   const equipmentRangeStart = urgencyFilteredEquipment.length === 0 ? 0 : equipmentStartIndex + 1
   const equipmentRangeEnd = Math.min(equipmentStartIndex + equipmentPageSize, urgencyFilteredEquipment.length)
 
+  useEffect(() => {
+    const validPendingIds = new Set(pendingReportApprovals.map((item) => String(item.id)))
+    setSelectedPendingApprovalIds((current) => current.filter((id) => validPendingIds.has(String(id))))
+  }, [pendingReportApprovals])
+
+  useEffect(() => {
+    const validEquipmentIds = new Set(activeEquipment.map((item) => String(item.id)))
+    setSelectedEquipmentIds((current) => current.filter((id) => validEquipmentIds.has(String(id))))
+  }, [activeEquipment])
+
   function buildExportDateSuffix() {
     return new Date().toISOString().slice(0, 10)
   }
@@ -1033,6 +1078,116 @@ export default function PortalDashboardPage() {
       title: 'Reports Exported',
       message: `${rows.length} report row${rows.length === 1 ? '' : 's'} exported to CSV.`,
     })
+  }
+
+  function togglePendingApprovalSelection(reportId) {
+    const key = String(reportId)
+    setSelectedPendingApprovalIds((current) =>
+      current.includes(key) ? current.filter((id) => id !== key) : [...current, key],
+    )
+  }
+
+  function toggleSelectAllPendingApprovals() {
+    const allIds = pendingReportApprovals.map((item) => String(item.id))
+    setSelectedPendingApprovalIds((current) => (current.length === allIds.length ? [] : allIds))
+  }
+
+  async function handleBulkApproveReports() {
+    if (!isOwner || selectedPendingApprovalIds.length === 0 || bulkApprovingReports) return
+
+    setBulkApprovingReports(true)
+    setPendingApprovalsError('')
+
+    try {
+      await Promise.all(
+        selectedPendingApprovalIds.map((reportId) => updateReport(reportId, { status: 'approved' })),
+      )
+
+      setSelectedPendingApprovalIds([])
+      await Promise.all([refreshPendingReportApprovals(true), refreshDashboardStats(true)])
+      showSuccessToast('Selected submitted reports have been approved.', 'Reports Approved')
+    } catch (error) {
+      setPendingApprovalsError(String(error?.message || 'Unable to bulk approve reports.'))
+    } finally {
+      setBulkApprovingReports(false)
+    }
+  }
+
+  function toggleEquipmentSelection(equipmentId) {
+    const key = String(equipmentId)
+    setSelectedEquipmentIds((current) =>
+      current.includes(key) ? current.filter((id) => id !== key) : [...current, key],
+    )
+  }
+
+  function toggleSelectAllEquipment() {
+    const allIds = activeEquipment.map((item) => String(item.id))
+    setSelectedEquipmentIds((current) => (current.length === allIds.length ? [] : allIds))
+  }
+
+  async function handleBulkDecommissionEquipment() {
+    if (!isOwner || selectedEquipmentIds.length === 0 || bulkDecommissioningEquipment) return
+
+    setBulkDecommissioningEquipment(true)
+    setEquipmentStatusError('')
+
+    try {
+      await Promise.all(
+        selectedEquipmentIds.map((equipmentId) => updatePortalEquipment(equipmentId, { status: 'decommissioned' })),
+      )
+
+      setSelectedEquipmentIds([])
+      await Promise.all([refreshEquipmentData(), refreshDashboardStats(true)])
+      showSuccessToast('Selected equipment has been decommissioned.', 'Equipment Updated')
+    } catch (error) {
+      setEquipmentStatusError(String(error?.message || 'Unable to decommission selected equipment.'))
+    } finally {
+      setBulkDecommissioningEquipment(false)
+    }
+  }
+
+  function toggleCustomerSelection(customerId) {
+    const key = String(customerId)
+    setSelectedCustomerIds((current) =>
+      current.includes(key) ? current.filter((id) => id !== key) : [...current, key],
+    )
+  }
+
+  function toggleSelectAllCustomers() {
+    const allIds = filteredCustomers.map((item) => String(item.id))
+    setSelectedCustomerIds((current) => (current.length === allIds.length ? [] : allIds))
+  }
+
+  async function handleBulkDeactivateCustomers() {
+    if (!isOwner || selectedCustomerIds.length === 0 || bulkDeactivatingCustomers) return
+
+    setBulkDeactivatingCustomers(true)
+    setCustomerEditError('')
+
+    try {
+      const targetCustomers = filteredCustomers.filter((item) => selectedCustomerIds.includes(String(item.id)))
+
+      await Promise.all(
+        targetCustomers.map((item) =>
+          updatePortalCustomer({
+            company_id: Number(item.id),
+            company_name: item.name,
+            company_contact_email: item.contact_email || '',
+            company_contact_phone: item.contact_phone || '',
+            company_address: item.address || '',
+            is_active: false,
+          }),
+        ),
+      )
+
+      setSelectedCustomerIds([])
+      await Promise.all([refreshCustomerCompanies(), refreshDashboardStats(true)])
+      showSuccessToast('Selected customers have been deactivated.', 'Customers Updated')
+    } catch (error) {
+      setCustomerEditError(String(error?.message || 'Unable to deactivate selected customers.'))
+    } finally {
+      setBulkDeactivatingCustomers(false)
+    }
   }
 
   function handlePrintViewedReport() {
@@ -1171,6 +1326,11 @@ export default function PortalDashboardPage() {
   const customerTotalPages = Math.max(1, Math.ceil(filteredCustomers.length / customerPageSize))
   const customerStartIndex = (customerPage - 1) * customerPageSize
   const visibleCustomers = filteredCustomers.slice(customerStartIndex, customerStartIndex + customerPageSize)
+
+  useEffect(() => {
+    const validCustomerIds = new Set(filteredCustomers.map((item) => String(item.id)))
+    setSelectedCustomerIds((current) => current.filter((id) => validCustomerIds.has(String(id))))
+  }, [filteredCustomers])
 
   const normalizedEmployeeSearch = employeeSearchInput.trim().toLowerCase()
   const currentStaffAssignments = useMemo(
@@ -1396,6 +1556,13 @@ export default function PortalDashboardPage() {
     setShowCreateReportForm(true)
   }
 
+  function openCreateCertificateFormModal() {
+    setCertificateError('')
+    setCertificateSuccess('')
+    setCertificateForm(buildEmptyCertificateForm())
+    setShowCreateCertificateForm(true)
+  }
+
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
 
@@ -1417,6 +1584,42 @@ export default function PortalDashboardPage() {
     const timer = setTimeout(() => setPortalToast(null), 3500)
     return () => clearTimeout(timer)
   }, [portalToast])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    function handleGlobalShortcuts(event) {
+      if (!event.altKey || isAnyModalOpen || isKeyboardEditableTarget(event.target)) return
+
+      const key = String(event.key || '').toLowerCase()
+      if (key === 'n' && canEditReports && activeSelectedEquipment?.id) {
+        event.preventDefault()
+        openCreateReportForm()
+        return
+      }
+
+      if (key === 'u' && canEditReports && activeSelectedEquipment?.id) {
+        event.preventDefault()
+        openCreateCertificateFormModal()
+        return
+      }
+
+      if (key === 'e' && activeSelectedEquipment?.id) {
+        event.preventDefault()
+        handleExportReportsCsv()
+      }
+    }
+
+    window.addEventListener('keydown', handleGlobalShortcuts)
+    return () => window.removeEventListener('keydown', handleGlobalShortcuts)
+  }, [
+    isAnyModalOpen,
+    canEditReports,
+    activeSelectedEquipment?.id,
+    openCreateReportForm,
+    openCreateCertificateFormModal,
+    handleExportReportsCsv,
+  ])
 
   useEffect(() => {
     const interval = setInterval(() => setNowMs(Date.now()), 60000)
@@ -2039,6 +2242,32 @@ export default function PortalDashboardPage() {
     }
 
     loadReports()
+    return () => {
+      cancelled = true
+    }
+  }, [activeSelectedEquipment?.id])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadEquipmentActivity() {
+      if (!activeSelectedEquipment?.id) return
+
+      setEquipmentActivityLoading(true)
+      setEquipmentActivityError('')
+      try {
+        const nextActivity = await getEquipmentActivity(activeSelectedEquipment.id)
+        if (cancelled) return
+        setEquipmentActivity(nextActivity)
+      } catch (error) {
+        if (cancelled) return
+        setEquipmentActivityError(String(error?.message || 'Unable to load equipment activity.'))
+      } finally {
+        if (!cancelled) setEquipmentActivityLoading(false)
+      }
+    }
+
+    loadEquipmentActivity()
     return () => {
       cancelled = true
     }
@@ -2916,6 +3145,7 @@ export default function PortalDashboardPage() {
     setSelectedEquipment(null)
     setReports([])
     setCertificates([])
+    setEquipmentActivity([])
     setViewedReport(null)
     setSelectedReportImage(null)
     setReportForm(buildEmptyReportForm())
@@ -2932,6 +3162,7 @@ export default function PortalDashboardPage() {
     setRevisionReportId('')
     setReportRevisions([])
     setCertificateError('')
+    setEquipmentActivityError('')
     setCertificateSuccess('')
   }
 
@@ -3051,6 +3282,11 @@ export default function PortalDashboardPage() {
             customerCreateError={customerCreateError}
             customerEditError={customerEditError}
             onExportCustomers={handleExportCustomersCsv}
+            onBulkDeactivateCustomers={handleBulkDeactivateCustomers}
+            selectedCustomerIds={selectedCustomerIds}
+            onToggleCustomerSelection={toggleCustomerSelection}
+            onToggleSelectAllCustomers={toggleSelectAllCustomers}
+            bulkDeactivatingCustomers={bulkDeactivatingCustomers}
             loading={loading}
             visibleCustomers={visibleCustomers}
             filteredCustomers={filteredCustomers}
@@ -3119,6 +3355,11 @@ export default function PortalDashboardPage() {
             pendingApprovalsError={pendingApprovalsError}
             lastUpdatedLabel={pendingApprovalsLastUpdatedLabel}
             onRefresh={refreshPendingReportApprovals}
+            onBulkApprove={handleBulkApproveReports}
+            selectedReportIds={selectedPendingApprovalIds}
+            onToggleReportSelection={togglePendingApprovalSelection}
+            onToggleSelectAllReports={toggleSelectAllPendingApprovals}
+            bulkApproving={bulkApprovingReports}
             onReviewReport={(report) => {
               setViewedReportError('')
               setViewedReport(report)
@@ -3196,6 +3437,11 @@ export default function PortalDashboardPage() {
             equipmentCreateError={equipmentCreateError}
             onRefreshEquipment={refreshEquipmentData}
             onExportEquipment={handleExportEquipmentCsv}
+            onBulkDecommissionEquipment={handleBulkDecommissionEquipment}
+            selectedEquipmentIds={selectedEquipmentIds}
+            onToggleEquipmentSelection={toggleEquipmentSelection}
+            onToggleSelectAllEquipment={toggleSelectAllEquipment}
+            bulkDecommissioning={bulkDecommissioningEquipment}
             refreshingEquipment={refreshingEquipment}
             loading={loading}
             equipment={equipment}
@@ -3238,10 +3484,7 @@ export default function PortalDashboardPage() {
             reportError={reportError}
             certificateError={certificateError}
             onOpenUploadCertificate={() => {
-              setCertificateError('')
-              setCertificateSuccess('')
-              setCertificateForm(buildEmptyCertificateForm())
-              setShowCreateCertificateForm(true)
+              openCreateCertificateFormModal()
             }}
             onOpenCreateReport={() => {
               openCreateReportForm()
@@ -3282,6 +3525,7 @@ export default function PortalDashboardPage() {
               <button
                 type="button"
                 onClick={handleCloseEquipmentDetails}
+                aria-label="Close equipment details panel"
                 className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:border-[#123A7A]"
               >
                 Close Details
@@ -3351,16 +3595,17 @@ export default function PortalDashboardPage() {
                 {certificateError}
               </div>
             )}
+
+            {equipmentActivityError && (
+              <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {equipmentActivityError}
+              </div>
+            )}
             {canEditReports && (
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    setCertificateError('')
-                    setCertificateSuccess('')
-                    setCertificateForm(buildEmptyCertificateForm())
-                    setShowCreateCertificateForm(true)
-                  }}
+                  onClick={openCreateCertificateFormModal}
                   className="rounded-md border border-emerald-600 bg-white px-3 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-600 hover:text-white"
                 >
                   Upload Certificate
@@ -3374,6 +3619,55 @@ export default function PortalDashboardPage() {
                 </button>
               </div>
             )}
+
+            <p className="mt-3 text-xs text-slate-500">
+              Keyboard shortcuts: <span className="font-semibold">Alt+N</span> new report,{' '}
+              <span className="font-semibold">Alt+U</span> upload certificate,{' '}
+              <span className="font-semibold">Alt+E</span> export reports CSV.
+            </p>
+
+            <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
+              <div className="bg-slate-50 px-4 py-3">
+                <h3 className="text-sm font-semibold text-slate-700">Equipment Activity</h3>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[880px] border-collapse text-left text-sm">
+                  <thead className="bg-[#123A7A] text-white">
+                    <tr>
+                      <th className="px-4 py-3 font-semibold">When</th>
+                      <th className="px-4 py-3 font-semibold">Who</th>
+                      <th className="px-4 py-3 font-semibold">Action</th>
+                      <th className="px-4 py-3 font-semibold">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {equipmentActivityLoading ? (
+                      <tr>
+                        <td className="px-4 py-4 text-slate-500" colSpan={4}>
+                          Loading activity...
+                        </td>
+                      </tr>
+                    ) : equipmentActivity.length === 0 ? (
+                      <tr>
+                        <td className="px-4 py-4 text-slate-500" colSpan={4}>
+                          No activity has been recorded for this equipment.
+                        </td>
+                      </tr>
+                    ) : (
+                      equipmentActivity.map((entry) => (
+                        <tr key={entry.id} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
+                          <td className="px-4 py-3 text-slate-700">{formatActivityTimestamp(entry.created_at)}</td>
+                          <td className="px-4 py-3 text-slate-700">{entry.actor_name || 'System'}</td>
+                          <td className="px-4 py-3 font-semibold text-slate-800">{getActivityActionLabel(entry.action)}</td>
+                          <td className="px-4 py-3 text-slate-700">{JSON.stringify(entry.details || {})}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
 
             <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
               <div className="flex items-center justify-between gap-3 bg-slate-50 px-4 py-3">
@@ -3422,6 +3716,7 @@ export default function PortalDashboardPage() {
                             <button
                               type="button"
                               onClick={() => handleDownloadCertificate(certificate)}
+                              aria-label={`Download certificate ${certificate.title || certificate.id}`}
                               disabled={downloadingCertificateId === Number(certificate.id)}
                               className="rounded border border-[#123A7A] px-2 py-1 text-xs font-semibold text-[#123A7A] disabled:cursor-not-allowed disabled:opacity-60"
                             >

@@ -6,7 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from ..audit import log_portal_audit_event
-from ..models import Company, Equipment
+from ..models import AuditLog, Company, Equipment
 from ..portal_views import (
     _get_pagination_params,
     _is_staff_or_owner,
@@ -116,3 +116,46 @@ def portal_equipment_update(request, equipment_id):
             )
 
     return Response(EquipmentSerializer(equipment).data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
+def portal_equipment_activity(request, equipment_id):
+    equipment = Equipment.objects.select_related("company").filter(id=equipment_id).first()
+    if not equipment:
+        return Response({"detail": "Equipment not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if equipment.company_id not in _visible_company_ids(request.user):
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    activity = (
+        AuditLog.objects.select_related("actor")
+        .filter(company_id=equipment.company_id)
+        .filter(
+            Q(target_type="equipment", target_id=str(equipment.id))
+            | Q(details__equipment_id=equipment.id)
+        )
+        .order_by("-created_at")[:100]
+    )
+
+    results = []
+    for entry in activity:
+        actor = entry.actor
+        actor_name = "System"
+        if actor:
+            actor_name = actor.get_full_name() or actor.username
+
+        results.append(
+            {
+                "id": entry.id,
+                "action": entry.action,
+                "target_type": entry.target_type,
+                "target_id": entry.target_id,
+                "actor_name": actor_name,
+                "details": entry.details or {},
+                "created_at": entry.created_at.isoformat() if entry.created_at else "",
+            }
+        )
+
+    return Response({"results": results})

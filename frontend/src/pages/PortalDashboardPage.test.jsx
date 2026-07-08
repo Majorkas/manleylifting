@@ -14,6 +14,7 @@ vi.mock('../utils/portalApi', () => ({
   changePortalPassword: vi.fn(),
   deleteStaffAssignment: vi.fn(),
   getAccessToken: vi.fn(),
+  getEquipmentActivity: vi.fn(),
   getEquipmentReports: vi.fn(),
   getPortalDashboardStats: vi.fn(),
   getPortalCompanies: vi.fn(),
@@ -37,6 +38,7 @@ import {
   changePortalPassword,
   deleteStaffAssignment,
   getAccessToken,
+  getEquipmentActivity,
   getEquipmentReports,
   getPortalDashboardStats,
   getPortalCompanies,
@@ -109,6 +111,7 @@ describe('PortalDashboardPage', () => {
     hasPortalSession.mockReturnValue(true)
     getPortalCompanies.mockResolvedValue([])
     getPortalDashboardStats.mockResolvedValue({ overdue_count: 0, due_soon_count: 0, pending_approvals_count: 0 })
+    getEquipmentActivity.mockResolvedValue([])
     getEquipmentReports.mockResolvedValue([])
     getPortalCompanyHeader.mockResolvedValue({})
     getPortalEquipment.mockResolvedValue([])

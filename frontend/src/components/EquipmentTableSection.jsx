@@ -11,6 +11,11 @@ export default function EquipmentTableSection({
   equipmentCreateError,
   onRefreshEquipment,
   onExportEquipment,
+  onBulkDecommissionEquipment,
+  selectedEquipmentIds,
+  onToggleEquipmentSelection,
+  onToggleSelectAllEquipment,
+  bulkDecommissioning,
   refreshingEquipment,
   loading,
   equipment,
@@ -59,6 +64,11 @@ export default function EquipmentTableSection({
   onEquipmentPagePrevious,
   onEquipmentPageNext,
 }) {
+  const selectedCount = selectedEquipmentIds.length
+  const canBulkDecommission = isOwner && equipmentTableTab === 'active'
+  const allSelected =
+    canBulkDecommission && activeEquipment.length > 0 && selectedCount === activeEquipment.length
+
   function getSortIndicator(columnKey) {
     if (equipmentSortKey !== columnKey) return ''
     return equipmentSortDirection === 'asc' ? ' ▲' : ' ▼'
@@ -93,6 +103,26 @@ export default function EquipmentTableSection({
           >
             Export Equipment CSV
           </button>
+          {canBulkDecommission && (
+            <>
+              <button
+                type="button"
+                onClick={onToggleSelectAllEquipment}
+                disabled={activeEquipment.length === 0 || bulkDecommissioning}
+                className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-[#123A7A] hover:text-[#123A7A] disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {allSelected ? 'Clear Selection' : 'Select All'}
+              </button>
+              <button
+                type="button"
+                onClick={onBulkDecommissionEquipment}
+                disabled={selectedCount === 0 || bulkDecommissioning}
+                className="rounded-md border border-red-300 bg-white px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {bulkDecommissioning ? 'Decommissioning...' : `Decommission Selected (${selectedCount})`}
+              </button>
+            </>
+          )}
           <form
             className="flex w-full gap-2"
             onSubmit={(event) => {
@@ -192,7 +222,20 @@ export default function EquipmentTableSection({
                 return (
                   <article id={`equipment-card-${item.id}`} key={item.id} className="rounded-lg border border-slate-200 bg-white p-3">
                     <div className="flex items-start justify-between gap-2">
-                      <h3 className="text-sm font-bold text-slate-800">{item.name}</h3>
+                      <div className="min-w-0 flex-1">
+                        {canBulkDecommission && (
+                          <label className="mb-2 inline-flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                            <input
+                              type="checkbox"
+                              checked={selectedEquipmentIds.includes(String(item.id))}
+                              onChange={() => onToggleEquipmentSelection(item.id)}
+                              className="h-4 w-4 rounded border-slate-300 text-[#123A7A] focus:ring-[#123A7A]"
+                            />
+                            Select
+                          </label>
+                        )}
+                        <h3 className="text-sm font-bold text-slate-800">{item.name}</h3>
+                      </div>
                       <span className="rounded-full border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-700">
                         {item.status || 'unknown'}
                       </span>
@@ -438,6 +481,7 @@ export default function EquipmentTableSection({
               <table className="w-full min-w-[920px] border-collapse text-left text-sm">
                 <thead className="bg-[#123A7A] text-white">
                   <tr>
+                      {canBulkDecommission && <th className="px-4 py-3 font-semibold">Select</th>}
                     <th className="px-4 py-3 font-semibold">
                       <button
                         type="button"
@@ -485,6 +529,16 @@ export default function EquipmentTableSection({
                     const inspectionStatus = getInspectionStatusBadge(item.next_inspection_due)
                     return (
                       <tr key={item.id} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
+                        {canBulkDecommission && (
+                          <td className="px-4 py-3 text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={selectedEquipmentIds.includes(String(item.id))}
+                              onChange={() => onToggleEquipmentSelection(item.id)}
+                              className="h-4 w-4 rounded border-slate-300 text-[#123A7A] focus:ring-[#123A7A]"
+                            />
+                          </td>
+                        )}
                         <td className="px-4 py-3 font-semibold text-slate-800">{item.name}</td>
                         <td className="px-4 py-3 text-slate-700">{item.asset_tag || '-'}</td>
                         <td className="px-4 py-3 text-slate-700">{item.serial_number || '-'}</td>

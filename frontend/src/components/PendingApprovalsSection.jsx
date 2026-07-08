@@ -6,9 +6,18 @@ export default function PendingApprovalsSection({
   pendingApprovalsError,
   lastUpdatedLabel,
   onRefresh,
+  onBulkApprove,
+  selectedReportIds,
+  onToggleReportSelection,
+  onToggleSelectAllReports,
+  bulkApproving,
   onReviewReport,
   getReportStatusBadge,
 }) {
+  const selectedCount = selectedReportIds.length
+  const allSelected =
+    pendingReportApprovals.length > 0 && selectedCount === pendingReportApprovals.length
+
   return (
     <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="flex items-center justify-between gap-3">
@@ -32,6 +41,22 @@ export default function PendingApprovalsSection({
             className="rounded-md border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
           >
             {pendingApprovalsLoading ? 'Refreshing...' : 'Refresh'}
+          </button>
+          <button
+            type="button"
+            onClick={onToggleSelectAllReports}
+            disabled={pendingReportApprovals.length === 0 || pendingApprovalsLoading || bulkApproving}
+            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 transition hover:border-[#123A7A] hover:text-[#123A7A] disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {allSelected ? 'Clear Selection' : 'Select All'}
+          </button>
+          <button
+            type="button"
+            onClick={onBulkApprove}
+            disabled={selectedCount === 0 || pendingApprovalsLoading || bulkApproving}
+            className="rounded-md border border-emerald-600 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-emerald-700 transition hover:bg-emerald-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            {bulkApproving ? 'Approving...' : `Approve Selected (${selectedCount})`}
           </button>
         </div>
       </div>
@@ -57,6 +82,15 @@ export default function PendingApprovalsSection({
               <article key={report.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
+                    <label className="mb-2 inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={selectedReportIds.includes(String(report.id))}
+                        onChange={() => onToggleReportSelection(report.id)}
+                        className="h-4 w-4 rounded border-slate-300 text-[#123A7A] focus:ring-[#123A7A]"
+                      />
+                      Select
+                    </label>
                     <h3 className="text-lg font-bold text-[#123A7A]">{report.title || 'Untitled Report'}</h3>
                     <p className="mt-1 text-sm text-slate-600">
                       {report.company_name || 'Unknown Company'} · {report.equipment_name || 'Unknown Equipment'}

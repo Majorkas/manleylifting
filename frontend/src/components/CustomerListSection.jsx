@@ -16,6 +16,11 @@ export default function CustomerListSection({
   customerEditError,
   onRefreshCustomers,
   onExportCustomers,
+  onBulkDeactivateCustomers,
+  selectedCustomerIds,
+  onToggleCustomerSelection,
+  onToggleSelectAllCustomers,
+  bulkDeactivatingCustomers,
   refreshingCustomers,
   loading,
   visibleCustomers,
@@ -30,6 +35,10 @@ export default function CustomerListSection({
   onOpenCustomer,
   onEditCustomer,
 }) {
+  const selectedCount = selectedCustomerIds.length
+  const allSelected =
+    filteredCustomers.length > 0 && selectedCount === filteredCustomers.length
+
   return (
     <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -58,6 +67,26 @@ export default function CustomerListSection({
           >
             Export Customers CSV
           </button>
+          {isOwner && (
+            <>
+              <button
+                type="button"
+                onClick={onToggleSelectAllCustomers}
+                disabled={filteredCustomers.length === 0 || bulkDeactivatingCustomers}
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 transition hover:border-[#123A7A] hover:text-[#123A7A] disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {allSelected ? 'Clear Selection' : 'Select All'}
+              </button>
+              <button
+                type="button"
+                onClick={onBulkDeactivateCustomers}
+                disabled={selectedCount === 0 || bulkDeactivatingCustomers}
+                className="rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-red-700 transition hover:bg-red-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {bulkDeactivatingCustomers ? 'Deactivating...' : `Deactivate Selected (${selectedCount})`}
+              </button>
+            </>
+          )}
           {isOwner && (
             <button
               type="button"
@@ -159,7 +188,20 @@ export default function CustomerListSection({
           {visibleCustomers.map((item) => (
             <article key={item.id} className="rounded-xl border border-slate-200 p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
-                <h3 className="min-w-0 flex-1 break-words text-lg font-bold text-[#123A7A]">{item.name}</h3>
+                <div className="min-w-0 flex-1">
+                  {isOwner && (
+                    <label className="mb-2 inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={selectedCustomerIds.includes(String(item.id))}
+                        onChange={() => onToggleCustomerSelection(item.id)}
+                        className="h-4 w-4 rounded border-slate-300 text-[#123A7A] focus:ring-[#123A7A]"
+                      />
+                      Select
+                    </label>
+                  )}
+                  <h3 className="min-w-0 break-words text-lg font-bold text-[#123A7A]">{item.name}</h3>
+                </div>
                 <div className="flex w-full flex-wrap items-center gap-1 sm:w-auto sm:flex-col sm:items-end">
                   <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-amber-700">
                     Due (14d): {Number(item.inspections_due_count || 0)}

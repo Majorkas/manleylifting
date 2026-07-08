@@ -1322,3 +1322,53 @@ class PortalRBACTests(TestCase):
                 target_id=str(self.equipment_a.id),
             ).exists()
         )
+
+    def test_equipment_activity_log_returns_equipment_related_entries(self):
+        status_change = AuditLog.objects.create(
+            actor=self.owner_user,
+            company=self.company_a,
+            action="equipment.status_changed",
+            target_type="equipment",
+            target_id=str(self.equipment_a.id),
+            details={"from": "active", "to": "decommissioned"},
+        )
+        certificate_upload = AuditLog.objects.create(
+            actor=self.staff_user,
+            company=self.company_a,
+            action="certificate.uploaded",
+            target_type="certificate",
+            target_id="999",
+            details={"equipment_id": self.equipment_a.id, "title": "June Certificate"},
+        )
+        AuditLog.objects.create(
+            actor=self.owner_user,
+            company=self.company_b,
+            action="equipment.status_changed",
+            target_type="equipment",
+            target_id=str(self.equipment_b.id),
+            details={"from": "active", "to": "decommissioned"},
+        )
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.get(f"/api/portal/equipment/{self.equipment_a.id}/activity/")
+
+        self.assertEqual(response.status_code, 200)
+        results = response.json().get("results", [])
+        result_ids = {item["id"] for item in results}
+        self.assertIn(status_change.id, result_ids)
+        self.assertIn(certificate_upload.id, result_ids)
+        self.assertTrue(all(item.get("actor_name") for item in results))
+
+    def test_equipment_activity_log_denies_access_to_hidden_company(self):
+        AuditLog.objects.create(
+            actor=self.owner_user,
+            company=self.company_b,
+            action="equipment.status_changed",
+            target_type="equipment",
+            target_id=str(self.equipment_b.id),
+            details={"from": "active", "to": "decommissioned"},
+        )
+
+        self.client.force_authenticate(user=self.customer_user)
+        response = self.client.get(f"/api/portal/equipment/{self.equipment_b.id}/activity/")
+        self.assertEqual(response.status_code, 404)

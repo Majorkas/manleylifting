@@ -607,6 +607,7 @@ from .portal_views_modules.certificates import (  # noqa: E402
     portal_equipment_certificates,
 )
 from .portal_views_modules.equipment import (  # noqa: E402
+    portal_equipment_activity,
     portal_equipment_list,
     portal_equipment_update,
 )
