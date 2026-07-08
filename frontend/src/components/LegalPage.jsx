@@ -1,6 +1,13 @@
 import { Link } from 'react-router-dom'
+import usePageMeta from '../utils/usePageMeta'
 
 export default function LegalPage({ title }) {
+  usePageMeta({
+    title,
+    description: `${title} for Manley Lifting.`,
+    noIndex: true,
+  })
+
   return (
     <div className="min-h-screen bg-white text-slate-900">
       <div className="mx-auto max-w-5xl px-6 py-16">

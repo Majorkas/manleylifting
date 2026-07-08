@@ -15,6 +15,7 @@ import {
   savePendingCheckout,
   shopRoutes,
 } from '../utils/shopConfig'
+import usePageMeta from '../utils/usePageMeta'
 
 const turnstileSiteKey = String(import.meta.env.VITE_TURNSTILE_SITE_KEY || '').trim()
 const stripePublishableKey = String(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || '').trim()
@@ -121,6 +122,12 @@ function getFriendlyCheckoutErrorMessage(error) {
 }
 
 export default function CheckoutPage() {
+  usePageMeta({
+    title: 'Checkout',
+    description: 'Secure checkout for Manley Lifting shop orders.',
+    noIndex: true,
+  })
+
   const navigate = useNavigate()
   const { cartItems, cartCount, subtotal, clearCart } = useCart()
   const [errorMessage, setErrorMessage] = useState('')

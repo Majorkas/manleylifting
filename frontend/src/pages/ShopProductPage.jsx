@@ -5,6 +5,7 @@ import ShopPageLayout from '../components/ShopPageLayout'
 import { ProductDetailSkeleton } from '../components/ShopSkeleton'
 import { useCart } from '../context/CartContext'
 import { formatCurrency, getProductByHandle, getUserFacingErrorMessage, shopRoutes } from '../utils/shopConfig'
+import usePageMeta from '../utils/usePageMeta'
 
 export default function ShopProductPage() {
   const { handle } = useParams()
@@ -13,6 +14,13 @@ export default function ShopProductPage() {
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
   const [quantity, setQuantity] = useState(1)
+
+  usePageMeta({
+    title: product?.title || 'Shop Product',
+    description:
+      product?.description ||
+      'View certified lifting product details, pricing, and purchasing options from Manley Lifting.',
+  })
 
   useEffect(() => {
     let cancelled = false

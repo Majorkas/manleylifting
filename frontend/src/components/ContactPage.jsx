@@ -1,8 +1,15 @@
 import { useState } from 'react'
 import emailjs from '@emailjs/browser'
 import { Link } from 'react-router-dom'
+import usePageMeta from '../utils/usePageMeta'
 
 export default function ContactPage() {
+  usePageMeta({
+    title: 'Contact',
+    description:
+      'Contact Manley Lifting for lifting equipment inspections, servicing, certification, and product enquiries.',
+  })
+
   const [form, setForm] = useState({
     name: '',
     email: '',

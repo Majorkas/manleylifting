@@ -7,11 +7,18 @@ import ServicesSection from '../components/ServicesSection'
 import TrustSection from '../components/TrustSection'
 import ContactCtaSection from '../components/ContactCtaSection'
 import SiteFooter from '../components/SiteFooter'
+import usePageMeta from '../utils/usePageMeta'
 
 const navbarLogo = '/logo-navbar.png'
 const heroLogo = '/logo-hero.png'
 
 export default function HomePage() {
+  usePageMeta({
+    title: 'Home',
+    description:
+      'Manley Lifting provides inspections, certification, servicing, and lifting equipment support for businesses across Ireland.',
+  })
+
   const [, setCookieConsent] = useState(null)
   const [isScrolled, setIsScrolled] = useState(false)
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)

@@ -13,8 +13,15 @@ import {
   getUserFacingErrorMessage,
   shopRoutes,
 } from '../utils/shopConfig'
+import usePageMeta from '../utils/usePageMeta'
 
 export default function ShopPage() {
+  usePageMeta({
+    title: 'Shop',
+    description:
+      'Browse certified lifting equipment, accessories, and products from Manley Lifting.',
+  })
+
   const { addItem } = useCart()
   const [collections, setCollections] = useState([])
   const [featuredProducts, setFeaturedProducts] = useState([])

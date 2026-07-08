@@ -11,6 +11,7 @@ import {
   getUserFacingErrorMessage,
   shopRoutes,
 } from '../utils/shopConfig'
+import usePageMeta from '../utils/usePageMeta'
 
 export default function ShopCollectionPage() {
   const { handle } = useParams()
@@ -19,6 +20,13 @@ export default function ShopCollectionPage() {
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
   const [quantityByHandle, setQuantityByHandle] = useState({})
+
+  usePageMeta({
+    title: collection?.title ? `${collection.title} Collection` : 'Shop Collection',
+    description:
+      collection?.description ||
+      'Explore lifting products in this collection from Manley Lifting.',
+  })
 
   useEffect(() => {
     let cancelled = false

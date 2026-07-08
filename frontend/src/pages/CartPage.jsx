@@ -2,8 +2,15 @@ import { Link } from 'react-router-dom'
 import ShopPageLayout from '../components/ShopPageLayout'
 import { formatCurrency, shopRoutes } from '../utils/shopConfig'
 import { useCart } from '../context/CartContext'
+import usePageMeta from '../utils/usePageMeta'
 
 export default function CartPage() {
+  usePageMeta({
+    title: 'Cart',
+    description: 'Review selected lifting products before checkout.',
+    noIndex: true,
+  })
+
   const { cartItems, cartCount, subtotal, removeItem } = useCart()
 
   return (

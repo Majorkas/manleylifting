@@ -7,6 +7,7 @@ import Modal from '../components/Modal'
 import PortalToast from '../components/PortalToast'
 import PendingApprovalsSection from '../components/PendingApprovalsSection'
 import PortalLayout from '../components/PortalLayout'
+import usePageMeta from '../utils/usePageMeta'
 import {
   changePortalPassword,
   createStaffAssignment,
@@ -637,6 +638,12 @@ function buildUniqueEmployeeUsername(baseUsername, existingUsernames) {
 }
 
 export default function PortalDashboardPage() {
+  usePageMeta({
+    title: 'Customer Portal',
+    description: 'Manage equipment, reports, certificates, and approvals in the Manley Lifting portal.',
+    noIndex: true,
+  })
+
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const initialSearchQuery = String(searchParams.get('q') || '').trim()

@@ -2,8 +2,15 @@ import { useState } from 'react'
 import { Link, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import PortalLayout from '../components/PortalLayout'
 import { hasPortalSession, portalLogin } from '../utils/portalApi'
+import usePageMeta from '../utils/usePageMeta'
 
 export default function PortalLoginPage() {
+  usePageMeta({
+    title: 'Portal Login',
+    description: 'Sign in to the Manley Lifting customer portal to access equipment reports and certificates.',
+    noIndex: true,
+  })
+
   const navigate = useNavigate()
   const location = useLocation()
   const sessionExpired = Boolean(location.state?.sessionExpired)

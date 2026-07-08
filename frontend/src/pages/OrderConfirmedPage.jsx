@@ -8,8 +8,15 @@ import {
   loadCompletedCheckout,
   shopRoutes,
 } from '../utils/shopConfig'
+import usePageMeta from '../utils/usePageMeta'
 
 export default function OrderConfirmedPage() {
+  usePageMeta({
+    title: 'Order Confirmed',
+    description: 'Order confirmation details for your Manley Lifting purchase.',
+    noIndex: true,
+  })
+
   const [isLoading, setIsLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
   const [order, setOrder] = useState(null)
