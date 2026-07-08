@@ -1563,6 +1563,71 @@ describe('PortalDashboardPage', () => {
     expect(getPendingReportApprovals).toHaveBeenCalledTimes(2)
   })
 
+  it('lets owners jump from a pending approval review modal to the matching equipment', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 31,
+      username: 'demo_owner',
+      email: 'owner@example.com',
+      fullName: 'Demo Owner',
+      role: 'owner',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 101,
+        company_id: 1,
+        name: 'Warehouse Hoist',
+        asset_tag: 'WH-1',
+        serial_number: 'SN-101',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-09-01',
+      },
+    ])
+    getPendingReportApprovals.mockResolvedValue([
+      {
+        id: 2,
+        equipment_id: 101,
+        company_id: 1,
+        title: 'Submitted Hoist Inspection',
+        report_date: '2026-07-02',
+        status: 'submitted',
+        submitted_by: 21,
+        submitted_by_name: 'Demo Staff',
+        summary: 'Submitted summary',
+        findings: 'Findings',
+        recommendations: 'Recommendations',
+        company_name: 'Acme Lifts',
+        equipment_name: 'Warehouse Hoist',
+        images: [],
+      },
+    ])
+
+    renderDashboardPage('/portal')
+
+    expect(await screen.findByRole('heading', { name: 'Customer List' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Review Report' }))
+    expect(await screen.findByRole('button', { name: 'Go to equipment' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Go to equipment' }))
+
+    expect(await screen.findByRole('heading', { name: 'Equipment Details: Warehouse Hoist' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Go to equipment' })).not.toBeInTheDocument()
+  })
+
   it('saves owner edits from the pending approvals modal without selecting equipment first', async () => {
     const user = userEvent.setup()
 

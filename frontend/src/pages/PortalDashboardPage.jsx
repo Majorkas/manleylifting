@@ -2499,16 +2499,28 @@ export default function PortalDashboardPage() {
   function handleGoToReportEquipment() {
     if (!viewedReport?.equipment_id) return
 
-    const targetEquipment = equipment.find((item) => String(item.id) === String(viewedReport.equipment_id))
+    const targetEquipmentId = String(viewedReport.equipment_id)
+    const targetCompanyId = String(viewedReport.company_id || '')
+    const targetEquipment = equipment.find((item) => String(item.id) === targetEquipmentId)
+
+    setSelectedEquipment({ id: viewedReport.equipment_id })
+    setSearchInput('')
+    setSearchQuery('')
+    setEquipmentPage(1)
+
     if (targetEquipment) {
       setSelectedEquipment(targetEquipment)
       setEquipmentTableTab(targetEquipment.status === 'decommissioned' ? 'decommissioned' : 'active')
-      setSearchInput('')
-      setEquipmentPage(1)
     } else {
-      setSearchInput(String(viewedReport.equipment_name || ''))
       setEquipmentTableTab('active')
-      setEquipmentPage(1)
+    }
+
+    if (targetCompanyId && targetCompanyId !== selectedCompanyId) {
+      const nextParams = new URLSearchParams(searchParams)
+      nextParams.set('companyId', targetCompanyId)
+      nextParams.delete('q')
+      nextParams.delete('eqPage')
+      setSearchParams(nextParams, { replace: true })
     }
 
     setViewedReportError('')
