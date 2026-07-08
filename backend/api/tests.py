@@ -659,6 +659,32 @@ class PortalRBACTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json().get("detail"), "Report image content does not match the file extension")
 
+    def test_staff_can_save_incomplete_report_draft(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            f"/api/portal/equipment/{self.equipment_a.id}/reports/",
+            data={
+                "title": "Draft inspection",
+                "summary": "",
+                "findings": "",
+                "recommendations": "",
+                "report_date": "2026-06-30",
+                "status": InspectionReport.STATUS_DRAFT,
+                "checklist_items": [
+                    {
+                        "label": "Hoist Brake",
+                        "status": "attention_required",
+                        "note": "",
+                    }
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json().get("status"), InspectionReport.STATUS_DRAFT)
+        self.assertEqual(len(response.json().get("checklist_items", [])), 1)
+
     @patch("api.portal_views.cloudinary_uploader.destroy")
     @patch("api.portal_views._cloudinary_is_configured", return_value=True)
     def test_owner_can_remove_report_images(self, mock_cloudinary_ready, mock_destroy):
@@ -863,6 +889,30 @@ class PortalRBACTests(TestCase):
         self.equipment_a.refresh_from_db()
         self.assertIsNone(self.equipment_a.next_inspection_due)
 
+    def test_owner_can_edit_draft_report_without_submitting(self):
+        report = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Draft report",
+            summary="Draft summary",
+            findings="Draft findings",
+            recommendations="Draft recommendations",
+            report_date="2026-06-25",
+            status=InspectionReport.STATUS_DRAFT,
+        )
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.patch(
+            f"/api/portal/reports/{report.id}/",
+            data={"summary": "Owner updated draft summary", "status": InspectionReport.STATUS_DRAFT},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        report.refresh_from_db()
+        self.assertEqual(report.summary, "Owner updated draft summary")
+        self.assertEqual(report.status, InspectionReport.STATUS_DRAFT)
+
     def test_staff_cannot_edit_submitted_report(self):
         report = InspectionReport.objects.create(
             equipment=self.equipment_a,
@@ -906,6 +956,46 @@ class PortalRBACTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 403)
+
+    def test_staff_can_delete_own_draft_report(self):
+        report = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Draft report",
+            summary="Draft summary",
+            findings="Draft findings",
+            recommendations="Draft recommendations",
+            report_date="2026-06-25",
+            status=InspectionReport.STATUS_DRAFT,
+        )
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.delete(f"/api/portal/reports/{report.id}/")
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(InspectionReport.objects.filter(id=report.id).exists())
+
+    def test_staff_cannot_delete_another_users_draft_report(self):
+        other_staff = get_user_model().objects.create_user(username="staff3", password="testpass123")
+        other_profile = UserProfile.objects.create(user=other_staff, role=UserProfile.ROLE_STAFF)
+        other_profile.allowed_companies.add(self.company_a)
+
+        report = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=other_staff,
+            title="Other draft",
+            summary="Draft summary",
+            findings="Draft findings",
+            recommendations="Draft recommendations",
+            report_date="2026-06-25",
+            status=InspectionReport.STATUS_DRAFT,
+        )
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.delete(f"/api/portal/reports/{report.id}/")
+
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(InspectionReport.objects.filter(id=report.id).exists())
 
     def test_owner_can_view_report_revisions(self):
         report = InspectionReport.objects.create(

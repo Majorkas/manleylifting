@@ -12,6 +12,7 @@ vi.mock('../utils/portalApi', () => ({
   clearPortalSession: vi.fn(),
   createEquipmentReport: vi.fn(),
   changePortalPassword: vi.fn(),
+  deleteReport: vi.fn(),
   deleteStaffAssignment: vi.fn(),
   getAccessToken: vi.fn(),
   getEquipmentActivity: vi.fn(),
@@ -36,6 +37,7 @@ vi.mock('../utils/portalApi', () => ({
 import {
   createEquipmentReport,
   changePortalPassword,
+  deleteReport,
   deleteStaffAssignment,
   getAccessToken,
   getEquipmentActivity,
@@ -125,6 +127,7 @@ describe('PortalDashboardPage', () => {
     updatePortalCustomer.mockResolvedValue({ id: 1, name: 'Acme Lifts' })
     updatePortalEquipment.mockResolvedValue({})
     updateReport.mockResolvedValue({})
+    deleteReport.mockResolvedValue({ ok: true })
   })
 
   it('redirects to login when portal session expired event is fired', async () => {
@@ -794,9 +797,6 @@ describe('PortalDashboardPage', () => {
     ])
     getEquipmentReports.mockResolvedValue([])
 
-    const confirmSpy = vi.spyOn(window, 'confirm')
-    confirmSpy.mockReturnValueOnce(false).mockReturnValueOnce(true)
-
     renderDashboardPage('/portal?companyId=1')
 
     await user.click(await screen.findByRole('button', { name: 'View' }))
@@ -806,16 +806,97 @@ describe('PortalDashboardPage', () => {
     await user.type(screen.getByLabelText('Report Title'), 'Unsaved Draft')
     await user.click(screen.getByRole('button', { name: 'Close' }))
 
-    expect(confirmSpy).toHaveBeenCalledTimes(1)
-    expect(screen.getByRole('heading', { name: 'Create New Report' })).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: 'Close' }))
-    expect(confirmSpy).toHaveBeenCalledTimes(2)
+    expect(screen.getByRole('heading', { name: 'Save Changes?' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Clear Changes' }))
     await waitFor(() => {
       expect(screen.queryByRole('heading', { name: 'Create New Report' })).not.toBeInTheDocument()
     })
+  })
 
-    confirmSpy.mockRestore()
+  it('prompts to save or revert when closing edit report with unsaved changes', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 21,
+      username: 'demo_staff',
+      email: 'staff@example.com',
+      fullName: 'Demo Staff',
+      role: 'staff',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 101,
+        name: 'Warehouse Hoist',
+        asset_tag: 'WH-1',
+        serial_number: 'SN-101',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-09-01',
+      },
+    ])
+    getEquipmentReports.mockResolvedValue([
+      {
+        id: 1,
+        title: 'Draft Hoist Inspection',
+        report_date: '2026-07-01',
+        status: 'draft',
+        submitted_by: 21,
+        submitted_by_name: 'Demo Staff',
+        summary: 'Draft summary',
+        findings: 'Findings',
+        recommendations: 'Recommendations',
+        checklist_items: [],
+        images: [],
+      },
+    ])
+
+    renderDashboardPage('/portal?companyId=1')
+
+    await user.click(await screen.findByRole('button', { name: 'View' }))
+    const reportsTable = screen.getAllByRole('table').slice(-1)[0]
+    await user.click(within(reportsTable).getByRole('button', { name: 'View' }))
+    await user.click(await screen.findByRole('button', { name: 'Edit Report' }))
+
+    const firstSummaryInput = screen.getByLabelText('Summary')
+    await user.clear(firstSummaryInput)
+    await user.type(firstSummaryInput, 'Changed summary once')
+    expect(firstSummaryInput).toHaveValue('Changed summary once')
+    const firstEditHeader = screen.getByRole('heading', { name: 'Edit Report' }).parentElement
+    expect(firstEditHeader).not.toBeNull()
+    await user.click(within(firstEditHeader).getByRole('button', { name: 'Close' }))
+
+    expect(await screen.findByRole('heading', { name: 'Save Changes?' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Revert Changes' }))
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: 'Edit Report' })).not.toBeInTheDocument()
+    })
+
+    await user.click(within(reportsTable).getByRole('button', { name: 'View' }))
+    await user.click(await screen.findByRole('button', { name: 'Edit Report' }))
+    const secondSummaryInput = screen.getByLabelText('Summary')
+    await user.clear(secondSummaryInput)
+    await user.type(secondSummaryInput, 'Changed summary twice')
+    expect(secondSummaryInput).toHaveValue('Changed summary twice')
+    const secondEditHeader = screen.getByRole('heading', { name: 'Edit Report' }).parentElement
+    expect(secondEditHeader).not.toBeNull()
+    await user.click(within(secondEditHeader).getByRole('button', { name: 'Close' }))
+    await user.click(screen.getByRole('button', { name: 'Save Changes' }))
+
+    await waitFor(() => {
+      expect(updateReport).toHaveBeenCalledWith('1', expect.objectContaining({ summary: 'Changed summary twice' }))
+    })
   })
 
   it('requires a checklist note when a report item is marked non-good', async () => {
@@ -864,10 +945,72 @@ describe('PortalDashboardPage', () => {
     expect(checklistRow).not.toBeNull()
     await user.selectOptions(within(checklistRow).getByRole('combobox'), 'attention_required')
 
-    await user.click(screen.getByRole('button', { name: 'Create Report' }))
+    await user.click(screen.getByRole('button', { name: 'Submit Report' }))
 
     expect(createEquipmentReport).not.toHaveBeenCalled()
     expect(screen.getByText("Add a note for 'Initial Test Run' before saving this report.")).toBeInTheDocument()
+  })
+
+  it('saves an incomplete report as a draft from the close prompt', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 21,
+      username: 'demo_staff',
+      email: 'staff@example.com',
+      fullName: 'Demo Staff',
+      role: 'staff',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 101,
+        name: 'Warehouse Hoist',
+        asset_tag: 'WH-1',
+        serial_number: 'SN-101',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-09-01',
+      },
+    ])
+    getEquipmentReports.mockResolvedValue([])
+    createEquipmentReport.mockResolvedValue({ id: 77, status: 'draft' })
+
+    renderDashboardPage('/portal?companyId=1')
+
+    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await user.click(screen.getByRole('button', { name: 'Create New Report' }))
+
+    await user.type(screen.getByLabelText('Report Title'), 'Draft with missing checklist note')
+    const checklistRow = screen.getByText('Initial Test Run').closest('div')
+    expect(checklistRow).not.toBeNull()
+    await user.selectOptions(within(checklistRow).getByRole('combobox'), 'attention_required')
+
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+    expect(await screen.findByRole('heading', { name: 'Save Changes?' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Save as Draft' }))
+
+    await waitFor(() => {
+      expect(createEquipmentReport).toHaveBeenCalledWith(
+        101,
+        expect.objectContaining({
+          title: 'Draft with missing checklist note',
+          status: 'draft',
+        }),
+      )
+    })
   })
 
   it('restores a saved create-report draft from localStorage', async () => {
@@ -1003,8 +1146,7 @@ describe('PortalDashboardPage', () => {
     await user.click(screen.getByRole('button', { name: 'Create New Report' }))
 
     await user.type(screen.getByLabelText('Report Title'), 'Submitted Inspection')
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Status' }), 'submitted')
-    await user.click(screen.getByRole('button', { name: 'Create Report' }))
+    await user.click(screen.getByRole('button', { name: 'Submit Report' }))
 
     expect(await screen.findAllByText('30-06-2027')).toHaveLength(2)
   })
@@ -1080,12 +1222,164 @@ describe('PortalDashboardPage', () => {
 
     await user.click(screen.getByRole('button', { name: 'Close' }))
 
-    await user.click(reportViewButtons[1])
+    const refreshedReportsTable = screen.getAllByRole('table').slice(-1)[0]
+    const refreshedViewButtons = within(refreshedReportsTable).getAllByRole('button', { name: 'View' })
+    await user.click(refreshedViewButtons[1])
     expect(await screen.findByRole('heading', { name: 'Submitted Hoist Inspection' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit Report' })).not.toBeInTheDocument()
   })
 
-  it('lets owners edit submitted reports with submitted and approved status options', async () => {
+  it('allows draft deletion only for the draft creator', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 21,
+      username: 'demo_staff',
+      email: 'staff@example.com',
+      fullName: 'Demo Staff',
+      role: 'staff',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 101,
+        name: 'Warehouse Hoist',
+        asset_tag: 'WH-1',
+        serial_number: 'SN-101',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-09-01',
+      },
+    ])
+    getEquipmentReports.mockResolvedValue([
+      {
+        id: 1,
+        title: 'Own Draft',
+        report_date: '2026-07-01',
+        status: 'draft',
+        submitted_by: 21,
+        submitted_by_name: 'Demo Staff',
+        summary: 'Own draft summary',
+      },
+      {
+        id: 2,
+        title: 'Other Draft',
+        report_date: '2026-07-02',
+        status: 'draft',
+        submitted_by: 55,
+        submitted_by_name: 'Another Staff',
+        summary: 'Other draft summary',
+      },
+    ])
+
+    renderDashboardPage('/portal?companyId=1')
+
+    await user.click(await screen.findByRole('button', { name: 'View' }))
+
+    const tables = screen.getAllByRole('table')
+    const reportsTable = tables[tables.length - 1]
+    const reportViewButtons = within(reportsTable).getAllByRole('button', { name: 'View' })
+
+    await user.click(reportViewButtons[0])
+    expect(await screen.findByRole('heading', { name: 'Own Draft' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Delete Draft' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Delete Draft' }))
+    await user.click(screen.getByRole('button', { name: 'Confirm Delete Draft' }))
+    await waitFor(() => {
+      expect(deleteReport).toHaveBeenCalledWith(1)
+    })
+
+    await user.click(reportViewButtons[1])
+    expect(await screen.findByRole('heading', { name: 'Other Draft' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete Draft' })).not.toBeInTheDocument()
+  })
+
+  it('saves edits to an existing draft without submitting it', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 21,
+      username: 'demo_staff',
+      email: 'staff@example.com',
+      fullName: 'Demo Staff',
+      role: 'staff',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 101,
+        name: 'Warehouse Hoist',
+        asset_tag: 'WH-1',
+        serial_number: 'SN-101',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-09-01',
+      },
+    ])
+    getEquipmentReports.mockResolvedValue([
+      {
+        id: 1,
+        title: 'Draft Hoist Inspection',
+        report_date: '2026-07-01',
+        status: 'draft',
+        submitted_by: 21,
+        submitted_by_name: 'Demo Staff',
+        summary: 'Draft summary',
+        findings: 'Draft findings',
+        recommendations: 'Draft recommendations',
+        checklist_items: [],
+        images: [],
+      },
+    ])
+    updateReport.mockResolvedValue({ id: 1, status: 'draft' })
+
+    renderDashboardPage('/portal?companyId=1')
+
+    await user.click(await screen.findByRole('button', { name: 'View' }))
+    const reportsTable = screen.getAllByRole('table').slice(-1)[0]
+    await user.click(within(reportsTable).getByRole('button', { name: 'View' }))
+    await user.click(await screen.findByRole('button', { name: 'Edit Report' }))
+
+    const summaryInput = screen.getByLabelText('Summary')
+    await user.clear(summaryInput)
+    await user.type(summaryInput, 'Updated draft summary')
+    await user.click(screen.getByRole('button', { name: 'Save Report' }))
+
+    await waitFor(() => {
+      expect(updateReport).toHaveBeenCalledWith(
+        '1',
+        expect.objectContaining({
+          summary: 'Updated draft summary',
+          status: 'draft',
+        }),
+      )
+    })
+  })
+
+  it('lets owners edit submitted reports without a status selector', async () => {
     const user = userEvent.setup()
 
     getPortalMe.mockResolvedValue({
@@ -1146,9 +1440,7 @@ describe('PortalDashboardPage', () => {
     await user.click(screen.getByRole('button', { name: 'Edit Report' }))
 
     expect(await screen.findByRole('heading', { name: 'Edit Report' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'Submitted' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'Approved' })).toBeInTheDocument()
-    expect(screen.queryByRole('option', { name: 'Draft' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Status' })).not.toBeInTheDocument()
   })
 
   it('shows full revision details with exact before and after changes', async () => {
@@ -1687,7 +1979,6 @@ describe('PortalDashboardPage', () => {
 
     await user.clear(screen.getByLabelText('Report Title'))
     await user.type(screen.getByLabelText('Report Title'), 'Updated Submitted Hoist Inspection')
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Status' }), 'approved')
     await user.click(screen.getByRole('button', { name: 'Save Report' }))
 
     await waitFor(() => {
@@ -1697,7 +1988,7 @@ describe('PortalDashboardPage', () => {
         findings: 'Findings',
         recommendations: 'Recommendations',
         report_date: '2026-07-02',
-        status: 'approved',
+        status: 'submitted',
         images: [],
         removed_image_ids: [],
       }))
