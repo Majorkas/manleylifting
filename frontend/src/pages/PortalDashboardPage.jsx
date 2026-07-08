@@ -19,6 +19,7 @@ import {
   createPortalEquipment,
   clearPortalSession,
   createEquipmentReport,
+  deleteReport,
   getEquipmentActivity,
   getEquipmentCertificates,
   getEquipmentReports,
@@ -366,32 +367,64 @@ function escapeHtml(value) {
 }
 
 function buildPrintDocument(title, contentHtml) {
+  const logoUrl = `${window.location.origin}/logo-navbar.png`
+  const generatedDate = new Date().toLocaleDateString('en-IE', {
+    day: '2-digit',
+    month: 'long',
+    year: 'numeric',
+  })
   return `<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <title>${escapeHtml(title)}</title>
     <style>
+      * { box-sizing: border-box; }
       body { font-family: Arial, sans-serif; margin: 24px; color: #0f172a; }
-      h1 { margin: 0 0 12px; font-size: 22px; }
-      h2 { margin: 18px 0 8px; font-size: 16px; color: #1e3a8a; }
+      /* ── Branded header ── */
+      .print-header { display: flex; align-items: center; justify-content: space-between; padding-bottom: 14px; border-bottom: 3px solid #123A7A; margin-bottom: 20px; }
+      .print-header img { height: 56px; width: auto; }
+      .print-header-contact { text-align: right; font-size: 12px; color: #334155; line-height: 1.7; }
+      .print-header-contact strong { display: block; font-size: 15px; color: #123A7A; letter-spacing: 0.02em; }
+      /* ── Content ── */
+      h1 { margin: 0 0 12px; font-size: 22px; color: #123A7A; }
+      h2 { margin: 18px 0 8px; font-size: 15px; color: #123A7A; text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
       p { margin: 6px 0; line-height: 1.45; }
-      .meta { margin-bottom: 14px; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc; }
-      .section { margin-top: 14px; }
-      .card { border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px 12px; margin-top: 10px; }
+      .meta { margin-bottom: 14px; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 6px; background: #f8fafc; font-size: 13px; }
+      .meta p { margin: 4px 0; }
+      .section { margin-top: 16px; }
+      .card { border: 1px solid #cbd5e1; border-radius: 6px; padding: 10px 12px; margin-top: 10px; font-size: 13px; }
       ul { margin: 8px 0 0 18px; }
       li { margin: 6px 0; }
       table { width: 100%; border-collapse: collapse; margin-top: 10px; }
       th, td { border: 1px solid #cbd5e1; padding: 8px; text-align: left; font-size: 13px; }
-      th { background: #eff6ff; color: #1e3a8a; }
+      th { background: #EBF0F9; color: #123A7A; font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; }
+      tr:nth-child(even) td { background: #f8fafc; }
       .muted { color: #475569; font-size: 12px; }
+      /* ── Footer ── */
+      .print-footer { margin-top: 32px; padding-top: 10px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #94a3b8; display: flex; justify-content: space-between; }
       @media print {
         body { margin: 12mm; }
+        .print-footer { position: fixed; bottom: 8mm; left: 12mm; right: 12mm; }
       }
     </style>
   </head>
   <body>
+    <div class="print-header">
+      <img src="${logoUrl}" alt="Manley Lifting" />
+      <div class="print-header-contact">
+        <strong>Manley Lifting</strong>
+        Oulart, Co. Wexford, Ireland<br />
+        michael@manleylifting.ie<br />
+        www.manleylifting.ie
+      </div>
+    </div>
     ${contentHtml}
+    <div class="print-footer">
+      <span>Manley Lifting &mdash; www.manleylifting.ie</span>
+      <span>Generated: ${generatedDate}</span>
+    </div>
+    <script>window.onload = function () { window.print(); }<\/script>
   </body>
 </html>`
 }
@@ -790,6 +823,10 @@ export default function PortalDashboardPage() {
   const [viewedReport, setViewedReport] = useState(null)
   const [selectedReportImage, setSelectedReportImage] = useState(null)
   const [confirmRemoveReportImageId, setConfirmRemoveReportImageId] = useState('')
+  const [confirmDeleteDraftReportId, setConfirmDeleteDraftReportId] = useState('')
+  const [deletingDraftReport, setDeletingDraftReport] = useState(false)
+  const [reportUnsavedPrompt, setReportUnsavedPrompt] = useState('')
+  const [unsavedChangesPrompt, setUnsavedChangesPrompt] = useState('')
   const [showEditReportModal, setShowEditReportModal] = useState(false)
   const [showRevisionsModal, setShowRevisionsModal] = useState(false)
   const [reportForm, setReportForm] = useState(buildEmptyReportForm())
@@ -1237,13 +1274,11 @@ export default function PortalDashboardPage() {
       </div>
     `
 
-    const printWindow = window.open('', '_blank', 'noopener,noreferrer,width=980,height=760')
+    const printWindow = window.open('', '_blank', 'width=980,height=760')
     if (!printWindow) return
     printWindow.document.open()
     printWindow.document.write(buildPrintDocument(`Report - ${viewedReport.title || 'Inspection Report'}`, reportHtml))
     printWindow.document.close()
-    printWindow.focus()
-    printWindow.print()
   }
 
   function handlePrintCertificates() {
@@ -1289,13 +1324,11 @@ export default function PortalDashboardPage() {
       </div>
     `
 
-    const printWindow = window.open('', '_blank', 'noopener,noreferrer,width=980,height=760')
+    const printWindow = window.open('', '_blank', 'width=980,height=760')
     if (!printWindow) return
     printWindow.document.open()
     printWindow.document.write(buildPrintDocument(`Certificates - ${activeSelectedEquipment.name || 'Equipment'}`, certificatesHtml))
     printWindow.document.close()
-    printWindow.focus()
-    printWindow.print()
   }
   const equipmentNextDuePreview = useMemo(
     () => calculateNextInspectionDue(equipmentForm.last_inspected_at, equipmentForm.inspection_interval_days),
@@ -1435,7 +1468,6 @@ export default function PortalDashboardPage() {
       String(reportForm.summary || '').trim() !== '' ||
       String(reportForm.findings || '').trim() !== '' ||
       String(reportForm.recommendations || '').trim() !== '' ||
-      String(reportForm.status || 'draft') !== 'draft' ||
       String(reportForm.report_date || createReportBaseDate) !== String(createReportBaseDate) ||
       normalizeReportChecklistItems(reportForm.checklist_items).some(
         (item) => item.status !== REPORT_CHECKLIST_STATUS_GOOD || String(item.note || '').trim() !== '',
@@ -1468,12 +1500,11 @@ export default function PortalDashboardPage() {
     )
   }, [reportForm])
 
-  function confirmDiscardUnsavedChanges() {
-    return window.confirm('You have unsaved changes. Discard them?')
-  }
-
   function closeCreateCustomerForm(force = false) {
-    if (!force && isCreateCustomerDirty && !confirmDiscardUnsavedChanges()) return false
+    if (!force && isCreateCustomerDirty) {
+      setUnsavedChangesPrompt('createCustomer')
+      return false
+    }
     setShowCreateCustomerForm(false)
     setCustomerCreateError('')
     setCustomerForm(buildEmptyCustomerForm())
@@ -1481,7 +1512,10 @@ export default function PortalDashboardPage() {
   }
 
   function closeEditCustomerForm(force = false) {
-    if (!force && isEditCustomerDirty && !confirmDiscardUnsavedChanges()) return false
+    if (!force && isEditCustomerDirty) {
+      setUnsavedChangesPrompt('editCustomer')
+      return false
+    }
     setShowEditCustomerForm(false)
     setConfirmCustomerDeactivate(false)
     setCustomerEditForm(buildEmptyCustomerEditForm())
@@ -1489,14 +1523,20 @@ export default function PortalDashboardPage() {
   }
 
   function closeCreateEmployeeForm(force = false) {
-    if (!force && isCreateEmployeeDirty && !confirmDiscardUnsavedChanges()) return false
+    if (!force && isCreateEmployeeDirty) {
+      setUnsavedChangesPrompt('createEmployee')
+      return false
+    }
     setShowCreateEmployeeForm(false)
     setEmployeeForm(buildEmptyEmployeeForm())
     return true
   }
 
   function closeCreateEquipmentForm(force = false) {
-    if (!force && isCreateEquipmentDirty && !confirmDiscardUnsavedChanges()) return false
+    if (!force && isCreateEquipmentDirty) {
+      setUnsavedChangesPrompt('createEquipment')
+      return false
+    }
     setShowCreateEquipmentForm(false)
     setEquipmentForm(buildEmptyEquipmentForm())
     setEquipmentCreateError('')
@@ -1505,7 +1545,10 @@ export default function PortalDashboardPage() {
 
   function closeChangePasswordModal(force = false) {
     if (profile?.requiredPasswordChange) return false
-    if (!force && isPasswordDirty && !confirmDiscardUnsavedChanges()) return false
+    if (!force && isPasswordDirty) {
+      setUnsavedChangesPrompt('changePassword')
+      return false
+    }
     setShowChangePasswordModal(false)
     setPasswordForm(buildEmptyPasswordForm())
     setPasswordChangeError('')
@@ -1513,8 +1556,14 @@ export default function PortalDashboardPage() {
     return true
   }
 
-  function closeCreateReportForm(force = false) {
-    if (!force && isCreateReportDirty && !confirmDiscardUnsavedChanges()) return false
+  async function closeCreateReportForm(force = false) {
+    if (creatingReport || savingReportEdit) return false
+
+    if (!force && isCreateReportDirty) {
+      setReportUnsavedPrompt('create')
+      return false
+    }
+
     setShowCreateReportForm(false)
     setReportForm(buildEmptyReportForm())
     setCreateReportError('')
@@ -1522,11 +1571,141 @@ export default function PortalDashboardPage() {
     return true
   }
 
+  async function saveCreateReportDraftAndClose() {
+    if (creatingReport || savingReportEdit) return false
+    if (!isCreateReportDirty) {
+      setReportUnsavedPrompt('')
+      return closeCreateReportForm(true)
+    }
+
+    if (!activeSelectedEquipment?.id) {
+      setCreateReportError('Select equipment before saving a draft report.')
+      return false
+    }
+
+    const normalizedChecklistItems = normalizeReportChecklistItems(reportForm.checklist_items)
+
+    setCreatingReport(true)
+    setCreateReportError('')
+    try {
+      await createEquipmentReport(activeSelectedEquipment.id, {
+        ...reportForm,
+        checklist_items: normalizedChecklistItems,
+        status: 'draft',
+      })
+      const refreshed = await getEquipmentReports(activeSelectedEquipment.id)
+      setReports(refreshed)
+      await refreshEquipmentData()
+      showSuccessToast('Report draft saved.', 'Draft Saved')
+      setReportUnsavedPrompt('')
+      await closeCreateReportForm(true)
+      return true
+    } catch (error) {
+      setCreateReportError(String(error?.message || 'Unable to save report draft.'))
+      return false
+    } finally {
+      setCreatingReport(false)
+    }
+  }
+
   function closeCreateCertificateForm(force = false) {
-    if (!force && isCreateCertificateDirty && !confirmDiscardUnsavedChanges()) return false
+    if (!force && isCreateCertificateDirty) {
+      setUnsavedChangesPrompt('createCertificate')
+      return false
+    }
     setShowCreateCertificateForm(false)
     setCertificateForm(buildEmptyCertificateForm())
     return true
+  }
+
+  function clearPromptAndRun(action) {
+    setUnsavedChangesPrompt('')
+    action()
+  }
+
+  function handleUnsavedPromptSave() {
+    if (unsavedChangesPrompt === 'createCustomer') {
+      clearPromptAndRun(() => closeCreateCustomerForm(true))
+      return
+    }
+
+    if (unsavedChangesPrompt === 'editCustomer') {
+      clearPromptAndRun(() => closeEditCustomerForm(true))
+      return
+    }
+
+    if (unsavedChangesPrompt === 'createEmployee') {
+      clearPromptAndRun(() => closeCreateEmployeeForm(true))
+      return
+    }
+
+    if (unsavedChangesPrompt === 'createEquipment') {
+      clearPromptAndRun(() => closeCreateEquipmentForm(true))
+      return
+    }
+
+    if (unsavedChangesPrompt === 'changePassword') {
+      clearPromptAndRun(() => closeChangePasswordModal(true))
+      return
+    }
+
+    if (unsavedChangesPrompt === 'createCertificate') {
+      clearPromptAndRun(() => closeCreateCertificateForm(true))
+    }
+  }
+
+  function handleUnsavedPromptRevert() {
+    if (unsavedChangesPrompt === 'createCustomer') {
+      clearPromptAndRun(() => {
+        setShowCreateCustomerForm(false)
+        setCustomerCreateError('')
+        setCustomerForm(buildEmptyCustomerForm())
+      })
+      return
+    }
+
+    if (unsavedChangesPrompt === 'editCustomer') {
+      clearPromptAndRun(() => {
+        setShowEditCustomerForm(false)
+        setConfirmCustomerDeactivate(false)
+        setCustomerEditForm(buildEmptyCustomerEditForm())
+      })
+      return
+    }
+
+    if (unsavedChangesPrompt === 'createEmployee') {
+      clearPromptAndRun(() => {
+        setShowCreateEmployeeForm(false)
+        setEmployeeForm(buildEmptyEmployeeForm())
+      })
+      return
+    }
+
+    if (unsavedChangesPrompt === 'createEquipment') {
+      clearPromptAndRun(() => {
+        setShowCreateEquipmentForm(false)
+        setEquipmentForm(buildEmptyEquipmentForm())
+        setEquipmentCreateError('')
+      })
+      return
+    }
+
+    if (unsavedChangesPrompt === 'changePassword') {
+      clearPromptAndRun(() => {
+        setShowChangePasswordModal(false)
+        setPasswordForm(buildEmptyPasswordForm())
+        setPasswordChangeError('')
+        setPasswordChangeSuccess('')
+      })
+      return
+    }
+
+    if (unsavedChangesPrompt === 'createCertificate') {
+      clearPromptAndRun(() => {
+        setShowCreateCertificateForm(false)
+        setCertificateForm(buildEmptyCertificateForm())
+      })
+    }
   }
 
   function openCreateReportForm() {
@@ -1667,6 +1846,38 @@ export default function PortalDashboardPage() {
     isEditReportDirty,
     activeSelectedEquipment?.id,
     reportForm,
+  ])
+
+  useEffect(() => {
+    setConfirmDeleteDraftReportId('')
+  }, [viewedReport?.id])
+
+  useEffect(() => {
+    if (!showCreateReportForm && !showEditReportModal) {
+      setReportUnsavedPrompt('')
+    }
+  }, [showCreateReportForm, showEditReportModal])
+
+  useEffect(() => {
+    if (
+      showCreateCustomerForm ||
+      showEditCustomerForm ||
+      showCreateEmployeeForm ||
+      showCreateEquipmentForm ||
+      showChangePasswordModal ||
+      showCreateCertificateForm
+    ) {
+      return
+    }
+
+    setUnsavedChangesPrompt('')
+  }, [
+    showCreateCustomerForm,
+    showEditCustomerForm,
+    showCreateEmployeeForm,
+    showCreateEquipmentForm,
+    showChangePasswordModal,
+    showCreateCertificateForm,
   ])
 
   const customersLastUpdatedLabel = useMemo(
@@ -1957,7 +2168,7 @@ export default function PortalDashboardPage() {
       if (event.key !== 'Escape') return
 
       if (showCreateReportForm) {
-        closeCreateReportForm()
+        void closeCreateReportForm()
       }
 
       if (showCreateCertificateForm) {
@@ -2452,19 +2663,17 @@ export default function PortalDashboardPage() {
   }
 
   async function handleCreateReport(event) {
-    event.preventDefault()
+    event?.preventDefault?.()
     if (creatingReport || savingReportEdit) return
 
     const normalizedChecklistItems = normalizeReportChecklistItems(reportForm.checklist_items)
-    const missingChecklistNoteLabel = getMissingChecklistNoteLabel(normalizedChecklistItems)
-    if (missingChecklistNoteLabel) {
-      const message = `Add a note for '${missingChecklistNoteLabel}' before saving this report.`
-      if (isEditingReport) {
-        setEditReportError(message)
-      } else {
+    if (!isEditingReport) {
+      const missingChecklistNoteLabel = getMissingChecklistNoteLabel(normalizedChecklistItems)
+      if (missingChecklistNoteLabel) {
+        const message = `Add a note for '${missingChecklistNoteLabel}' before saving this report.`
         setCreateReportError(message)
+        return
       }
-      return
     }
 
     const refreshEquipmentList = async () => {
@@ -2518,6 +2727,7 @@ export default function PortalDashboardPage() {
         clearReportDraft()
         setReportForm(buildEmptyReportForm())
         setShowEditReportModal(false)
+        setReportUnsavedPrompt('')
       } catch (error) {
         setEditReportError(String(error?.message || 'Unable to save report changes.'))
       } finally {
@@ -2534,6 +2744,7 @@ export default function PortalDashboardPage() {
       await createEquipmentReport(activeSelectedEquipment.id, {
         ...reportForm,
         checklist_items: normalizedChecklistItems,
+        status: 'submitted',
       })
       const refreshed = await getEquipmentReports(activeSelectedEquipment.id)
       setReports(refreshed)
@@ -2541,6 +2752,7 @@ export default function PortalDashboardPage() {
       clearReportDraft()
       setReportForm(buildEmptyReportForm())
       setShowCreateReportForm(false)
+      setReportUnsavedPrompt('')
     } catch (error) {
       setCreateReportError(String(error?.message || 'Unable to create report.'))
     } finally {
@@ -3106,12 +3318,66 @@ export default function PortalDashboardPage() {
   }
 
   function handleCancelEdit(force = false) {
-    if (!force && isEditReportDirty && !confirmDiscardUnsavedChanges()) return
+    if (!force && isEditReportDirty) {
+      setReportUnsavedPrompt('edit')
+      return
+    }
     clearReportDraft()
     setReportForm(buildEmptyReportForm())
     setEditReportError('')
     setConfirmRemoveReportImageId('')
     setShowEditReportModal(false)
+  }
+
+  async function handleReportUnsavedPromptSave() {
+    if (reportUnsavedPrompt === 'create') {
+      await saveCreateReportDraftAndClose()
+      return
+    }
+
+    if (reportUnsavedPrompt === 'edit') {
+      await handleCreateReport()
+    }
+  }
+
+  function handleReportUnsavedPromptRevert() {
+    if (reportUnsavedPrompt === 'create') {
+      setReportUnsavedPrompt('')
+      void closeCreateReportForm(true)
+      return
+    }
+
+    if (reportUnsavedPrompt === 'edit') {
+      setReportUnsavedPrompt('')
+      handleCancelEdit(true)
+    }
+  }
+
+  async function handleDeleteDraftReport() {
+    if (!viewedReport?.id || deletingDraftReport) return
+
+    if (String(confirmDeleteDraftReportId) !== String(viewedReport.id)) {
+      setConfirmDeleteDraftReportId(String(viewedReport.id))
+      return
+    }
+
+    setDeletingDraftReport(true)
+    setViewedReportError('')
+    try {
+      await deleteReport(viewedReport.id)
+      if (activeSelectedEquipment?.id) {
+        const refreshed = await getEquipmentReports(activeSelectedEquipment.id)
+        setReports(refreshed)
+      }
+      await refreshEquipmentData()
+      setViewedReport(null)
+      setConfirmDeleteDraftReportId('')
+      showSuccessToast('Draft report deleted.', 'Draft Deleted')
+    } catch (error) {
+      setViewedReportError(String(error?.message || 'Unable to delete draft report.'))
+    } finally {
+      setDeletingDraftReport(false)
+    }
   }
 
   function canEditReport(report) {
@@ -3120,18 +3386,9 @@ export default function PortalDashboardPage() {
     return report.status === 'draft' && Number(report.submitted_by) === Number(profile?.id)
   }
 
-  function reportStatusOptions() {
-    if (isEditingReport && isOwner) {
-      return [
-        { value: 'submitted', label: 'Submitted' },
-        { value: 'approved', label: 'Approved' },
-      ]
-    }
-
-    return [
-      { value: 'draft', label: 'Draft' },
-      { value: 'submitted', label: 'Submitted' },
-    ]
+  function canDeleteDraftReport(report) {
+    if (!report) return false
+    return String(report.status || '').toLowerCase() === 'draft' && Number(report.submitted_by) === Number(profile?.id)
   }
 
   function updateReportChecklistItems(nextChecklistItems) {
@@ -4631,7 +4888,7 @@ export default function PortalDashboardPage() {
         {canEditReports && showCreateReportForm && (
           <div
             className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
-            onClick={() => closeCreateReportForm()}
+            onClick={() => void closeCreateReportForm()}
           >
             <form
               className="max-h-[calc(100vh-7rem)] w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
@@ -4642,7 +4899,7 @@ export default function PortalDashboardPage() {
                 <h3 className="text-lg font-bold text-[#123A7A]">Create New Report</h3>
                 <button
                   type="button"
-                  onClick={() => closeCreateReportForm()}
+                  onClick={() => void closeCreateReportForm()}
                   className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
                 >
                   Close
@@ -4701,22 +4958,6 @@ export default function PortalDashboardPage() {
                     className="mt-1 min-h-20 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                   />
                 </label>
-                <label className="text-sm font-semibold text-slate-700 md:max-w-xs">
-                  Status
-                  <select
-                    value={reportForm.status}
-                    onChange={(event) =>
-                      setReportForm((current) => ({ ...current, status: event.target.value }))
-                    }
-                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  >
-                    {reportStatusOptions().map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
                 <ReportChecklistEditor
                   checklistItems={normalizedReportChecklistItems}
                   onChange={updateReportChecklistItems}
@@ -4752,7 +4993,7 @@ export default function PortalDashboardPage() {
                 disabled={creatingReport}
                 className="mt-4 rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168] disabled:opacity-70"
               >
-                {creatingReport ? 'Creating...' : 'Create Report'}
+                {creatingReport ? 'Submitting...' : 'Submit Report'}
               </button>
             </form>
           </div>
@@ -5034,6 +5275,20 @@ export default function PortalDashboardPage() {
                     Edit Report
                   </button>
                 )}
+                {canDeleteDraftReport(viewedReport) && (
+                  <button
+                    type="button"
+                    onClick={handleDeleteDraftReport}
+                    disabled={deletingDraftReport}
+                    className="rounded border border-rose-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-rose-700 transition hover:bg-rose-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    {deletingDraftReport
+                      ? 'Deleting...'
+                      : String(confirmDeleteDraftReportId) === String(viewedReport.id)
+                        ? 'Confirm Delete Draft'
+                        : 'Delete Draft'}
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -5111,7 +5366,7 @@ export default function PortalDashboardPage() {
         {showEditReportModal && (
           <div
             className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
-            onClick={handleCancelEdit}
+            onClick={() => handleCancelEdit()}
           >
             <div
               className="max-h-[calc(100vh-7rem)] w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
@@ -5121,7 +5376,7 @@ export default function PortalDashboardPage() {
                 <h3 className="text-lg font-bold text-[#123A7A]">Edit Report</h3>
                 <button
                   type="button"
-                  onClick={handleCancelEdit}
+                  onClick={() => handleCancelEdit()}
                   className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
                 >
                   Close
@@ -5180,22 +5435,6 @@ export default function PortalDashboardPage() {
                       }
                       className="mt-1 min-h-20 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                     />
-                  </label>
-                  <label className="text-sm font-semibold text-slate-700 md:max-w-xs">
-                    Status
-                    <select
-                      value={reportForm.status}
-                      onChange={(event) =>
-                        setReportForm((current) => ({ ...current, status: event.target.value }))
-                      }
-                      className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                    >
-                      {reportStatusOptions().map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
                   </label>
                   <ReportChecklistEditor
                     checklistItems={normalizedReportChecklistItems}
@@ -5282,6 +5521,88 @@ export default function PortalDashboardPage() {
             </div>
           </div>
         )}
+
+        <Modal
+          open={Boolean(reportUnsavedPrompt)}
+          onClose={() => setReportUnsavedPrompt('')}
+          closeOnBackdrop={false}
+          closeOnEscape={false}
+          panelClassName="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+        >
+          <h3 className="text-lg font-bold text-[#123A7A]">Save Changes?</h3>
+          <p className="text-sm text-slate-700">
+            {reportUnsavedPrompt === 'create'
+              ? 'You have unsaved changes for this new report. Save as draft or clear changes?'
+              : 'You have unsaved edits for this report. Save changes or revert?'}
+          </p>
+          <div className="mt-5 flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setReportUnsavedPrompt('')}
+              className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 transition hover:bg-slate-100"
+            >
+              Continue Editing
+            </button>
+            <button
+              type="button"
+              onClick={handleReportUnsavedPromptRevert}
+              disabled={creatingReport || savingReportEdit}
+              className="rounded border border-rose-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-rose-700 transition hover:bg-rose-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {reportUnsavedPrompt === 'create' ? 'Clear Changes' : 'Revert Changes'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleReportUnsavedPromptSave()}
+              disabled={creatingReport || savingReportEdit}
+              className="rounded border border-[#123A7A] bg-[#123A7A] px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-[#0f3168] disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {reportUnsavedPrompt === 'create'
+                ? creatingReport
+                  ? 'Saving Draft...'
+                  : 'Save as Draft'
+                : savingReportEdit
+                  ? 'Saving...'
+                  : 'Save Changes'}
+            </button>
+          </div>
+        </Modal>
+
+        <Modal
+          open={Boolean(unsavedChangesPrompt)}
+          onClose={() => setUnsavedChangesPrompt('')}
+          closeOnBackdrop={false}
+          closeOnEscape={false}
+          panelClassName="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+        >
+          <h3 className="text-lg font-bold text-[#123A7A]">Save Changes?</h3>
+          <p className="text-sm text-slate-700">
+            You have unsaved changes. Save them or revert to discard the edits.
+          </p>
+          <div className="mt-5 flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setUnsavedChangesPrompt('')}
+              className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 transition hover:bg-slate-100"
+            >
+              Continue Editing
+            </button>
+            <button
+              type="button"
+              onClick={handleUnsavedPromptRevert}
+              className="rounded border border-rose-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-rose-700 transition hover:bg-rose-600 hover:text-white"
+            >
+              Revert Changes
+            </button>
+            <button
+              type="button"
+              onClick={handleUnsavedPromptSave}
+              className="rounded border border-[#123A7A] bg-[#123A7A] px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-[#0f3168]"
+            >
+              Save Changes
+            </button>
+          </div>
+        </Modal>
 
         {showRevisionsModal && (
           <div
