@@ -15,6 +15,7 @@ export default function CustomerListSection({
   customerCreateError,
   customerEditError,
   onRefreshCustomers,
+  onExportCustomers,
   refreshingCustomers,
   loading,
   visibleCustomers,
@@ -49,6 +50,13 @@ export default function CustomerListSection({
             className="rounded-md border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
           >
             {refreshingCustomers ? 'Refreshing Customers...' : 'Refresh Customers'}
+          </button>
+          <button
+            type="button"
+            onClick={onExportCustomers}
+            className="rounded-md border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+          >
+            Export Customers CSV
           </button>
           {isOwner && (
             <button

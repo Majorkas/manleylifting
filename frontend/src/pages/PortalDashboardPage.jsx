@@ -8,6 +8,7 @@ import PortalToast from '../components/PortalToast'
 import PendingApprovalsSection from '../components/PendingApprovalsSection'
 import PortalLayout from '../components/PortalLayout'
 import usePageMeta from '../utils/usePageMeta'
+import { exportRowsToCsv } from '../utils/csvExport'
 import {
   changePortalPassword,
   createStaffAssignment,
@@ -352,6 +353,46 @@ function formatRevisionDateTime(value) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(date)
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function buildPrintDocument(title, contentHtml) {
+  return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 24px; color: #0f172a; }
+      h1 { margin: 0 0 12px; font-size: 22px; }
+      h2 { margin: 18px 0 8px; font-size: 16px; color: #1e3a8a; }
+      p { margin: 6px 0; line-height: 1.45; }
+      .meta { margin-bottom: 14px; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc; }
+      .section { margin-top: 14px; }
+      .card { border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px 12px; margin-top: 10px; }
+      ul { margin: 8px 0 0 18px; }
+      li { margin: 6px 0; }
+      table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+      th, td { border: 1px solid #cbd5e1; padding: 8px; text-align: left; font-size: 13px; }
+      th { background: #eff6ff; color: #1e3a8a; }
+      .muted { color: #475569; font-size: 12px; }
+      @media print {
+        body { margin: 12mm; }
+      }
+    </style>
+  </head>
+  <body>
+    ${contentHtml}
+  </body>
+</html>`
 }
 
 function formatDateDDMMYYYY(value) {
@@ -882,6 +923,225 @@ export default function PortalDashboardPage() {
   const visibleEquipment = urgencyFilteredEquipment.slice(equipmentStartIndex, equipmentStartIndex + equipmentPageSize)
   const equipmentRangeStart = urgencyFilteredEquipment.length === 0 ? 0 : equipmentStartIndex + 1
   const equipmentRangeEnd = Math.min(equipmentStartIndex + equipmentPageSize, urgencyFilteredEquipment.length)
+
+  function buildExportDateSuffix() {
+    return new Date().toISOString().slice(0, 10)
+  }
+
+  function handleExportCustomersCsv() {
+    const rows = filteredCustomers.map((item) => ({
+      id: item.id,
+      name: item.name,
+      contact_email: item.contact_email,
+      contact_phone: item.contact_phone,
+      address: item.address,
+      inspections_due_count: Number(item.inspections_due_count || 0),
+      inspections_overdue_count: Number(item.inspections_overdue_count || 0),
+      is_active: item.is_active,
+    }))
+
+    exportRowsToCsv({
+      filename: `customers-${buildExportDateSuffix()}.csv`,
+      columns: [
+        { key: 'id', header: 'ID' },
+        { key: 'name', header: 'Customer Name' },
+        { key: 'contact_email', header: 'Email' },
+        { key: 'contact_phone', header: 'Phone' },
+        { key: 'address', header: 'Address' },
+        { key: 'inspections_due_count', header: 'Due (14d)' },
+        { key: 'inspections_overdue_count', header: 'Overdue' },
+        { key: 'is_active', header: 'Active' },
+      ],
+      rows,
+    })
+
+    setPortalToast({
+      title: 'Customers Exported',
+      message: `${rows.length} customer row${rows.length === 1 ? '' : 's'} exported to CSV.`,
+    })
+  }
+
+  function handleExportEquipmentCsv() {
+    const rows = urgencyFilteredEquipment.map((item) => ({
+      id: item.id,
+      name: item.name,
+      asset_tag: item.asset_tag,
+      serial_number: item.serial_number,
+      location: item.location,
+      status: item.status,
+      inspection_interval_days: item.inspection_interval_days,
+      last_inspected_at: item.last_inspected_at,
+      next_inspection_due: item.next_inspection_due,
+      notes: item.notes,
+    }))
+
+    exportRowsToCsv({
+      filename: `equipment-${buildExportDateSuffix()}.csv`,
+      columns: [
+        { key: 'id', header: 'ID' },
+        { key: 'name', header: 'Name' },
+        { key: 'asset_tag', header: 'Asset Tag' },
+        { key: 'serial_number', header: 'Serial Number' },
+        { key: 'location', header: 'Location' },
+        { key: 'status', header: 'Status' },
+        { key: 'inspection_interval_days', header: 'Inspection Interval (Days)' },
+        { key: 'last_inspected_at', header: 'Last Inspected' },
+        { key: 'next_inspection_due', header: 'Next Inspection Due' },
+        { key: 'notes', header: 'Notes' },
+      ],
+      rows,
+    })
+
+    setPortalToast({
+      title: 'Equipment Exported',
+      message: `${rows.length} equipment row${rows.length === 1 ? '' : 's'} exported to CSV.`,
+    })
+  }
+
+  function handleExportReportsCsv() {
+    const rows = filteredReports.map((report) => ({
+      id: report.id,
+      equipment_id: report.equipment_id || activeSelectedEquipment?.id || '',
+      equipment_name: report.equipment_name || activeSelectedEquipment?.name || '',
+      title: report.title,
+      report_date: report.report_date,
+      status: report.status,
+      submitted_by_name: report.submitted_by_name,
+      summary: report.summary,
+      findings: report.findings,
+      recommendations: report.recommendations,
+    }))
+
+    exportRowsToCsv({
+      filename: `reports-${buildExportDateSuffix()}.csv`,
+      columns: [
+        { key: 'id', header: 'Report ID' },
+        { key: 'equipment_id', header: 'Equipment ID' },
+        { key: 'equipment_name', header: 'Equipment Name' },
+        { key: 'title', header: 'Title' },
+        { key: 'report_date', header: 'Report Date' },
+        { key: 'status', header: 'Status' },
+        { key: 'submitted_by_name', header: 'Inspector' },
+        { key: 'summary', header: 'Summary' },
+        { key: 'findings', header: 'Findings' },
+        { key: 'recommendations', header: 'Recommendations' },
+      ],
+      rows,
+    })
+
+    setPortalToast({
+      title: 'Reports Exported',
+      message: `${rows.length} report row${rows.length === 1 ? '' : 's'} exported to CSV.`,
+    })
+  }
+
+  function handlePrintViewedReport() {
+    if (!viewedReport) return
+
+    const checklistSections = getChecklistSections(viewedReport.checklist_items)
+    const wornItemsHtml =
+      checklistSections.worn.length === 0
+        ? '<p class="muted">None reported.</p>'
+        : `<ul>${checklistSections.worn
+            .map((item) => `<li><strong>${escapeHtml(item.label)}</strong>: ${escapeHtml(item.note || '-')}</li>`)
+            .join('')}</ul>`
+    const attentionItemsHtml =
+      checklistSections.attention.length === 0
+        ? '<p class="muted">None reported.</p>'
+        : `<ul>${checklistSections.attention
+            .map((item) => `<li><strong>${escapeHtml(item.label)}</strong>: ${escapeHtml(item.note || '-')}</li>`)
+            .join('')}</ul>`
+
+    const reportHtml = `
+      <h1>${escapeHtml(viewedReport.title || 'Inspection Report')}</h1>
+      <div class="meta">
+        <p><strong>Equipment:</strong> ${escapeHtml(viewedReport.equipment_name || activeSelectedEquipment?.name || '-')}</p>
+        <p><strong>Date:</strong> ${escapeHtml(viewedReport.report_date || '-')}</p>
+        <p><strong>Status:</strong> ${escapeHtml(viewedReport.status || '-')}</p>
+        <p><strong>Inspector:</strong> ${escapeHtml(viewedReport.submitted_by_name || '-')}</p>
+      </div>
+      <div class="section">
+        <h2>Summary</h2>
+        <p>${escapeHtml(viewedReport.summary || '-')}</p>
+      </div>
+      <div class="section">
+        <h2>Findings</h2>
+        <p>${escapeHtml(viewedReport.findings || '-')}</p>
+      </div>
+      <div class="section">
+        <h2>Recommendations</h2>
+        <p>${escapeHtml(viewedReport.recommendations || '-')}</p>
+      </div>
+      <div class="section">
+        <h2>Worn but Servicable</h2>
+        <div class="card">${wornItemsHtml}</div>
+      </div>
+      <div class="section">
+        <h2>Attention Required</h2>
+        <div class="card">${attentionItemsHtml}</div>
+      </div>
+    `
+
+    const printWindow = window.open('', '_blank', 'noopener,noreferrer,width=980,height=760')
+    if (!printWindow) return
+    printWindow.document.open()
+    printWindow.document.write(buildPrintDocument(`Report - ${viewedReport.title || 'Inspection Report'}`, reportHtml))
+    printWindow.document.close()
+    printWindow.focus()
+    printWindow.print()
+  }
+
+  function handlePrintCertificates() {
+    if (!activeSelectedEquipment) return
+
+    const certificatesRowsHtml = certificates.length
+      ? certificates
+          .map(
+            (certificate) => `
+              <tr>
+                <td>${escapeHtml(certificate.title || `Certificate ${certificate.id}`)}</td>
+                <td>${escapeHtml(certificate.issue_date || '-')}</td>
+                <td>${escapeHtml(certificate.expiry_date || '-')}</td>
+                <td>${escapeHtml(certificate.created_at ? String(certificate.created_at).slice(0, 10) : '-')}</td>
+              </tr>
+            `,
+          )
+          .join('')
+      : '<tr><td colspan="4">No certificates uploaded for this equipment.</td></tr>'
+
+    const certificatesHtml = `
+      <h1>Certificate Register</h1>
+      <div class="meta">
+        <p><strong>Equipment:</strong> ${escapeHtml(activeSelectedEquipment.name || '-')}</p>
+        <p><strong>Asset Tag:</strong> ${escapeHtml(activeSelectedEquipment.asset_tag || '-')}</p>
+        <p><strong>Serial Number:</strong> ${escapeHtml(activeSelectedEquipment.serial_number || '-')}</p>
+      </div>
+      <div class="section">
+        <h2>Certificates</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Title</th>
+              <th>Issue Date</th>
+              <th>Expiry Date</th>
+              <th>Uploaded</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${certificatesRowsHtml}
+          </tbody>
+        </table>
+      </div>
+    `
+
+    const printWindow = window.open('', '_blank', 'noopener,noreferrer,width=980,height=760')
+    if (!printWindow) return
+    printWindow.document.open()
+    printWindow.document.write(buildPrintDocument(`Certificates - ${activeSelectedEquipment.name || 'Equipment'}`, certificatesHtml))
+    printWindow.document.close()
+    printWindow.focus()
+    printWindow.print()
+  }
   const equipmentNextDuePreview = useMemo(
     () => calculateNextInspectionDue(equipmentForm.last_inspected_at, equipmentForm.inspection_interval_days),
     [equipmentForm.inspection_interval_days, equipmentForm.last_inspected_at],
@@ -2790,6 +3050,7 @@ export default function PortalDashboardPage() {
             onCustomerSearchChange={setCustomerSearchInput}
             customerCreateError={customerCreateError}
             customerEditError={customerEditError}
+            onExportCustomers={handleExportCustomersCsv}
             loading={loading}
             visibleCustomers={visibleCustomers}
             filteredCustomers={filteredCustomers}
@@ -2934,6 +3195,7 @@ export default function PortalDashboardPage() {
             }}
             equipmentCreateError={equipmentCreateError}
             onRefreshEquipment={refreshEquipmentData}
+            onExportEquipment={handleExportEquipmentCsv}
             refreshingEquipment={refreshingEquipment}
             loading={loading}
             equipment={equipment}
@@ -3114,8 +3376,15 @@ export default function PortalDashboardPage() {
             )}
 
             <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
-              <div className="bg-slate-50 px-4 py-3">
+              <div className="flex items-center justify-between gap-3 bg-slate-50 px-4 py-3">
                 <h3 className="text-sm font-semibold text-slate-700">Certificates</h3>
+                <button
+                  type="button"
+                  onClick={handlePrintCertificates}
+                  className="rounded-md border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                >
+                  Print Certificates
+                </button>
               </div>
 
               <div className="overflow-x-auto">
@@ -3169,7 +3438,7 @@ export default function PortalDashboardPage() {
 
 
             <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
-              <div className="bg-slate-50 px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 px-4 py-3">
                 <label className="flex items-center gap-3 text-sm font-semibold text-slate-700">
                   Filter by Year:
                   <select
@@ -3185,6 +3454,13 @@ export default function PortalDashboardPage() {
                     ))}
                   </select>
                 </label>
+                <button
+                  type="button"
+                  onClick={handleExportReportsCsv}
+                  className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                >
+                  Export Reports CSV
+                </button>
               </div>
               {isMobileViewport && (
                 <div className="space-y-3 p-3">
@@ -4323,16 +4599,25 @@ export default function PortalDashboardPage() {
                   <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#C61F2A]">Report Details</p>
                   <h3 className="mt-1 text-xl font-extrabold text-[#123A7A]">{viewedReport.title || 'Untitled Report'}</h3>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setViewedReportError('')
-                    setViewedReport(null)
-                  }}
-                  className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
-                >
-                  Close
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handlePrintViewedReport}
+                    className="rounded border border-[#123A7A] bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                  >
+                    Print Report
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setViewedReportError('')
+                      setViewedReport(null)
+                    }}
+                    className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
+                  >
+                    Close
+                  </button>
+                </div>
               </div>
 
               <div className="mt-4 grid gap-2 text-sm text-slate-700 md:grid-cols-2">

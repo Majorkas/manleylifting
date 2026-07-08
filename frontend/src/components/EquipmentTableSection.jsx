@@ -10,6 +10,7 @@ export default function EquipmentTableSection({
   onOpenCreateEquipment,
   equipmentCreateError,
   onRefreshEquipment,
+  onExportEquipment,
   refreshingEquipment,
   loading,
   equipment,
@@ -84,6 +85,13 @@ export default function EquipmentTableSection({
             className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
           >
             {refreshingEquipment ? 'Refreshing Equipment...' : 'Refresh Equipment'}
+          </button>
+          <button
+            type="button"
+            onClick={onExportEquipment}
+            className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+          >
+            Export Equipment CSV
           </button>
           <form
             className="flex w-full gap-2"
