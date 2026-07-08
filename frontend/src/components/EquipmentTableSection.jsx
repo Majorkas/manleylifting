@@ -134,10 +134,10 @@ export default function EquipmentTableSection({
         </div>
       ) : (
         <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
-          <div className="flex items-end gap-1 border-b border-slate-300 bg-slate-50 px-3 pt-2">
+          <div className="flex flex-wrap items-end gap-1 border-b border-slate-300 bg-slate-50 px-3 pt-2">
             <button
               onClick={() => onSetEquipmentTableTab('active')}
-              className={`-mb-px rounded-t-lg border px-4 py-2.5 text-sm font-semibold transition ${
+              className={`-mb-px rounded-t-lg border px-3 py-2.5 text-xs font-semibold transition sm:px-4 sm:text-sm ${
                 equipmentTableTab === 'active'
                   ? 'border-slate-300 border-b-white bg-white text-[#123A7A] shadow-sm'
                   : 'border-transparent bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800'
@@ -147,7 +147,7 @@ export default function EquipmentTableSection({
             </button>
             <button
               onClick={() => onSetEquipmentTableTab('decommissioned')}
-              className={`-mb-px rounded-t-lg border px-4 py-2.5 text-sm font-semibold transition ${
+              className={`-mb-px rounded-t-lg border px-3 py-2.5 text-xs font-semibold transition sm:px-4 sm:text-sm ${
                 equipmentTableTab === 'decommissioned'
                   ? 'border-slate-300 border-b-white bg-white text-[#123A7A] shadow-sm'
                   : 'border-transparent bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800'
@@ -155,13 +155,13 @@ export default function EquipmentTableSection({
             >
               Decommissioned Equipment ({decommissionedEquipment.length})
             </button>
-            <div className="ml-auto pb-2">
-              <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
+            <div className="w-full pb-2 sm:ml-auto sm:w-auto">
+              <label className="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-600 sm:justify-end">
                 Urgency
                 <select
                   value={inspectionUrgencyFilter}
                   onChange={(event) => onInspectionUrgencyFilterChange(event.target.value)}
-                  className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700"
+                  className="min-w-[140px] rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700"
                 >
                   <option value="all">All</option>
                   <option value="overdue">Overdue</option>
