@@ -148,6 +148,14 @@ function prettifyRawMessage(path, status, rawMessage, body) {
     return 'The certificate file content does not match its extension. Upload a valid PDF or image file.'
   }
 
+  if (normalized.includes('certificate recovery window has expired')) {
+    return 'This certificate can no longer be recovered because the 3-day recovery window has expired.'
+  }
+
+  if (normalized.includes('report recovery window has expired')) {
+    return 'This report can no longer be recovered because the 3-day recovery window has expired.'
+  }
+
   if (normalized.includes('report images must')) {
     return 'Unsupported image type. Upload PNG, JPG, JPEG, or WEBP images only.'
   }
@@ -648,6 +656,18 @@ export async function deleteReport(reportId) {
   return parseResponse(response, path)
 }
 
+export async function recoverReport(reportId) {
+  const path = '/portal/reports/' + encodeURIComponent(String(reportId)) + '/recover/'
+  const response = await authFetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  })
+  return parseResponse(response, path)
+}
+
 export async function getReportRevisions(reportId) {
   const path = '/portal/reports/' + encodeURIComponent(String(reportId)) + '/revisions/'
   const response = await authFetch(path)
@@ -693,4 +713,24 @@ export async function downloadCertificate(certificateId) {
     throw new Error('Failed to download certificate')
   }
   return response.blob()
+}
+
+export async function deleteEquipmentCertificate(certificateId) {
+  const path = '/portal/certificates/' + encodeURIComponent(String(certificateId)) + '/'
+  const response = await authFetch(path, {
+    method: 'DELETE',
+  })
+  return parseResponse(response, path)
+}
+
+export async function recoverEquipmentCertificate(certificateId) {
+  const path = '/portal/certificates/' + encodeURIComponent(String(certificateId)) + '/recover/'
+  const response = await authFetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  })
+  return parseResponse(response, path)
 }

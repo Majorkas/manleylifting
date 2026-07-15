@@ -4,6 +4,7 @@ import CustomerListSection from '../components/CustomerListSection'
 import EmployeeControlsSection from '../components/EmployeeControlsSection'
 import EquipmentTableSection from '../components/EquipmentTableSection'
 import Modal from '../components/Modal'
+import PaginationControls from '../components/PaginationControls'
 import PortalToast from '../components/PortalToast'
 import PendingApprovalsSection from '../components/PendingApprovalsSection'
 import PortalLayout from '../components/PortalLayout'
@@ -12,6 +13,7 @@ import { exportRowsToCsv } from '../utils/csvExport'
 import {
   changePortalPassword,
   createStaffAssignment,
+  deleteEquipmentCertificate,
   downloadCertificate,
   deleteStaffAssignment,
   reactivateStaffAssignment,
@@ -30,6 +32,8 @@ import {
   getPortalMe,
   getAccessToken,
   getPendingReportApprovals,
+  recoverEquipmentCertificate,
+  recoverReport,
   getReportRevisions,
   getStaffAssignments,
   hasPortalSession,
@@ -519,6 +523,10 @@ function getActivityActionLabel(action) {
   const normalized = String(action || '').trim().toLowerCase()
   if (normalized === 'equipment.status_changed') return 'Equipment status changed'
   if (normalized === 'certificate.uploaded') return 'Certificate uploaded'
+  if (normalized === 'certificate.deleted') return 'Certificate deleted'
+  if (normalized === 'certificate.recovered') return 'Certificate recovered'
+  if (normalized === 'report.deleted') return 'Report deleted'
+  if (normalized === 'report.recovered') return 'Report recovered'
   if (normalized === 'report.approved') return 'Report approved'
 
   return normalized
@@ -528,10 +536,144 @@ function getActivityActionLabel(action) {
     : 'Activity updated'
 }
 
+function getActivityActionBadge(action) {
+  const normalized = String(action || '').trim().toLowerCase()
+
+  if (normalized === 'equipment.status_changed') {
+    return { color: 'bg-amber-100 text-amber-800 border-amber-300' }
+  }
+
+  if (normalized === 'certificate.uploaded') {
+    return { color: 'bg-blue-100 text-blue-800 border-blue-300' }
+  }
+
+  if (normalized === 'certificate.deleted') {
+    return { color: 'bg-red-100 text-red-800 border-red-300' }
+  }
+
+  if (normalized === 'certificate.recovered') {
+    return { color: 'bg-emerald-100 text-emerald-800 border-emerald-300' }
+  }
+
+  if (normalized === 'report.deleted') {
+    return { color: 'bg-rose-100 text-rose-800 border-rose-300' }
+  }
+
+  if (normalized === 'report.recovered') {
+    return { color: 'bg-emerald-100 text-emerald-800 border-emerald-300' }
+  }
+
+  if (normalized === 'report.approved') {
+    return { color: 'bg-emerald-100 text-emerald-800 border-emerald-300' }
+  }
+
+  return { color: 'bg-slate-100 text-slate-700 border-slate-300' }
+}
+
+function formatActivityDetails(details) {
+  if (!details || typeof details !== 'object') return 'No additional details'
+
+  const entries = Object.entries(details)
+  if (entries.length === 0) return 'No additional details'
+
+  return entries
+    .map(([key, value]) => {
+      const label = String(key)
+        .replace(/[._-]+/g, ' ')
+        .replace(/\b\w/g, (char) => char.toUpperCase())
+
+      let nextValue = '-'
+      if (Array.isArray(value)) {
+        nextValue = value.filter(Boolean).join(', ') || '-'
+      } else if (value && typeof value === 'object') {
+        const nested = Object.entries(value)
+          .map(([nestedKey, nestedValue]) => `${nestedKey}: ${String(nestedValue ?? '-')}`)
+          .join(', ')
+        nextValue = nested || '-'
+      } else if (value !== null && value !== undefined && value !== '') {
+        nextValue = String(value)
+      }
+
+      return `${label}: ${nextValue}`
+    })
+    .join(' • ')
+}
+
 function formatActivityTimestamp(value) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return '-'
   return date.toLocaleString()
+}
+
+function getActivityCertificateId(entry) {
+  const details = entry?.details || {}
+  const certificateId = Number(details.certificate_id || entry?.target_id || 0)
+  if (!Number.isFinite(certificateId) || certificateId <= 0) return 0
+  return certificateId
+}
+
+function getActivityReportId(entry) {
+  const details = entry?.details || {}
+  const reportId = Number(details.report_id || entry?.target_id || 0)
+  if (!Number.isFinite(reportId) || reportId <= 0) return 0
+  return reportId
+}
+
+function getActivityRecoveryState(entry, nowMs, recoveredAtMsByRecoverableTarget) {
+  const action = String(entry?.action || '').trim().toLowerCase()
+  const isCertificateAction = action.startsWith('certificate.')
+  const isReportAction = action.startsWith('report.')
+  const targetType = isCertificateAction ? 'certificate' : isReportAction ? 'report' : ''
+  const targetId = targetType === 'certificate' ? getActivityCertificateId(entry) : getActivityReportId(entry)
+
+  if (action === 'certificate.recovered' || action === 'report.recovered') {
+    if (!targetId || !targetType) {
+      return { targetType: '', targetId: 0, canRecover: false, expiresAtMs: 0, label: '', status: 'none' }
+    }
+    return { targetType, targetId, canRecover: false, expiresAtMs: 0, label: 'Recovered', status: 'recovered' }
+  }
+
+  if (action !== 'certificate.deleted' && action !== 'report.deleted') {
+    return { targetType: '', targetId: 0, canRecover: false, expiresAtMs: 0, label: '', status: 'none' }
+  }
+
+  const details = entry?.details || {}
+  if (!targetId || !targetType) {
+    return { targetType: '', targetId: 0, canRecover: false, expiresAtMs: 0, label: '', status: 'none' }
+  }
+
+  const recoveryKey = `${targetType}:${targetId}`
+  const deletedAtMs = new Date(entry?.created_at).getTime()
+  const recoveredAtMs = Number(recoveredAtMsByRecoverableTarget?.get(recoveryKey) || 0)
+  if (Number.isFinite(deletedAtMs) && deletedAtMs > 0 && recoveredAtMs > deletedAtMs) {
+    return { targetType, targetId, canRecover: false, expiresAtMs: 0, label: 'Recovered', status: 'recovered' }
+  }
+
+  const expiryDate = new Date(details.recovery_expires_at)
+  if (Number.isNaN(expiryDate.getTime())) {
+    return { targetType, targetId, canRecover: false, expiresAtMs: 0, label: 'Recovery window unavailable', status: 'expired' }
+  }
+
+  const expiresAtMs = expiryDate.getTime()
+  if (expiresAtMs <= nowMs) {
+    return {
+      targetType,
+      targetId,
+      canRecover: false,
+      expiresAtMs,
+      label: `Recovery expired ${formatActivityTimestamp(expiryDate.toISOString())}`,
+      status: 'expired',
+    }
+  }
+
+  return {
+    targetType,
+    targetId,
+    canRecover: true,
+    expiresAtMs,
+    label: `Recover by ${formatActivityTimestamp(expiryDate.toISOString())}`,
+    status: 'recoverable',
+  }
 }
 
 function isKeyboardEditableTarget(target) {
@@ -757,6 +899,7 @@ export default function PortalDashboardPage() {
   const initialEquipmentPage = parsePositiveInt(searchParams.get('eqPage'), 1)
   const initialCustomerPage = parsePositiveInt(searchParams.get('customersPage'), 1)
   const initialEmployeePage = parsePositiveInt(searchParams.get('employeesPage'), 1)
+  const initialPendingApprovalsPage = parsePositiveInt(searchParams.get('pendingApprovalsPage'), 1)
   const isAuthenticated = hasPortalSession()
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
@@ -792,8 +935,13 @@ export default function PortalDashboardPage() {
   const [equipmentActivity, setEquipmentActivity] = useState([])
   const [equipmentActivityLoading, setEquipmentActivityLoading] = useState(false)
   const [equipmentActivityError, setEquipmentActivityError] = useState('')
+  const [equipmentActivityPage, setEquipmentActivityPage] = useState(1)
   const [, setCertificateSuccess] = useState('')
   const [downloadingCertificateId, setDownloadingCertificateId] = useState(0)
+  const [deletingCertificateId, setDeletingCertificateId] = useState(0)
+  const [recoveringCertificateId, setRecoveringCertificateId] = useState(0)
+  const [recoveringReportId, setRecoveringReportId] = useState(0)
+  const [confirmDeleteCertificate, setConfirmDeleteCertificate] = useState(null)
   const [showCreateCertificateForm, setShowCreateCertificateForm] = useState(false)
   const [creatingCertificate, setCreatingCertificate] = useState(false)
   const [certificateForm, setCertificateForm] = useState(buildEmptyCertificateForm())
@@ -855,6 +1003,7 @@ export default function PortalDashboardPage() {
   const [employeeControlsTab, setEmployeeControlsTab] = useState('active')
   const [employeeSearchInput, setEmployeeSearchInput] = useState('')
   const [employeePage, setEmployeePage] = useState(initialEmployeePage)
+  const [pendingApprovalsPage, setPendingApprovalsPage] = useState(initialPendingApprovalsPage)
   const [companyPickerUserId, setCompanyPickerUserId] = useState('')
   const [companyPickerSearchInput, setCompanyPickerSearchInput] = useState('')
   const [savingStaffUserId, setSavingStaffUserId] = useState(0)
@@ -905,9 +1054,12 @@ export default function PortalDashboardPage() {
     [generatedEmployeeBaseUsername, existingEmployeeUsernames],
   )
   const selectedCompanyId = searchParams.get('companyId') || ''
+
   const equipmentPageSize = 10
   const customerPageSize = 6
   const employeePageSize = 5
+  const pendingApprovalsPageSize = 6
+  const equipmentActivityPageSize = 4
 
   const canEditReports = useMemo(
     () => ['owner', 'office_staff', 'staff', 'engineer'].includes(profile?.role),
@@ -931,6 +1083,7 @@ export default function PortalDashboardPage() {
   }, [reports, reportYearFilter])
   const showsCustomerPicker = canEditReports && !selectedCompanyId
   const isOwner = profile?.role === 'owner' || profile?.role === 'office_staff'
+  const canViewEquipmentActivity = isOwner
   const isStaff = profile?.role === 'staff' || profile?.role === 'engineer'
   const activeSelectedEquipment = useMemo(() => {
     if (!selectedEquipment) return null
@@ -992,18 +1145,78 @@ export default function PortalDashboardPage() {
 
   const equipmentTotalPages = Math.max(1, Math.ceil(urgencyFilteredEquipment.length / equipmentPageSize))
   const equipmentStartIndex = (equipmentPage - 1) * equipmentPageSize
-  const visibleEquipment = urgencyFilteredEquipment.slice(equipmentStartIndex, equipmentStartIndex + equipmentPageSize)
+  const visibleEquipment = useMemo(
+    () => urgencyFilteredEquipment.slice(equipmentStartIndex, equipmentStartIndex + equipmentPageSize),
+    [urgencyFilteredEquipment, equipmentStartIndex, equipmentPageSize],
+  )
   const equipmentRangeStart = urgencyFilteredEquipment.length === 0 ? 0 : equipmentStartIndex + 1
   const equipmentRangeEnd = Math.min(equipmentStartIndex + equipmentPageSize, urgencyFilteredEquipment.length)
 
+  const pendingApprovalsTotalPages = Math.max(1, Math.ceil(pendingReportApprovals.length / pendingApprovalsPageSize))
+  const pendingApprovalsStartIndex = (pendingApprovalsPage - 1) * pendingApprovalsPageSize
+  const visiblePendingApprovals = useMemo(
+    () => pendingReportApprovals.slice(pendingApprovalsStartIndex, pendingApprovalsStartIndex + pendingApprovalsPageSize),
+    [pendingReportApprovals, pendingApprovalsStartIndex, pendingApprovalsPageSize],
+  )
+  const pendingApprovalsRangeStart = pendingReportApprovals.length === 0 ? 0 : pendingApprovalsStartIndex + 1
+  const pendingApprovalsRangeEnd = Math.min(pendingApprovalsStartIndex + pendingApprovalsPageSize, pendingReportApprovals.length)
+
+  const equipmentActivityTotalPages = Math.max(1, Math.ceil(equipmentActivity.length / equipmentActivityPageSize))
+  const equipmentActivityStartIndex = (equipmentActivityPage - 1) * equipmentActivityPageSize
+  const visibleEquipmentActivity = useMemo(
+    () => equipmentActivity.slice(equipmentActivityStartIndex, equipmentActivityStartIndex + equipmentActivityPageSize),
+    [equipmentActivity, equipmentActivityStartIndex, equipmentActivityPageSize],
+  )
+  const equipmentActivityRangeStart = equipmentActivity.length === 0 ? 0 : equipmentActivityStartIndex + 1
+  const equipmentActivityRangeEnd = Math.min(
+    equipmentActivityStartIndex + equipmentActivityPageSize,
+    equipmentActivity.length,
+  )
+  const recoveredAtMsByRecoverableTarget = useMemo(() => {
+    const next = new Map()
+    equipmentActivity
+      .filter((entry) => {
+        const action = String(entry?.action || '').trim().toLowerCase()
+        return action === 'certificate.recovered' || action === 'report.recovered'
+      })
+      .forEach((entry) => {
+        const action = String(entry?.action || '').trim().toLowerCase()
+        const targetType = action.startsWith('certificate.') ? 'certificate' : action.startsWith('report.') ? 'report' : ''
+        const targetId = targetType === 'certificate' ? getActivityCertificateId(entry) : getActivityReportId(entry)
+        const recoveredAtMs = new Date(entry?.created_at).getTime()
+        if (!targetType || !targetId || !Number.isFinite(recoveredAtMs) || recoveredAtMs <= 0) return
+
+        const recoveryKey = `${targetType}:${targetId}`
+
+        const previousRecoveredAtMs = Number(next.get(recoveryKey) || 0)
+        if (recoveredAtMs > previousRecoveredAtMs) {
+          next.set(recoveryKey, recoveredAtMs)
+        }
+      })
+
+    return next
+  }, [equipmentActivity])
+
   useEffect(() => {
-    const validPendingIds = new Set(pendingReportApprovals.map((item) => String(item.id)))
-    setSelectedPendingApprovalIds((current) => current.filter((id) => validPendingIds.has(String(id))))
-  }, [pendingReportApprovals])
+    const validPendingIds = new Set(visiblePendingApprovals.map((item) => String(item.id)))
+    setSelectedPendingApprovalIds((current) => {
+      const next = current.filter((id) => validPendingIds.has(String(id)))
+      if (next.length === current.length && next.every((id, index) => id === current[index])) {
+        return current
+      }
+      return next
+    })
+  }, [visiblePendingApprovals])
 
   useEffect(() => {
     const validEquipmentIds = new Set(activeEquipment.map((item) => String(item.id)))
-    setSelectedEquipmentIds((current) => current.filter((id) => validEquipmentIds.has(String(id))))
+    setSelectedEquipmentIds((current) => {
+      const next = current.filter((id) => validEquipmentIds.has(String(id)))
+      if (next.length === current.length && next.every((id, index) => id === current[index])) {
+        return current
+      }
+      return next
+    })
   }, [activeEquipment])
 
   function buildExportDateSuffix() {
@@ -1404,6 +1617,7 @@ export default function PortalDashboardPage() {
       showEditReportModal ||
       showRevisionsModal ||
       showCreateCertificateForm ||
+      confirmDeleteCertificate ||
       showCreateReportForm ||
       showCreateCustomerForm ||
       showEditCustomerForm ||
@@ -1975,6 +2189,12 @@ export default function PortalDashboardPage() {
   }, [equipmentPage, equipmentTotalPages])
 
   useEffect(() => {
+    if (equipmentActivityPage > equipmentActivityTotalPages) {
+      setEquipmentActivityPage(equipmentActivityTotalPages)
+    }
+  }, [equipmentActivityPage, equipmentActivityTotalPages])
+
+  useEffect(() => {
     if (customerPage > customerTotalPages) {
       setCustomerPage(customerTotalPages)
     }
@@ -2009,6 +2229,10 @@ export default function PortalDashboardPage() {
     }
     setEquipmentPage(1)
   }, [equipmentSortKey, equipmentSortDirection, inspectionUrgencyFilter])
+
+  useEffect(() => {
+    setEquipmentActivityPage(1)
+  }, [activeSelectedEquipment?.id])
 
   useEffect(() => {
     setExpandedEquipmentCardId('')
@@ -2463,7 +2687,12 @@ export default function PortalDashboardPage() {
     let cancelled = false
 
     async function loadEquipmentActivity() {
-      if (!activeSelectedEquipment?.id) return
+      if (!activeSelectedEquipment?.id || !canViewEquipmentActivity) {
+        setEquipmentActivity([])
+        setEquipmentActivityError('')
+        setEquipmentActivityLoading(false)
+        return
+      }
 
       setEquipmentActivityLoading(true)
       setEquipmentActivityError('')
@@ -2483,7 +2712,7 @@ export default function PortalDashboardPage() {
     return () => {
       cancelled = true
     }
-  }, [activeSelectedEquipment?.id])
+  }, [activeSelectedEquipment?.id, canViewEquipmentActivity])
 
   useEffect(() => {
     let cancelled = false
@@ -2813,6 +3042,97 @@ export default function PortalDashboardPage() {
       setCertificateError(String(error?.message || 'Unable to download certificate.'))
     } finally {
       setDownloadingCertificateId(0)
+    }
+  }
+
+  async function handleDeleteCertificate(certificate) {
+    if (!isOwner || !certificate?.id || deletingCertificateId || recoveringCertificateId || recoveringReportId) return
+
+    setConfirmDeleteCertificate({
+      id: Number(certificate.id),
+      title: String(certificate.title || `Certificate #${certificate.id}`),
+    })
+  }
+
+  async function confirmDeleteCertificateAction() {
+    if (!confirmDeleteCertificate?.id || deletingCertificateId || recoveringCertificateId || recoveringReportId) return
+
+    const certificateId = Number(confirmDeleteCertificate.id)
+
+    setDeletingCertificateId(certificateId)
+    setCertificateError('')
+    setCertificateSuccess('')
+    try {
+      await deleteEquipmentCertificate(certificateId)
+      if (activeSelectedEquipment?.id) {
+        const [nextCertificates, nextActivity] = await Promise.all([
+          getEquipmentCertificates(activeSelectedEquipment.id),
+          canViewEquipmentActivity ? getEquipmentActivity(activeSelectedEquipment.id) : Promise.resolve([]),
+        ])
+        setCertificates(nextCertificates)
+        if (canViewEquipmentActivity) {
+          setEquipmentActivity(nextActivity)
+        }
+      }
+      setCertificateSuccess('Certificate deleted. It can be recovered for 3 days from Equipment Activity.')
+      showSuccessToast('Certificate deleted. Recovery is available for 3 days.', 'Certificate Deleted')
+      setConfirmDeleteCertificate(null)
+    } catch (error) {
+      setCertificateError(String(error?.message || 'Unable to delete certificate.'))
+    } finally {
+      setDeletingCertificateId(0)
+    }
+  }
+
+  async function handleRecoverActivityFromEntry(entry) {
+    if (!isOwner || deletingCertificateId || deletingDraftReport || recoveringCertificateId || recoveringReportId) return
+
+    const recoveryState = getActivityRecoveryState(entry, Date.now(), recoveredAtMsByRecoverableTarget)
+    if (!recoveryState.canRecover || !recoveryState.targetType || !recoveryState.targetId) {
+      setCertificateError('This item can no longer be recovered.')
+      return
+    }
+
+    if (recoveryState.targetType === 'certificate') {
+      setRecoveringCertificateId(recoveryState.targetId)
+    } else if (recoveryState.targetType === 'report') {
+      setRecoveringReportId(recoveryState.targetId)
+    }
+
+    setCertificateError('')
+    setCertificateSuccess('')
+    try {
+      if (recoveryState.targetType === 'certificate') {
+        await recoverEquipmentCertificate(recoveryState.targetId)
+      } else {
+        await recoverReport(recoveryState.targetId)
+      }
+
+      if (activeSelectedEquipment?.id) {
+        const [nextReports, nextCertificates, nextActivity] = await Promise.all([
+          getEquipmentReports(activeSelectedEquipment.id),
+          getEquipmentCertificates(activeSelectedEquipment.id),
+          canViewEquipmentActivity ? getEquipmentActivity(activeSelectedEquipment.id) : Promise.resolve([]),
+        ])
+        setReports(nextReports)
+        setCertificates(nextCertificates)
+        if (canViewEquipmentActivity) {
+          setEquipmentActivity(nextActivity)
+        }
+      }
+
+      if (recoveryState.targetType === 'certificate') {
+        setCertificateSuccess('Certificate recovered successfully.')
+        showSuccessToast('Certificate recovered successfully.', 'Certificate Recovered')
+      } else {
+        setCertificateSuccess('Report recovered successfully.')
+        showSuccessToast('Report recovered successfully.', 'Report Recovered')
+      }
+    } catch (error) {
+      setCertificateError(String(error?.message || 'Unable to recover item.'))
+    } finally {
+      setRecoveringCertificateId(0)
+      setRecoveringReportId(0)
     }
   }
 
@@ -3371,13 +3691,19 @@ export default function PortalDashboardPage() {
     try {
       await deleteReport(viewedReport.id)
       if (activeSelectedEquipment?.id) {
-        const refreshed = await getEquipmentReports(activeSelectedEquipment.id)
+        const [refreshed, nextActivity] = await Promise.all([
+          getEquipmentReports(activeSelectedEquipment.id),
+          canViewEquipmentActivity ? getEquipmentActivity(activeSelectedEquipment.id) : Promise.resolve([]),
+        ])
         setReports(refreshed)
+        if (canViewEquipmentActivity) {
+          setEquipmentActivity(nextActivity)
+        }
       }
       await refreshEquipmentData()
       setViewedReport(null)
       setConfirmDeleteDraftReportId('')
-      showSuccessToast('Draft report deleted.', 'Draft Deleted')
+      showSuccessToast('Draft report deleted. Recovery is available for 3 days.', 'Draft Deleted')
     } catch (error) {
       setViewedReportError(String(error?.message || 'Unable to delete draft report.'))
     } finally {
@@ -3393,7 +3719,9 @@ export default function PortalDashboardPage() {
 
   function canDeleteDraftReport(report) {
     if (!report) return false
-    return String(report.status || '').toLowerCase() === 'draft' && Number(report.submitted_by) === Number(profile?.id)
+    if (String(report.status || '').toLowerCase() !== 'draft') return false
+    if (isOwner) return true
+    return Number(report.submitted_by) === Number(profile?.id)
   }
 
   function updateReportChecklistItems(nextChecklistItems) {
@@ -3414,6 +3742,7 @@ export default function PortalDashboardPage() {
     setCertificateForm(buildEmptyCertificateForm())
     setShowCreateReportForm(false)
     setShowCreateCertificateForm(false)
+    setConfirmDeleteCertificate(null)
     setShowEditReportModal(false)
     setConfirmRemoveReportImageId('')
     setCreateReportError('')
@@ -3466,6 +3795,43 @@ export default function PortalDashboardPage() {
               className="rounded-md bg-[#123A7A] px-3 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168] disabled:opacity-70"
             >
               {refreshingSession ? 'Refreshing Session...' : 'Stay Logged In'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+      <Modal
+        open={Boolean(confirmDeleteCertificate)}
+        onClose={() => {
+          if (deletingCertificateId) return
+          setConfirmDeleteCertificate(null)
+        }}
+        panelClassName="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+      >
+        <div onClick={(event) => event.stopPropagation()}>
+          <h3 className="text-lg font-bold text-[#123A7A]">Delete Certificate?</h3>
+          <p className="mt-2 text-sm text-slate-600">
+            Delete{' '}
+            <span className="font-semibold text-slate-800">
+              {confirmDeleteCertificate?.title || 'this certificate'}
+            </span>
+            ? You can recover it from Equipment Activity for 3 days.
+          </p>
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirmDeleteCertificate(null)}
+              disabled={Boolean(deletingCertificateId)}
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-[#123A7A] hover:text-[#123A7A] disabled:opacity-70"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={confirmDeleteCertificateAction}
+              disabled={Boolean(deletingCertificateId)}
+              className="rounded-md border border-red-300 bg-white px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-600 hover:text-white disabled:opacity-70"
+            >
+              {deletingCertificateId ? 'Deleting...' : 'Delete Certificate'}
             </button>
           </div>
         </div>
@@ -3612,7 +3978,7 @@ export default function PortalDashboardPage() {
 
         {showsCustomerPicker && isOwner && (
           <PendingApprovalsSection
-            pendingReportApprovals={pendingReportApprovals}
+            pendingReportApprovals={visiblePendingApprovals}
             pendingApprovalsLoading={pendingApprovalsLoading}
             pendingApprovalsError={pendingApprovalsError}
             lastUpdatedLabel={pendingApprovalsLastUpdatedLabel}
@@ -3627,6 +3993,23 @@ export default function PortalDashboardPage() {
               setViewedReport(report)
             }}
             getReportStatusBadge={getReportStatusBadge}
+            currentPage={pendingApprovalsPage}
+            totalPages={pendingApprovalsTotalPages}
+            onPageChange={(newPage) => {
+              setPendingApprovalsPage(newPage)
+              setSearchParams((prev) => {
+                const next = new URLSearchParams(prev)
+                if (newPage === 1) {
+                  next.delete('pendingApprovalsPage')
+                } else {
+                  next.set('pendingApprovalsPage', String(newPage))
+                }
+                return next
+              })
+            }}
+            totalCount={pendingReportApprovals.length}
+            rangeStart={pendingApprovalsRangeStart}
+            rangeEnd={pendingApprovalsRangeEnd}
           />
         )}
 
@@ -3858,7 +4241,7 @@ export default function PortalDashboardPage() {
               </div>
             )}
 
-            {equipmentActivityError && (
+            {canViewEquipmentActivity && equipmentActivityError && (
               <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                 {equipmentActivityError}
               </div>
@@ -3888,48 +4271,188 @@ export default function PortalDashboardPage() {
               <span className="font-semibold">Alt+E</span> export reports CSV.
             </p>
 
-            <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
-              <div className="bg-slate-50 px-4 py-3">
-                <h3 className="text-sm font-semibold text-slate-700">Equipment Activity</h3>
-              </div>
+            {canViewEquipmentActivity && (
+              <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
+                <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 px-4 py-3">
+                  <h3 className="text-sm font-semibold text-slate-700">Equipment Activity</h3>
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="rounded-full border border-slate-300 bg-white px-2.5 py-1 font-semibold text-slate-700">
+                      {equipmentActivity.length} entries
+                    </span>
+                    {equipmentActivity[0]?.created_at ? (
+                      <span className="rounded-full border border-slate-300 bg-white px-2.5 py-1 text-slate-600">
+                        Latest: {formatActivityTimestamp(equipmentActivity[0].created_at)}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
 
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[880px] border-collapse text-left text-sm">
-                  <thead className="bg-[#123A7A] text-white">
-                    <tr>
-                      <th className="px-4 py-3 font-semibold">When</th>
-                      <th className="px-4 py-3 font-semibold">Who</th>
-                      <th className="px-4 py-3 font-semibold">Action</th>
-                      <th className="px-4 py-3 font-semibold">Details</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {equipmentActivityLoading ? (
+                {/* Desktop Table View */}
+                <div className="hidden overflow-x-auto md:block">
+                  <table className="w-full border-collapse text-left text-sm">
+                    <thead className="bg-[#123A7A] text-white">
                       <tr>
-                        <td className="px-4 py-4 text-slate-500" colSpan={4}>
-                          Loading activity...
-                        </td>
+                        <th className="px-4 py-3 font-semibold">Date &amp; Time</th>
+                        <th className="px-4 py-3 font-semibold">Performed By</th>
+                        <th className="px-4 py-3 font-semibold">Activity Type</th>
+                        <th className="px-4 py-3 font-semibold">Details</th>
+                        <th className="px-4 py-3 font-semibold">Recovery</th>
                       </tr>
-                    ) : equipmentActivity.length === 0 ? (
-                      <tr>
-                        <td className="px-4 py-4 text-slate-500" colSpan={4}>
-                          No activity has been recorded for this equipment.
-                        </td>
-                      </tr>
-                    ) : (
-                      equipmentActivity.map((entry) => (
-                        <tr key={entry.id} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
-                          <td className="px-4 py-3 text-slate-700">{formatActivityTimestamp(entry.created_at)}</td>
-                          <td className="px-4 py-3 text-slate-700">{entry.actor_name || 'System'}</td>
-                          <td className="px-4 py-3 font-semibold text-slate-800">{getActivityActionLabel(entry.action)}</td>
-                          <td className="px-4 py-3 text-slate-700">{JSON.stringify(entry.details || {})}</td>
+                    </thead>
+                    <tbody>
+                      {equipmentActivityLoading ? (
+                        <tr>
+                          <td className="px-4 py-4 text-slate-500" colSpan={5}>
+                            Loading activity log...
+                          </td>
                         </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
+                      ) : equipmentActivity.length === 0 ? (
+                        <tr>
+                          <td className="px-4 py-4 text-slate-500" colSpan={5}>
+                            No activity has been recorded for this equipment yet.
+                          </td>
+                        </tr>
+                      ) : (
+                        visibleEquipmentActivity.map((entry) => {
+                          const activityLabel = getActivityActionLabel(entry.action)
+                          const activityBadge = getActivityActionBadge(entry.action)
+                          const recoveryState = getActivityRecoveryState(entry, nowMs, recoveredAtMsByRecoverableTarget)
+                          const isRecovering = recoveryState.targetType === 'certificate'
+                            ? recoveringCertificateId === recoveryState.targetId
+                            : recoveryState.targetType === 'report'
+                              ? recoveringReportId === recoveryState.targetId
+                              : false
+                          return (
+                            <tr key={entry.id} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
+                              <td className="px-4 py-3 text-slate-700">{formatActivityTimestamp(entry.created_at)}</td>
+                              <td className="px-4 py-3 text-slate-700">{entry.actor_name || 'System'}</td>
+                              <td className="px-4 py-3">
+                                <span
+                                  className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${activityBadge.color}`}
+                                >
+                                  {activityLabel}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-slate-700">{formatActivityDetails(entry.details)}</td>
+                              <td className="px-4 py-3 text-slate-700">
+                                {recoveryState.targetId ? (
+                                  <div className="flex flex-col gap-1">
+                                    <span className="text-xs text-slate-600">{recoveryState.label}</span>
+                                    {isOwner && recoveryState.canRecover && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleRecoverActivityFromEntry(entry)}
+                                        disabled={isRecovering || deletingCertificateId > 0 || deletingDraftReport}
+                                        className="w-fit rounded border border-emerald-600 px-2 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        {isRecovering
+                                          ? 'Recovering...'
+                                          : recoveryState.targetType === 'report'
+                                            ? 'Recover Report'
+                                            : 'Recover'}
+                                      </button>
+                                    )}
+                                    {recoveryState.status === 'recovered' && (
+                                      <span className="w-fit rounded-full border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">
+                                        Recovered
+                                      </span>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <span className="text-xs text-slate-500">-</span>
+                                )}
+                              </td>
+                            </tr>
+                          )
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Mobile Card View */}
+                <div className="space-y-2 bg-white p-4 md:hidden">
+                  {equipmentActivityLoading ? (
+                    <div className="rounded-lg bg-slate-100 px-4 py-6 text-center text-sm text-slate-500">
+                      Loading activity log...
+                    </div>
+                  ) : equipmentActivity.length === 0 ? (
+                    <div className="rounded-lg bg-slate-100 px-4 py-6 text-center text-sm text-slate-500">
+                      No activity has been recorded for this equipment yet.
+                    </div>
+                  ) : (
+                    visibleEquipmentActivity.map((entry) => {
+                      const activityLabel = getActivityActionLabel(entry.action)
+                      const activityBadge = getActivityActionBadge(entry.action)
+                      const recoveryState = getActivityRecoveryState(entry, nowMs, recoveredAtMsByRecoverableTarget)
+                      const isRecovering = recoveryState.targetType === 'certificate'
+                        ? recoveringCertificateId === recoveryState.targetId
+                        : recoveryState.targetType === 'report'
+                          ? recoveringReportId === recoveryState.targetId
+                          : false
+                      return (
+                        <div key={entry.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3.5">
+                          <div className="mb-2 flex items-start justify-between gap-2">
+                            <span
+                              className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold ${activityBadge.color}`}
+                            >
+                              {activityLabel}
+                            </span>
+                            <span className="text-xs font-semibold text-slate-700">{entry.actor_name || 'System'}</span>
+                          </div>
+                          <p className="mb-1 text-xs font-semibold text-slate-700">{formatActivityTimestamp(entry.created_at)}</p>
+                          <p className="text-xs leading-relaxed text-slate-600">{formatActivityDetails(entry.details)}</p>
+                          {recoveryState.targetId && (
+                            <div className="mt-2 flex items-center justify-between gap-2">
+                              <span className="text-[11px] text-slate-600">{recoveryState.label}</span>
+                              {isOwner && recoveryState.canRecover && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRecoverActivityFromEntry(entry)}
+                                  disabled={isRecovering || deletingCertificateId > 0 || deletingDraftReport}
+                                  className="rounded border border-emerald-600 px-2 py-1 text-[11px] font-semibold text-emerald-700 transition hover:bg-emerald-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  {isRecovering
+                                    ? 'Recovering...'
+                                    : recoveryState.targetType === 'report'
+                                      ? 'Recover Report'
+                                      : 'Recover'}
+                                </button>
+                              )}
+                              {recoveryState.status === 'recovered' && (
+                                <span className="rounded-full border border-emerald-300 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700">
+                                  Recovered
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })
+                  )}
+                </div>
+
+                {equipmentActivityTotalPages > 1 && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
+                    <p className="text-xs text-slate-600">
+                      Showing <span className="font-semibold">{equipmentActivityRangeStart}</span> to{' '}
+                      <span className="font-semibold">{equipmentActivityRangeEnd}</span> of{' '}
+                      <span className="font-semibold">{equipmentActivity.length}</span> activity entries
+                    </p>
+                    <PaginationControls
+                      page={equipmentActivityPage}
+                      totalPages={equipmentActivityTotalPages}
+                      onPrevious={() =>
+                        setEquipmentActivityPage((current) => Math.max(1, current - 1))
+                      }
+                      onNext={() =>
+                        setEquipmentActivityPage((current) => Math.min(equipmentActivityTotalPages, current + 1))
+                      }
+                    />
+                  </div>
+                )}
               </div>
-            </div>
+            )}
 
             <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
               <div className="flex items-center justify-between gap-3 bg-slate-50 px-4 py-3">
@@ -3975,15 +4498,28 @@ export default function PortalDashboardPage() {
                           <td className="px-4 py-3 text-slate-700">{certificate.expiry_date || '-'}</td>
                           <td className="px-4 py-3 text-slate-700">{certificate.created_at ? String(certificate.created_at).slice(0, 10) : '-'}</td>
                           <td className="px-4 py-3 text-slate-700">
-                            <button
-                              type="button"
-                              onClick={() => handleDownloadCertificate(certificate)}
-                              aria-label={`Download certificate ${certificate.title || certificate.id}`}
-                              disabled={downloadingCertificateId === Number(certificate.id)}
-                              className="rounded border border-[#123A7A] px-2 py-1 text-xs font-semibold text-[#123A7A] disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                              {downloadingCertificateId === Number(certificate.id) ? 'Downloading...' : 'Download'}
-                            </button>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => handleDownloadCertificate(certificate)}
+                                aria-label={`Download certificate ${certificate.title || certificate.id}`}
+                                disabled={downloadingCertificateId === Number(certificate.id) || deletingCertificateId === Number(certificate.id)}
+                                className="rounded border border-[#123A7A] px-2 py-1 text-xs font-semibold text-[#123A7A] disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {downloadingCertificateId === Number(certificate.id) ? 'Downloading...' : 'Download'}
+                              </button>
+                              {isOwner && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteCertificate(certificate)}
+                                  aria-label={`Delete certificate ${certificate.title || certificate.id}`}
+                                  disabled={deletingCertificateId === Number(certificate.id) || downloadingCertificateId > 0}
+                                  className="rounded border border-red-300 px-2 py-1 text-xs font-semibold text-red-700 transition hover:bg-red-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  {deletingCertificateId === Number(certificate.id) ? 'Deleting...' : 'Delete'}
+                                </button>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))
