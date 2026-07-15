@@ -1,11 +1,21 @@
+from django.conf import settings
+
 from .models import AuditLog
 
 
 def _request_ip(request):
+    remote_addr = str(request.META.get("REMOTE_ADDR") or "").strip()
     forwarded_for = str(request.META.get("HTTP_X_FORWARDED_FOR") or "").strip()
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    return str(request.META.get("REMOTE_ADDR") or "").strip() or None
+
+    trust_forwarded = bool(getattr(settings, "TRUST_X_FORWARDED_FOR", False))
+    trusted_proxies = set(getattr(settings, "TRUSTED_PROXY_IPS", []) or [])
+
+    if trust_forwarded and forwarded_for and (not trusted_proxies or remote_addr in trusted_proxies):
+        first_hop = forwarded_for.split(",")[0].strip()
+        if first_hop:
+            return first_hop
+
+    return remote_addr or None
 
 
 def log_portal_audit_event(*, request, action, target_type, target_id="", company=None, details=None):

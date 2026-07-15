@@ -12,6 +12,7 @@ from ..portal_views import (
     _is_employee_role,
     _is_owner,
     _paginate_queryset,
+    _revoke_user_refresh_tokens,
     _suggest_available_username,
     _visible_company_ids,
 )
@@ -150,6 +151,7 @@ def portal_staff_assignments(request):
 
         profile.user.is_active = False
         profile.user.save(update_fields=["is_active"])
+        _revoke_user_refresh_tokens(profile.user)
         log_portal_audit_event(
             request=request,
             action="staff.deactivated",
@@ -188,6 +190,8 @@ def portal_staff_assignments(request):
         previous_active = bool(profile.user.is_active)
         profile.user.is_active = bool(payload["is_active"])
         profile.user.save(update_fields=["is_active"])
+        if previous_active and not profile.user.is_active:
+            _revoke_user_refresh_tokens(profile.user)
         if previous_active != bool(profile.user.is_active):
             change_details["is_active"] = {"from": previous_active, "to": bool(profile.user.is_active)}
 

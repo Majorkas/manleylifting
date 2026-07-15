@@ -972,8 +972,11 @@ class PortalRBACTests(TestCase):
         self.client.force_authenticate(user=self.staff_user)
         response = self.client.delete(f"/api/portal/reports/{report.id}/")
 
-        self.assertEqual(response.status_code, 204)
-        self.assertFalse(InspectionReport.objects.filter(id=report.id).exists())
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data.get("ok"))
+        report.refresh_from_db()
+        self.assertTrue(report.is_deleted)
+        self.assertIsNotNone(report.recovery_expires_at)
 
     def test_staff_cannot_delete_another_users_draft_report(self):
         other_staff = get_user_model().objects.create_user(username="staff3", password="testpass123")

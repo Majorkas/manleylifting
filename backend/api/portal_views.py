@@ -20,6 +20,7 @@ from rest_framework.decorators import api_view, permission_classes, throttle_cla
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .auth_cookies import clear_refresh_cookie
@@ -153,6 +154,12 @@ def _selected_company(user, company_id):
     if company_id:
         return companies.filter(id=company_id).first()
     return companies.order_by("name").first()
+
+
+def _revoke_user_refresh_tokens(user):
+    """Blacklist every outstanding refresh token for a user (e.g. after password change or deactivation)."""
+    for token in OutstandingToken.objects.filter(user=user):
+        BlacklistedToken.objects.get_or_create(token=token)
 
 
 def _validate_certificate_upload(uploaded_file):
@@ -383,6 +390,9 @@ def portal_change_password(request):
 
     request.user.set_password(new_password)
     request.user.save()
+
+    # Invalidate every other session: old refresh tokens must not survive a password change.
+    _revoke_user_refresh_tokens(request.user)
 
     profile = _profile_for_user(request.user)
     if profile.required_password_change:

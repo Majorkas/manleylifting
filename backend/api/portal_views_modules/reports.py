@@ -153,6 +153,7 @@ def portal_dashboard_stats(request):
     due_soon_count = equipment.filter(next_inspection_due__gte=today, next_inspection_due__lte=due_soon_cutoff).count()
     pending_approvals_count = InspectionReport.objects.filter(
         status=InspectionReport.STATUS_SUBMITTED,
+        is_deleted=False,
         equipment__company_id__in=visible_ids,
     ).count()
 
