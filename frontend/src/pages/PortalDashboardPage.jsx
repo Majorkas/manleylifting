@@ -3724,6 +3724,25 @@ export default function PortalDashboardPage() {
     return Number(report.submitted_by) === Number(profile?.id)
   }
 
+  function appendReportImages(fileList) {
+    const nextFiles = Array.from(fileList || []).filter(Boolean)
+    if (nextFiles.length === 0) return
+
+    setReportForm((current) => ({
+      ...current,
+      images: [...(Array.isArray(current.images) ? current.images : []), ...nextFiles],
+    }))
+  }
+
+  function removePendingReportImageAt(indexToRemove) {
+    setReportForm((current) => ({
+      ...current,
+      images: (Array.isArray(current.images) ? current.images : []).filter(
+        (_, index) => index !== indexToRemove,
+      ),
+    }))
+  }
+
   function updateReportChecklistItems(nextChecklistItems) {
     setReportForm((current) => ({
       ...current,
@@ -5525,16 +5544,36 @@ export default function PortalDashboardPage() {
                     type="file"
                     accept="image/*"
                     multiple
-                    onChange={(event) =>
-                      setReportForm((current) => ({
-                        ...current,
-                        images: Array.from(event.target.files || []),
-                      }))
-                    }
+                    onChange={(event) => {
+                      appendReportImages(event.target.files)
+                      event.target.value = ''
+                    }}
                     className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                   />
                   {reportForm.images.length > 0 && (
-                    <p className="mt-1 text-xs text-slate-500">{reportForm.images.length} image(s) selected</p>
+                    <>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {reportForm.images.length} image(s) selected. You can add more by choosing again.
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {reportForm.images.map((file, index) => (
+                          <div
+                            key={`${file.name}-${file.lastModified}-${index}`}
+                            className="inline-flex max-w-full items-center gap-2 rounded-full border border-slate-300 bg-slate-50 px-2.5 py-1 text-xs text-slate-700"
+                          >
+                            <span className="max-w-48 truncate" title={file.name}>{file.name}</span>
+                            <button
+                              type="button"
+                              onClick={() => removePendingReportImageAt(index)}
+                              className="rounded-full border border-slate-300 bg-white px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 transition hover:border-rose-400 hover:text-rose-700"
+                              aria-label={`Remove ${file.name}`}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </>
                   )}
                 </label>
               </div>
@@ -6005,16 +6044,36 @@ export default function PortalDashboardPage() {
                       type="file"
                       accept="image/*"
                       multiple
-                      onChange={(event) =>
-                        setReportForm((current) => ({
-                          ...current,
-                          images: Array.from(event.target.files || []),
-                        }))
-                      }
+                      onChange={(event) => {
+                        appendReportImages(event.target.files)
+                        event.target.value = ''
+                      }}
                       className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                     />
                     {reportForm.images.length > 0 && (
-                      <p className="mt-1 text-xs text-slate-500">{reportForm.images.length} image(s) selected</p>
+                      <>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {reportForm.images.length} image(s) selected. You can add more by choosing again.
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {reportForm.images.map((file, index) => (
+                            <div
+                              key={`${file.name}-${file.lastModified}-${index}`}
+                              className="inline-flex max-w-full items-center gap-2 rounded-full border border-slate-300 bg-slate-50 px-2.5 py-1 text-xs text-slate-700"
+                            >
+                              <span className="max-w-48 truncate" title={file.name}>{file.name}</span>
+                              <button
+                                type="button"
+                                onClick={() => removePendingReportImageAt(index)}
+                                className="rounded-full border border-slate-300 bg-white px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 transition hover:border-rose-400 hover:text-rose-700"
+                                aria-label={`Remove ${file.name}`}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </>
                     )}
                   </label>
                   {reportForm.existingImages.length > 0 && (
