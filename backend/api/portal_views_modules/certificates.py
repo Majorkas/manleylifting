@@ -1,6 +1,8 @@
 import os
+from datetime import timedelta
 
 from django.http import FileResponse
+from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
@@ -9,9 +11,12 @@ from rest_framework.response import Response
 
 from ..audit import log_portal_audit_event
 from ..models import Certificate, Equipment, InspectionReport
-from ..portal_views import _is_staff_or_owner, _validate_certificate_upload, _visible_company_ids
+from ..portal_views import _is_owner, _is_staff_or_owner, _validate_certificate_upload, _visible_company_ids
 from ..serializers import CertificateSerializer
 from ..throttles import PortalMethodRateThrottle
+
+
+CERTIFICATE_RECOVERY_WINDOW_DAYS = 3
 
 
 @api_view(["GET", "POST"])
@@ -26,7 +31,7 @@ def portal_equipment_certificates(request, equipment_id):
         return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == "GET":
-        certificates = Certificate.objects.filter(equipment_id=equipment.id).order_by("-created_at")
+        certificates = Certificate.objects.filter(equipment_id=equipment.id, is_deleted=False).order_by("-created_at")
         serializer = CertificateSerializer(certificates, many=True, context={"request": request})
         return Response({"results": serializer.data})
 
@@ -91,6 +96,9 @@ def portal_certificate_download(request, certificate_id):
     if not certificate:
         return Response({"detail": "Certificate not found"}, status=status.HTTP_404_NOT_FOUND)
 
+    if certificate.is_deleted:
+        return Response({"detail": "Certificate not found"}, status=status.HTTP_404_NOT_FOUND)
+
     if certificate.company_id not in _visible_company_ids(request.user):
         return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -99,3 +107,100 @@ def portal_certificate_download(request, certificate_id):
 
     filename = os.path.basename(certificate.file.name)
     return FileResponse(certificate.file.open("rb"), as_attachment=True, filename=filename)
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
+def portal_certificate_delete(request, certificate_id):
+    certificate = Certificate.objects.select_related("company", "equipment").filter(id=certificate_id).first()
+    if not certificate:
+        return Response({"detail": "Certificate not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if certificate.company_id not in _visible_company_ids(request.user):
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if not _is_owner(request.user):
+        return Response({"detail": "Insufficient permissions"}, status=status.HTTP_403_FORBIDDEN)
+
+    now = timezone.now()
+    recovery_expires_at = now + timedelta(days=CERTIFICATE_RECOVERY_WINDOW_DAYS)
+
+    if not certificate.is_deleted:
+        certificate.is_deleted = True
+        certificate.deleted_at = now
+        certificate.deleted_by = request.user
+        certificate.recovery_expires_at = recovery_expires_at
+        certificate.save(update_fields=["is_deleted", "deleted_at", "deleted_by", "recovery_expires_at"])
+
+        log_portal_audit_event(
+            request=request,
+            action="certificate.deleted",
+            target_type="certificate",
+            target_id=certificate.id,
+            company=certificate.company,
+            details={
+                "certificate_id": certificate.id,
+                "equipment_id": certificate.equipment_id,
+                "title": certificate.title,
+                "recovery_expires_at": recovery_expires_at.isoformat(),
+            },
+        )
+
+    return Response(
+        {
+            "ok": True,
+            "certificate_id": certificate.id,
+            "recovery_expires_at": (
+                certificate.recovery_expires_at.isoformat() if certificate.recovery_expires_at else recovery_expires_at.isoformat()
+            ),
+        }
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
+def portal_certificate_recover(request, certificate_id):
+    certificate = Certificate.objects.select_related("company", "equipment").filter(id=certificate_id).first()
+    if not certificate:
+        return Response({"detail": "Certificate not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if certificate.company_id not in _visible_company_ids(request.user):
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if not _is_owner(request.user):
+        return Response({"detail": "Insufficient permissions"}, status=status.HTTP_403_FORBIDDEN)
+
+    if not certificate.is_deleted:
+        return Response({"detail": "Certificate is not deleted"}, status=status.HTTP_400_BAD_REQUEST)
+
+    if certificate.recovery_expires_at and timezone.now() > certificate.recovery_expires_at:
+        return Response(
+            {"detail": "Certificate recovery window has expired"},
+            status=status.HTTP_410_GONE,
+        )
+
+    previous_deleted_at = certificate.deleted_at
+    certificate.is_deleted = False
+    certificate.deleted_at = None
+    certificate.deleted_by = None
+    certificate.recovery_expires_at = None
+    certificate.save(update_fields=["is_deleted", "deleted_at", "deleted_by", "recovery_expires_at"])
+
+    log_portal_audit_event(
+        request=request,
+        action="certificate.recovered",
+        target_type="certificate",
+        target_id=certificate.id,
+        company=certificate.company,
+        details={
+            "certificate_id": certificate.id,
+            "equipment_id": certificate.equipment_id,
+            "title": certificate.title,
+            "recovered_from_deleted_at": previous_deleted_at.isoformat() if previous_deleted_at else None,
+        },
+    )
+
+    serializer = CertificateSerializer(certificate, context={"request": request})
+    return Response(serializer.data)

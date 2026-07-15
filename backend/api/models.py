@@ -255,12 +255,25 @@ class InspectionReport(models.Model):
         blank=True,
         related_name="edited_reports",
     )
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="deleted_reports",
+    )
+    recovery_expires_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-report_date", "-created_at"]
-        indexes = [models.Index(fields=["equipment", "report_date"])]
+        indexes = [
+            models.Index(fields=["equipment", "report_date"]),
+            models.Index(fields=["equipment", "is_deleted", "updated_at"]),
+        ]
 
     def __str__(self):
         return f"{self.title} - {self.equipment.name}"
@@ -314,11 +327,25 @@ class Certificate(models.Model):
     issue_date = models.DateField(null=True, blank=True)
     expiry_date = models.DateField(null=True, blank=True)
     uploaded_by = models.ForeignKey("auth.User", on_delete=models.SET_NULL, null=True, blank=True)
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    deleted_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="deleted_certificates",
+    )
+    recovery_expires_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["-created_at"]
-        indexes = [models.Index(fields=["company", "expiry_date"])]
+        indexes = [
+            models.Index(fields=["company", "expiry_date"]),
+            models.Index(fields=["company", "is_deleted", "created_at"]),
+            models.Index(fields=["recovery_expires_at"]),
+        ]
 
     def __str__(self):
         return self.title

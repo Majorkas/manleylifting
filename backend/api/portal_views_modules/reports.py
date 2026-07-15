@@ -35,6 +35,9 @@ from ..serializers import (
 from ..throttles import PortalMethodRateThrottle
 
 
+REPORT_RECOVERY_WINDOW_DAYS = 3
+
+
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 @throttle_classes([PortalMethodRateThrottle])
@@ -47,7 +50,7 @@ def portal_equipment_reports(request, equipment_id):
         return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
 
     if request.method == "GET":
-        reports = equipment.reports.select_related("submitted_by", "edited_by").all()
+        reports = equipment.reports.select_related("submitted_by", "edited_by").filter(is_deleted=False)
         if _is_owner(request.user):
             pass
         elif _is_engineer(request.user):
@@ -112,7 +115,11 @@ def portal_pending_report_approvals(request):
 
     reports = (
         InspectionReport.objects.select_related("submitted_by", "equipment__company")
-        .filter(status=InspectionReport.STATUS_SUBMITTED, equipment__company_id__in=_visible_company_ids(request.user))
+        .filter(
+            status=InspectionReport.STATUS_SUBMITTED,
+            is_deleted=False,
+            equipment__company_id__in=_visible_company_ids(request.user),
+        )
         .order_by("-updated_at", "-report_date", "-id")
     )
     page, page_size = _get_pagination_params(request)
@@ -166,6 +173,9 @@ def portal_report_owner_edit(request, report_id):
     if not report:
         return Response({"detail": "Report not found"}, status=status.HTTP_404_NOT_FOUND)
 
+    if report.is_deleted:
+        return Response({"detail": "Report not found"}, status=status.HTTP_404_NOT_FOUND)
+
     if report.equipment.company_id not in _visible_company_ids(request.user):
         return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -176,25 +186,47 @@ def portal_report_owner_edit(request, report_id):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if report.submitted_by_id != request.user.id:
+        can_delete_report = _is_owner(request.user) or report.submitted_by_id == request.user.id
+        if not can_delete_report:
             return Response(
-                {"detail": "Only the draft creator can delete this report"},
+                {"detail": "Only owner or the draft creator can delete this report"},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        equipment_id = report.equipment_id
-        company = report.equipment.company
-        deleted_report_id = report.id
-        report.delete()
-        log_portal_audit_event(
-            request=request,
-            action="report.deleted",
-            target_type="report",
-            target_id=deleted_report_id,
-            company=company,
-            details={"equipment_id": equipment_id, "status": InspectionReport.STATUS_DRAFT},
+        now = timezone.now()
+        recovery_expires_at = now + timedelta(days=REPORT_RECOVERY_WINDOW_DAYS)
+
+        if not report.is_deleted:
+            report.is_deleted = True
+            report.deleted_at = now
+            report.deleted_by = request.user
+            report.recovery_expires_at = recovery_expires_at
+            report.save(update_fields=["is_deleted", "deleted_at", "deleted_by", "recovery_expires_at", "updated_at"])
+
+            log_portal_audit_event(
+                request=request,
+                action="report.deleted",
+                target_type="report",
+                target_id=report.id,
+                company=report.equipment.company,
+                details={
+                    "report_id": report.id,
+                    "equipment_id": report.equipment_id,
+                    "status": report.status,
+                    "title": report.title,
+                    "recovery_expires_at": recovery_expires_at.isoformat(),
+                },
+            )
+
+        return Response(
+            {
+                "ok": True,
+                "report_id": report.id,
+                "recovery_expires_at": (
+                    report.recovery_expires_at.isoformat() if report.recovery_expires_at else recovery_expires_at.isoformat()
+                ),
+            }
         )
-        return Response(status=status.HTTP_204_NO_CONTENT)
 
     if _is_owner(request.user):
         report_images = request.FILES.getlist("images")
@@ -303,6 +335,9 @@ def portal_report_revisions(request, report_id):
     if not report:
         return Response({"detail": "Report not found"}, status=status.HTTP_404_NOT_FOUND)
 
+    if report.is_deleted:
+        return Response({"detail": "Report not found"}, status=status.HTTP_404_NOT_FOUND)
+
     if report.equipment.company_id not in _visible_company_ids(request.user):
         return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -312,3 +347,52 @@ def portal_report_revisions(request, report_id):
     revisions = report.revisions.select_related("edited_by").all()
     serializer = ReportRevisionSerializer(revisions, many=True)
     return Response({"results": serializer.data})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
+def portal_report_recover(request, report_id):
+    report = InspectionReport.objects.select_related("equipment__company").filter(id=report_id).first()
+    if not report:
+        return Response({"detail": "Report not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if report.equipment.company_id not in _visible_company_ids(request.user):
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if not report.is_deleted:
+        return Response({"detail": "Report is not deleted"}, status=status.HTTP_400_BAD_REQUEST)
+
+    can_recover = _is_owner(request.user) or report.submitted_by_id == request.user.id
+    if not can_recover:
+        return Response({"detail": "Only owner or the report creator can recover this report"}, status=status.HTTP_403_FORBIDDEN)
+
+    if report.recovery_expires_at and timezone.now() > report.recovery_expires_at:
+        return Response(
+            {"detail": "Report recovery window has expired"},
+            status=status.HTTP_410_GONE,
+        )
+
+    previous_deleted_at = report.deleted_at
+    report.is_deleted = False
+    report.deleted_at = None
+    report.deleted_by = None
+    report.recovery_expires_at = None
+    report.save(update_fields=["is_deleted", "deleted_at", "deleted_by", "recovery_expires_at", "updated_at"])
+
+    log_portal_audit_event(
+        request=request,
+        action="report.recovered",
+        target_type="report",
+        target_id=report.id,
+        company=report.equipment.company,
+        details={
+            "report_id": report.id,
+            "equipment_id": report.equipment_id,
+            "status": report.status,
+            "title": report.title,
+            "recovered_from_deleted_at": previous_deleted_at.isoformat() if previous_deleted_at else None,
+        },
+    )
+
+    return Response(InspectionReportSerializer(report).data)

@@ -603,7 +603,9 @@ def portal_create_customer(request):
 
 # Split domain-specific endpoints into dedicated modules while keeping shared helpers above.
 from .portal_views_modules.certificates import (  # noqa: E402
+    portal_certificate_delete,
     portal_certificate_download,
+    portal_certificate_recover,
     portal_equipment_certificates,
 )
 from .portal_views_modules.equipment import (  # noqa: E402
@@ -615,6 +617,7 @@ from .portal_views_modules.reports import (  # noqa: E402
     portal_dashboard_stats,
     portal_equipment_reports,
     portal_pending_report_approvals,
+    portal_report_recover,
     portal_report_owner_edit,
     portal_report_revisions,
 )
