@@ -4128,6 +4128,8 @@ export default function PortalDashboardPage() {
             equipmentStatusError={equipmentStatusError}
             reportError={reportError}
             certificateError={certificateError}
+            equipmentActivityError={equipmentActivityError}
+            canViewEquipmentActivity={canViewEquipmentActivity}
             onOpenUploadCertificate={() => {
               openCreateCertificateFormModal()
             }}
@@ -4138,6 +4140,7 @@ export default function PortalDashboardPage() {
             certificates={certificates}
             onDownloadCertificate={handleDownloadCertificate}
             downloadingCertificateId={downloadingCertificateId}
+            deletingCertificateId={deletingCertificateId}
             reportsLoading={reportsLoading}
             reports={reports}
             getReportStatusBadge={getReportStatusBadge}
@@ -4145,6 +4148,19 @@ export default function PortalDashboardPage() {
               setViewedReportError('')
               setViewedReport(report)
             }}
+            equipmentActivityLoading={equipmentActivityLoading}
+            equipmentActivity={equipmentActivity}
+            nowMs={nowMs}
+            getActivityActionLabel={getActivityActionLabel}
+            getActivityActionBadge={getActivityActionBadge}
+            formatActivityDetails={formatActivityDetails}
+            formatActivityTimestamp={formatActivityTimestamp}
+            getActivityRecoveryState={getActivityRecoveryState}
+            recoveredAtMsByRecoverableTarget={recoveredAtMsByRecoverableTarget}
+            recoveringCertificateId={recoveringCertificateId}
+            recoveringReportId={recoveringReportId}
+            deletingDraftReport={deletingDraftReport}
+            onRecoverActivityFromEntry={handleRecoverActivityFromEntry}
             currentTableEquipment={urgencyFilteredEquipment}
             equipmentRangeStart={equipmentRangeStart}
             equipmentRangeEnd={equipmentRangeEnd}
@@ -5661,14 +5677,16 @@ export default function PortalDashboardPage() {
 
         {viewedReport && (
           <div
-            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
+            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-3 pb-3 pt-3 sm:px-4 sm:pb-6 sm:pt-24 sm:items-center"
+            style={{ WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain' }}
             onClick={() => {
               setViewedReportError('')
               setViewedReport(null)
             }}
           >
             <div
-              className="max-h-[calc(100vh-7rem)] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
+              className="max-h-[calc(100dvh-1.5rem)] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 shadow-xl sm:max-h-[calc(100vh-3rem)] sm:p-6"
+              style={{ WebkitOverflowScrolling: 'touch', overscrollBehavior: 'contain', touchAction: 'pan-y' }}
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex items-start justify-between gap-3">

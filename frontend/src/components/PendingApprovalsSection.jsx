@@ -27,7 +27,7 @@ export default function PendingApprovalsSection({
 
   return (
     <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-2xl font-extrabold text-[#123A7A]">Pending Report Approvals</h2>
           <p className="mt-1 text-sm text-slate-600">
@@ -37,8 +37,8 @@ export default function PendingApprovalsSection({
             Last updated {lastUpdatedLabel}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="rounded-full border border-slate-300 bg-slate-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700">
+        <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto lg:justify-end">
+          <span className="rounded-full border border-slate-300 bg-slate-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700 whitespace-nowrap">
             {pendingReportApprovals.length} pending
           </span>
           <button
@@ -89,7 +89,7 @@ export default function PendingApprovalsSection({
               return (
                 <article key={report.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                   <div className="flex items-start justify-between gap-3">
-                    <div>
+                    <div className="min-w-0 flex-1">
                       <label className="mb-2 inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
                         <input
                           type="checkbox"
@@ -99,14 +99,14 @@ export default function PendingApprovalsSection({
                         />
                         Select
                       </label>
-                      <h3 className="text-lg font-bold text-[#123A7A]">{report.title || 'Untitled Report'}</h3>
+                      <h3 className="break-words text-base font-bold text-[#123A7A] sm:text-lg">{report.title || 'Untitled Report'}</h3>
                       <p className="mt-1 text-sm text-slate-600">
                         {report.company_name || 'Unknown Company'} · {report.equipment_name || 'Unknown Equipment'}
                       </p>
                     </div>
                     <span
                       className={
-                        'rounded-full border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide ' +
+                        'shrink-0 whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide ' +
                         statusBadge.color
                       }
                     >
@@ -128,7 +128,7 @@ export default function PendingApprovalsSection({
                     <button
                       type="button"
                       onClick={() => onReviewReport(report)}
-                      className="rounded-md bg-[#123A7A] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-[#0f3168]"
+                      className="w-full rounded-md bg-[#123A7A] px-3 py-2 text-center text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-[#0f3168] sm:w-auto"
                     >
                       Review Report
                     </button>

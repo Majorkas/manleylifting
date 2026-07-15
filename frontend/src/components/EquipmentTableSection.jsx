@@ -46,16 +46,32 @@ export default function EquipmentTableSection({
   equipmentStatusError,
   reportError,
   certificateError,
+  equipmentActivityError,
+  canViewEquipmentActivity,
   onOpenUploadCertificate,
   onOpenCreateReport,
   certificatesLoading,
   certificates,
   onDownloadCertificate,
   downloadingCertificateId,
+  deletingCertificateId,
   reportsLoading,
   reports,
   getReportStatusBadge,
   onViewReport,
+  equipmentActivityLoading,
+  equipmentActivity,
+  nowMs,
+  getActivityActionLabel,
+  getActivityActionBadge,
+  formatActivityDetails,
+  formatActivityTimestamp,
+  getActivityRecoveryState,
+  recoveredAtMsByRecoverableTarget,
+  recoveringCertificateId,
+  recoveringReportId,
+  deletingDraftReport,
+  onRecoverActivityFromEntry,
   currentTableEquipment,
   equipmentRangeStart,
   equipmentRangeEnd,
@@ -389,6 +405,12 @@ export default function EquipmentTableSection({
                           </div>
                         )}
 
+                        {canViewEquipmentActivity && equipmentActivityError && (
+                          <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                            {equipmentActivityError}
+                          </div>
+                        )}
+
                         {canEditReports && (
                           <div className="mt-3 flex flex-wrap gap-2">
                             <button
@@ -441,6 +463,70 @@ export default function EquipmentTableSection({
                             )}
                           </div>
                         </details>
+
+                        {canViewEquipmentActivity && (
+                          <details className="mt-3 rounded border border-slate-200 bg-white">
+                            <summary className="cursor-pointer px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-700">
+                              Equipment Activity
+                            </summary>
+                            <div className="space-y-2 border-t border-slate-200 p-3">
+                              {equipmentActivityLoading ? (
+                                <InlineListSkeleton />
+                              ) : equipmentActivity.length === 0 ? (
+                                <p className="text-xs text-slate-500">No activity has been recorded for this equipment yet.</p>
+                              ) : (
+                                equipmentActivity.map((entry) => {
+                                  const activityLabel = getActivityActionLabel(entry.action)
+                                  const activityBadge = getActivityActionBadge(entry.action)
+                                  const recoveryState = getActivityRecoveryState(entry, nowMs, recoveredAtMsByRecoverableTarget)
+                                  const isRecovering = recoveryState.targetType === 'certificate'
+                                    ? recoveringCertificateId === recoveryState.targetId
+                                    : recoveryState.targetType === 'report'
+                                      ? recoveringReportId === recoveryState.targetId
+                                      : false
+
+                                  return (
+                                    <article key={entry.id} className="rounded border border-slate-200 bg-white p-2.5">
+                                      <div className="flex items-start justify-between gap-2">
+                                        <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${activityBadge.color}`}>
+                                          {activityLabel}
+                                        </span>
+                                        <span className="text-[11px] font-semibold text-slate-700">{entry.actor_name || 'System'}</span>
+                                      </div>
+                                      <p className="mt-1 text-[11px] text-slate-600">{formatActivityTimestamp(entry.created_at)}</p>
+                                      <p className="mt-1 text-[11px] leading-relaxed text-slate-600">{formatActivityDetails(entry.details)}</p>
+
+                                      {recoveryState.targetId && (
+                                        <div className="mt-2 flex items-center justify-between gap-2">
+                                          <span className="text-[11px] text-slate-600">{recoveryState.label}</span>
+                                          {isOwner && recoveryState.canRecover && (
+                                            <button
+                                              type="button"
+                                              onClick={() => onRecoverActivityFromEntry(entry)}
+                                              disabled={isRecovering || deletingCertificateId > 0 || deletingDraftReport}
+                                              className="rounded border border-emerald-600 px-2 py-1 text-[10px] font-semibold text-emerald-700 transition hover:bg-emerald-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+                                            >
+                                              {isRecovering
+                                                ? 'Recovering...'
+                                                : recoveryState.targetType === 'report'
+                                                  ? 'Recover Report'
+                                                  : 'Recover'}
+                                            </button>
+                                          )}
+                                          {recoveryState.status === 'recovered' && (
+                                            <span className="rounded-full border border-emerald-300 bg-emerald-50 px-2 py-1 text-[10px] font-semibold text-emerald-700">
+                                              Recovered
+                                            </span>
+                                          )}
+                                        </div>
+                                      )}
+                                    </article>
+                                  )
+                                })
+                              )}
+                            </div>
+                          </details>
+                        )}
 
                         <details className="mt-3 rounded border border-slate-200 bg-white" open>
                           <summary className="cursor-pointer px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-700">
