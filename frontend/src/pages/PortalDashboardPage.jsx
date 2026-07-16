@@ -12,10 +12,11 @@ import usePageMeta from '../utils/usePageMeta'
 import { exportRowsToCsv } from '../utils/csvExport'
 import {
   changePortalPassword,
+  createPortalSite,
   createStaffAssignment,
   deleteEquipmentCertificate,
-  downloadCertificate,
   deleteStaffAssignment,
+  downloadCertificate,
   reactivateStaffAssignment,
   createPortalCustomer,
   createPortalEquipment,
@@ -23,15 +24,16 @@ import {
   createEquipmentReport,
   deleteReport,
   getEquipmentActivity,
-  getEquipmentCertificates,
   getEquipmentReports,
   getPortalCompanies,
   getPortalCompanyHeader,
   getPortalDashboardStats,
   getPortalEquipment,
   getPortalMe,
+  getSiteCertificates,
   getAccessToken,
   getPendingReportApprovals,
+  generateSiteCertificates,
   recoverEquipmentCertificate,
   recoverReport,
   getReportRevisions,
@@ -39,8 +41,9 @@ import {
   hasPortalSession,
   portalLogout,
   refreshPortalSession,
-  uploadEquipmentCertificate,
+  deletePortalSite,
   updatePortalCustomer,
+  updatePortalSite,
   updateStaffAssignment,
   updateReport,
   updatePortalEquipment,
@@ -49,9 +52,25 @@ import {
 const SESSION_WARNING_WINDOW_MS = 2 * 60 * 1000
 const SESSION_WARNING_CHECK_INTERVAL_MS = 15 * 1000
 const REPORT_DRAFT_STORAGE_KEY = 'manley-portal-report-draft-v1'
+const EQID_SYNC_DEBUG_STORAGE_KEY = 'manley-debug-eqid-sync'
+let cachedEqIdSyncDebugEnabled = null
 const REPORT_CHECKLIST_STATUS_GOOD = 'good_order'
 const REPORT_CHECKLIST_STATUS_WORN = 'worn_serviceable'
 const REPORT_CHECKLIST_STATUS_ATTENTION = 'attention_required'
+const REPORT_CHECKLIST_STATUS_NOT_PRESENTED = 'not_presented'
+const NOT_PRESENTED_DEFAULT_SUMMARY = 'Equipment was not presented for inspection at the time of visit.'
+const EQUIPMENT_STATUS_FILTER_ALL = 'all'
+const EQUIPMENT_STATUS_FILTER_GOOD = 'good_order'
+const EQUIPMENT_STATUS_FILTER_WORN = 'worn_serviceable'
+const EQUIPMENT_STATUS_FILTER_ATTENTION = 'attention_required'
+const EQUIPMENT_STATUS_FILTER_NOT_PRESENTED = 'not_presented'
+const EQUIPMENT_STATUS_FILTER_NO_REPORT = 'no_approved_report'
+const REPORT_SUBMISSION_CONFIRMATION_ITEMS = [
+  'We have undertaken the test / thorough examination as prescribed.',
+  'We have identified defects which are or could be a danger to persons.',
+  'This test/thorough examination has been carried out by a competent person.',
+  'The particulars in this report of thorough examination are correct.',
+]
 const REPORT_TEMPLATE_CHECKLIST_LABELS = [
   'Initial Test Run',
   'Isolator',
@@ -109,7 +128,9 @@ function buildDefaultReportChecklistItems() {
   return REPORT_TEMPLATE_CHECKLIST_LABELS.map((label) => ({
     label,
     status: REPORT_CHECKLIST_STATUS_GOOD,
-    note: '',
+    finding: '',
+    recommendation: '',
+    days_before_reinspection: '',
   }))
 }
 
@@ -131,6 +152,7 @@ function normalizeReportChecklistItems(items) {
       REPORT_CHECKLIST_STATUS_GOOD,
       REPORT_CHECKLIST_STATUS_WORN,
       REPORT_CHECKLIST_STATUS_ATTENTION,
+      REPORT_CHECKLIST_STATUS_NOT_PRESENTED,
     ].includes(status)
       ? status
       : REPORT_CHECKLIST_STATUS_GOOD
@@ -138,7 +160,9 @@ function normalizeReportChecklistItems(items) {
     return {
       label,
       status: normalizedStatus,
-      note: String(existing?.note ?? ''),
+      finding: String(existing?.finding ?? existing?.note ?? ''),
+      recommendation: String(existing?.recommendation ?? ''),
+      days_before_reinspection: String(existing?.days_before_reinspection ?? ''),
     }
   })
 }
@@ -146,6 +170,7 @@ function normalizeReportChecklistItems(items) {
 function getChecklistStatusLabel(status) {
   if (status === REPORT_CHECKLIST_STATUS_WORN) return 'Worn but Servicable'
   if (status === REPORT_CHECKLIST_STATUS_ATTENTION) return 'Attention Required'
+  if (status === REPORT_CHECKLIST_STATUS_NOT_PRESENTED) return 'Not Presented'
   return 'Good Order'
 }
 
@@ -154,17 +179,72 @@ function getChecklistSections(items) {
   return {
     worn: normalized.filter((item) => item.status === REPORT_CHECKLIST_STATUS_WORN),
     attention: normalized.filter((item) => item.status === REPORT_CHECKLIST_STATUS_ATTENTION),
+    notPresented: normalized.filter((item) => item.status === REPORT_CHECKLIST_STATUS_NOT_PRESENTED),
   }
 }
 
-function getMissingChecklistNoteLabel(items) {
-  const normalized = normalizeReportChecklistItems(items)
-  const missing = normalized.find(
-    (item) =>
-      item.status !== REPORT_CHECKLIST_STATUS_GOOD &&
-      String(item.note || '').trim() === '',
+function isChecklistMarkedNotPresented(checklistSections) {
+  return (
+    Array.isArray(checklistSections?.notPresented) &&
+    checklistSections.notPresented.length > 0 &&
+    Array.isArray(checklistSections?.worn) &&
+    checklistSections.worn.length === 0 &&
+    Array.isArray(checklistSections?.attention) &&
+    checklistSections.attention.length === 0
   )
-  return missing?.label || ''
+}
+
+function getChecklistImagesByLabel(images) {
+  const byLabel = {}
+  ;(Array.isArray(images) ? images : []).forEach((image) => {
+    const label = String(image?.checklist_label || '').trim()
+    if (!label) return
+    if (!byLabel[label]) byLabel[label] = []
+    byLabel[label].push(image)
+  })
+  return byLabel
+}
+
+function flattenChecklistImageUploads(checklistImageFilesByLabel) {
+  const entries = Object.entries(checklistImageFilesByLabel || {})
+  const checklist_images = []
+  const checklist_image_labels = []
+  entries.forEach(([label, files]) => {
+    ;(Array.isArray(files) ? files : []).filter(Boolean).forEach((file) => {
+      checklist_images.push(file)
+      checklist_image_labels.push(label)
+    })
+  })
+  return { checklist_images, checklist_image_labels }
+}
+
+function getMissingChecklistDetailsError(items) {
+  const normalized = normalizeReportChecklistItems(items)
+  const missingFinding = normalized.find(
+    (item) =>
+      [REPORT_CHECKLIST_STATUS_WORN, REPORT_CHECKLIST_STATUS_ATTENTION].includes(item.status) &&
+      String(item.finding || '').trim() === '',
+  )
+  if (missingFinding) {
+    return {
+      label: missingFinding.label,
+      field: 'finding',
+    }
+  }
+
+  const missingRecommendation = normalized.find(
+    (item) =>
+      [REPORT_CHECKLIST_STATUS_WORN, REPORT_CHECKLIST_STATUS_ATTENTION].includes(item.status) &&
+      String(item.recommendation || '').trim() === '',
+  )
+  if (missingRecommendation) {
+    return {
+      label: missingRecommendation.label,
+      field: 'recommendation',
+    }
+  }
+
+  return null
 }
 
 function buildReportSnapshot(source) {
@@ -192,17 +272,21 @@ function getChecklistChangeRows(beforeItems, afterItems) {
       const before = beforeByLabel.get(label) || {
         label,
         status: REPORT_CHECKLIST_STATUS_GOOD,
-        note: '',
+        finding: '',
+        recommendation: '',
       }
       const after = afterByLabel.get(label) || {
         label,
         status: REPORT_CHECKLIST_STATUS_GOOD,
-        note: '',
+        finding: '',
+        recommendation: '',
+        days_before_reinspection: '',
       }
 
       if (
         String(before.status) === String(after.status) &&
-        String(before.note || '') === String(after.note || '')
+        String(before.finding || '') === String(after.finding || '') &&
+        String(before.recommendation || '') === String(after.recommendation || '')
       ) {
         return null
       }
@@ -211,8 +295,12 @@ function getChecklistChangeRows(beforeItems, afterItems) {
         label,
         beforeStatus: before.status,
         afterStatus: after.status,
-        beforeNote: String(before.note || ''),
-        afterNote: String(after.note || ''),
+        beforeFinding: String(before.finding || ''),
+        afterFinding: String(after.finding || ''),
+        beforeRecommendation: String(before.recommendation || ''),
+        afterRecommendation: String(after.recommendation || ''),
+          beforeDaysBeforeReinspection: String(before.days_before_reinspection || ''),
+          afterDaysBeforeReinspection: String(after.days_before_reinspection || ''),
       }
     })
     .filter(Boolean)
@@ -248,7 +336,16 @@ function getRevisionFieldChanges(beforeSnapshot, afterSnapshot) {
   }
 }
 
-const ReportChecklistEditor = memo(function ReportChecklistEditor({ checklistItems, onChange }) {
+const ReportChecklistEditor = memo(function ReportChecklistEditor({
+  checklistItems,
+  onChange,
+  onApplyNotPresentedPreset,
+  pendingChecklistImagesByLabel,
+  existingChecklistImagesByLabel,
+  onAddChecklistItemImages,
+  onRemovePendingChecklistItemImage,
+  onOpenChecklistItemImage,
+}) {
   const [localItems, setLocalItems] = useState(() => normalizeReportChecklistItems(checklistItems))
 
   useEffect(() => {
@@ -276,22 +373,31 @@ const ReportChecklistEditor = memo(function ReportChecklistEditor({ checklistIte
     onChange(nextItems)
   }
 
-  function commitNotes() {
+  function commitDetails() {
     onChange(localItems)
   }
 
   return (
     <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 md:col-span-2">
       <div className="mb-3">
-        <h4 className="text-sm font-bold text-[#123A7A]">Inspection Template Checklist</h4>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h4 className="text-sm font-bold text-[#123A7A]">Inspection Template Checklist</h4>
+          <button
+            type="button"
+            onClick={onApplyNotPresentedPreset}
+            className="rounded border border-rose-300 bg-rose-50 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-rose-700 transition hover:bg-rose-100"
+          >
+            Mark Not Presented
+          </button>
+        </div>
         <p className="mt-1 text-xs text-slate-600">
-          Mark each check item. Notes are required for Worn but Servicable and Attention Required.
+          Mark each check item. Findings and recommendations are required for Worn but Servicable and Attention Required.
         </p>
       </div>
 
       <div className="space-y-3">
         {localItems.map((item, index) => {
-          const needsNote = item.status !== REPORT_CHECKLIST_STATUS_GOOD
+          const needsDetails = [REPORT_CHECKLIST_STATUS_WORN, REPORT_CHECKLIST_STATUS_ATTENTION].includes(item.status)
 
           return (
             <div key={item.label} className="rounded-md border border-slate-200 bg-white p-3">
@@ -307,19 +413,101 @@ const ReportChecklistEditor = memo(function ReportChecklistEditor({ checklistIte
                     <option value={REPORT_CHECKLIST_STATUS_GOOD}>Good Order</option>
                     <option value={REPORT_CHECKLIST_STATUS_WORN}>Worn but Servicable</option>
                     <option value={REPORT_CHECKLIST_STATUS_ATTENTION}>Attention Required</option>
+                    <option value={REPORT_CHECKLIST_STATUS_NOT_PRESENTED}>Not Presented</option>
                   </select>
                 </label>
               </div>
 
-              {needsNote && (
+              {needsDetails && (
                 <label className="mt-2 block text-xs font-semibold uppercase tracking-wide text-slate-600">
-                  Note (required)
+                  Findings (required)
                   <textarea
-                    value={item.note}
-                    onChange={(event) => updateLocalItem(index, { note: event.target.value })}
-                    onBlur={commitNotes}
+                    value={item.finding}
+                    onChange={(event) => updateLocalItem(index, { finding: event.target.value })}
+                    onBlur={commitDetails}
                     className="mt-1 min-h-16 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
                   />
+                </label>
+              )}
+
+              {needsDetails && (
+                <label className="mt-2 block text-xs font-semibold uppercase tracking-wide text-slate-600">
+                  Recommendations (required)
+                  <textarea
+                    value={item.recommendation}
+                    onChange={(event) => updateLocalItem(index, { recommendation: event.target.value })}
+                    onBlur={commitDetails}
+                    className="mt-1 min-h-16 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  />
+                </label>
+              )}
+
+              {needsDetails && (
+                <label className="mt-2 block text-xs font-semibold uppercase tracking-wide text-slate-600">
+                  Days before reinspection
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={item.days_before_reinspection}
+                    onChange={(event) => updateLocalItem(index, { days_before_reinspection: event.target.value })}
+                    onBlur={commitDetails}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  />
+                </label>
+              )}
+
+              {needsDetails && (
+                <label className="mt-2 block text-xs font-semibold uppercase tracking-wide text-slate-600">
+                  Checklist Photos (optional)
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={(event) => {
+                      onAddChecklistItemImages(item.label, event.target.files)
+                      event.target.value = ''
+                    }}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  />
+                  {(pendingChecklistImagesByLabel?.[item.label] || []).length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      {(pendingChecklistImagesByLabel?.[item.label] || []).map((file, fileIndex) => (
+                        <div
+                          key={`${item.label}-${file.name}-${file.lastModified}-${fileIndex}`}
+                          className="flex items-center justify-between gap-2 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-700"
+                        >
+                          <span className="truncate" title={file.name}>{file.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => onRemovePendingChecklistItemImage(item.label, fileIndex)}
+                            className="rounded border border-slate-300 bg-white px-1.5 py-0.5 font-semibold uppercase tracking-wide text-slate-600"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {(existingChecklistImagesByLabel?.[item.label] || []).length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      {(existingChecklistImagesByLabel?.[item.label] || []).map((image) => (
+                        <div
+                          key={`${item.label}-${image.id}`}
+                          className="flex items-center justify-between gap-2 rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700"
+                        >
+                          <span className="truncate">Attached image #{image.id}</span>
+                          <button
+                            type="button"
+                            onClick={() => onOpenChecklistItemImage(image, existingChecklistImagesByLabel?.[item.label] || [])}
+                            className="rounded border border-[#123A7A] bg-white px-1.5 py-0.5 font-semibold uppercase tracking-wide text-[#123A7A]"
+                          >
+                            View
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </label>
               )}
             </div>
@@ -346,6 +534,82 @@ function buildStableQueryString(params) {
     leftKey.localeCompare(rightKey),
   )
   return new URLSearchParams(sortedEntries).toString()
+}
+
+function isEqIdSyncDebugEnabled() {
+  if (!import.meta.env.DEV || typeof window === 'undefined') return false
+  if (cachedEqIdSyncDebugEnabled !== null) return cachedEqIdSyncDebugEnabled
+
+  try {
+    cachedEqIdSyncDebugEnabled = window.localStorage?.getItem(EQID_SYNC_DEBUG_STORAGE_KEY) === '1'
+    return cachedEqIdSyncDebugEnabled
+  } catch {
+    cachedEqIdSyncDebugEnabled = false
+    return false
+  }
+}
+
+function logEqIdSyncDebug(eventName, data = {}) {
+  if (!isEqIdSyncDebugEnabled()) return
+
+  const timestamp = new Date().toISOString()
+  console.debug(`[eqId-sync][${timestamp}] ${eventName}`, data)
+}
+
+function buildEquipmentDeepLink(companyId, equipmentId) {
+  const nextEquipmentId = String(equipmentId || '').trim()
+  if (!nextEquipmentId) return ''
+
+  const params = new URLSearchParams()
+  const nextCompanyId = String(companyId || '').trim()
+  if (nextCompanyId) {
+    params.set('companyId', nextCompanyId)
+  }
+  params.set('eqId', nextEquipmentId)
+
+  const origin = typeof window !== 'undefined' ? String(window.location.origin || '').trim() : ''
+  const relativePath = `/portal?${params.toString()}`
+  if (!origin) return relativePath
+  return `${origin}${relativePath}`
+}
+
+function printEquipmentQrLabel(title, equipmentName, equipmentAssetTag, qrDataUrl, deepLink) {
+  const printWindow = window.open('', '_blank', 'width=480,height=640')
+  if (!printWindow) return
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 24px; color: #0f172a; }
+      .label { border: 2px solid #123A7A; border-radius: 14px; padding: 18px; max-width: 360px; }
+      .badge { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #475569; }
+      h1 { margin: 6px 0 10px; font-size: 20px; color: #123A7A; }
+      p { margin: 4px 0; font-size: 13px; }
+      img { display: block; width: 240px; height: 240px; margin: 16px auto 10px; }
+      .hint { margin-top: 8px; font-size: 11px; color: #64748b; word-break: break-all; }
+      @media print {
+        body { margin: 8mm; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="label">
+      <div class="badge">Equipment QR Label</div>
+      <h1>${escapeHtml(equipmentName || 'Equipment')}</h1>
+      <p><strong>Asset Tag:</strong> ${escapeHtml(equipmentAssetTag || '-')}</p>
+      <img src="${escapeHtml(qrDataUrl)}" alt="Equipment QR Code" />
+      <p class="hint">${escapeHtml(deepLink)}</p>
+    </div>
+    <script>window.onload = function () { window.print(); }<\/script>
+  </body>
+</html>`
+
+  printWindow.document.open()
+  printWindow.document.write(html)
+  printWindow.document.close()
 }
 
 function formatRevisionDateTime(value) {
@@ -605,6 +869,12 @@ function formatActivityTimestamp(value) {
   return date.toLocaleString()
 }
 
+function formatGeneratedCertificateTimestamp(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  return date.toLocaleString()
+}
+
 function getActivityCertificateId(entry) {
   const details = entry?.details || {}
   const certificateId = Number(details.certificate_id || entry?.target_id || 0)
@@ -692,6 +962,7 @@ function buildEmptyReportForm() {
     report_date: new Date().toISOString().slice(0, 10),
     status: 'draft',
     checklist_items: buildDefaultReportChecklistItems(),
+    checklistImageFilesByLabel: {},
     images: [],
     existingImages: [],
     removedImageIds: [],
@@ -728,6 +999,7 @@ function buildEmptyEquipmentForm() {
     name: '',
     asset_tag: '',
     serial_number: '',
+    safe_working_load: '',
     location: '',
     status: 'active',
     inspection_interval_days: 365,
@@ -736,13 +1008,17 @@ function buildEmptyEquipmentForm() {
   }
 }
 
-function buildEmptyCertificateForm() {
+function buildEmptySiteForm() {
   return {
-    title: '',
-    issue_date: '',
-    expiry_date: '',
-    report_id: '',
-    file: null,
+    name: '',
+    address: '',
+  }
+}
+
+function buildEmptySiteEditForm() {
+  return {
+    name: '',
+    address: '',
   }
 }
 
@@ -896,10 +1172,23 @@ export default function PortalDashboardPage() {
     ['all', 'overdue', 'due_soon', 'on_schedule'],
     'all',
   )
+  const initialEquipmentStatusFilter = parseEnum(
+    searchParams.get('eqStatus'),
+    [
+      EQUIPMENT_STATUS_FILTER_ALL,
+      EQUIPMENT_STATUS_FILTER_GOOD,
+      EQUIPMENT_STATUS_FILTER_WORN,
+      EQUIPMENT_STATUS_FILTER_ATTENTION,
+      EQUIPMENT_STATUS_FILTER_NOT_PRESENTED,
+      EQUIPMENT_STATUS_FILTER_NO_REPORT,
+    ],
+    EQUIPMENT_STATUS_FILTER_ALL,
+  )
   const initialEquipmentPage = parsePositiveInt(searchParams.get('eqPage'), 1)
   const initialCustomerPage = parsePositiveInt(searchParams.get('customersPage'), 1)
   const initialEmployeePage = parsePositiveInt(searchParams.get('employeesPage'), 1)
   const initialPendingApprovalsPage = parsePositiveInt(searchParams.get('pendingApprovalsPage'), 1)
+  const initialEquipmentDeepLinkId = String(searchParams.get('eqId') || '').trim()
   const isAuthenticated = hasPortalSession()
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
@@ -907,6 +1196,7 @@ export default function PortalDashboardPage() {
   const [companies, setCompanies] = useState([])
   const [company, setCompany] = useState(null)
   const [equipment, setEquipment] = useState([])
+  const [pendingDeepLinkEquipmentId, setPendingDeepLinkEquipmentId] = useState(initialEquipmentDeepLinkId)
   const [searchInput, setSearchInput] = useState(initialSearchQuery)
   const [searchQuery, setSearchQuery] = useState(initialSearchQuery)
   const [loggingOut, setLoggingOut] = useState(false)
@@ -929,22 +1219,22 @@ export default function PortalDashboardPage() {
   const [editReportError, setEditReportError] = useState('')
   const [viewedReportError, setViewedReportError] = useState('')
   const [revisionsError, setRevisionsError] = useState('')
-  const [certificates, setCertificates] = useState([])
-  const [certificatesLoading, setCertificatesLoading] = useState(false)
   const [certificateError, setCertificateError] = useState('')
+  const [generatingSiteCertificates, setGeneratingSiteCertificates] = useState(false)
+  const [showGeneratedCertificatePreviewModal, setShowGeneratedCertificatePreviewModal] = useState(false)
+  const [generatedCertificatePreviewUrl, setGeneratedCertificatePreviewUrl] = useState('')
+  const [generatedCertificateFilename, setGeneratedCertificateFilename] = useState('')
+  const [generatedCertificates, setGeneratedCertificates] = useState([])
+  const [generatedCertificatesLoading, setGeneratedCertificatesLoading] = useState(false)
+  const [generatedCertificateActionId, setGeneratedCertificateActionId] = useState(0)
+  const [confirmDeleteGeneratedCertificateId, setConfirmDeleteGeneratedCertificateId] = useState('')
   const [equipmentActivity, setEquipmentActivity] = useState([])
   const [equipmentActivityLoading, setEquipmentActivityLoading] = useState(false)
   const [equipmentActivityError, setEquipmentActivityError] = useState('')
   const [equipmentActivityPage, setEquipmentActivityPage] = useState(1)
   const [, setCertificateSuccess] = useState('')
-  const [downloadingCertificateId, setDownloadingCertificateId] = useState(0)
-  const [deletingCertificateId, setDeletingCertificateId] = useState(0)
   const [recoveringCertificateId, setRecoveringCertificateId] = useState(0)
   const [recoveringReportId, setRecoveringReportId] = useState(0)
-  const [confirmDeleteCertificate, setConfirmDeleteCertificate] = useState(null)
-  const [showCreateCertificateForm, setShowCreateCertificateForm] = useState(false)
-  const [creatingCertificate, setCreatingCertificate] = useState(false)
-  const [certificateForm, setCertificateForm] = useState(buildEmptyCertificateForm())
   const [creatingReport, setCreatingReport] = useState(false)
   const [savingReportEdit, setSavingReportEdit] = useState(false)
   const [approvingReport, setApprovingReport] = useState(false)
@@ -974,6 +1264,15 @@ export default function PortalDashboardPage() {
   const [confirmDeleteDraftReportId, setConfirmDeleteDraftReportId] = useState('')
   const [deletingDraftReport, setDeletingDraftReport] = useState(false)
   const [reportUnsavedPrompt, setReportUnsavedPrompt] = useState('')
+  const [showReportSubmissionConfirmModal, setShowReportSubmissionConfirmModal] = useState(false)
+  const [reportSubmissionConfirmChecks, setReportSubmissionConfirmChecks] = useState(() =>
+    REPORT_SUBMISSION_CONFIRMATION_ITEMS.map(() => false),
+  )
+  const [showEquipmentQrModal, setShowEquipmentQrModal] = useState(false)
+  const [equipmentQrImageDataUrl, setEquipmentQrImageDataUrl] = useState('')
+  const [equipmentQrLink, setEquipmentQrLink] = useState('')
+  const [equipmentQrError, setEquipmentQrError] = useState('')
+  const [generatingEquipmentQr, setGeneratingEquipmentQr] = useState(false)
   const [unsavedChangesPrompt, setUnsavedChangesPrompt] = useState('')
   const [showEditReportModal, setShowEditReportModal] = useState(false)
   const [showRevisionsModal, setShowRevisionsModal] = useState(false)
@@ -1021,6 +1320,16 @@ export default function PortalDashboardPage() {
   const [equipmentCreateError, setEquipmentCreateError] = useState('')
   const [, setEquipmentCreateSuccess] = useState('')
   const [equipmentForm, setEquipmentForm] = useState(buildEmptyEquipmentForm())
+  const [selectedSiteId, setSelectedSiteId] = useState('')
+  const [showCreateSiteForm, setShowCreateSiteForm] = useState(false)
+  const [creatingSite, setCreatingSite] = useState(false)
+  const [siteCreateError, setSiteCreateError] = useState('')
+  const [siteForm, setSiteForm] = useState(buildEmptySiteForm())
+  const [showEditSiteForm, setShowEditSiteForm] = useState(false)
+  const [updatingSite, setUpdatingSite] = useState(false)
+  const [siteEditError, setSiteEditError] = useState('')
+  const [siteEditForm, setSiteEditForm] = useState(buildEmptySiteEditForm())
+  const [deletingSite, setDeletingSite] = useState(false)
   const [equipmentPage, setEquipmentPage] = useState(initialEquipmentPage)
   const [updatingEquipmentStatus, setUpdatingEquipmentStatus] = useState(false)
   const [equipmentStatusError, setEquipmentStatusError] = useState('')
@@ -1030,10 +1339,14 @@ export default function PortalDashboardPage() {
   const [equipmentSortKey, setEquipmentSortKey] = useState('next_due')
   const [equipmentSortDirection, setEquipmentSortDirection] = useState('asc')
   const [inspectionUrgencyFilter, setInspectionUrgencyFilter] = useState(initialInspectionUrgency)
+  const [equipmentStatusFilter, setEquipmentStatusFilter] = useState(initialEquipmentStatusFilter)
   const [expandedEquipmentCardId, setExpandedEquipmentCardId] = useState('')
   const [expandedReportCardId, setExpandedReportCardId] = useState('')
   const previousSelectedEquipmentIdRef = useRef('')
   const previousDesktopSelectedEquipmentIdRef = useRef('')
+  const skipNextEqIdSyncRef = useRef(false)
+  const suppressQuerySyncUntilCustomerListRef = useRef(false)
+  const scrollToCustomerListOnBackRef = useRef(false)
   const hasInitializedCustomerPageResetRef = useRef(false)
   const hasInitializedEmployeePageResetRef = useRef(false)
   const hasInitializedEquipmentPageResetRef = useRef(false)
@@ -1041,6 +1354,7 @@ export default function PortalDashboardPage() {
   const initialReportEditFormRef = useRef(buildEmptyReportForm())
   const employeeControlsSectionRef = useRef(null)
   const equipmentDetailsSectionRef = useRef(null)
+  const customerListSectionRef = useRef(null)
   const generatedEmployeeBaseUsername = useMemo(
     () => buildEmployeeUsername(employeeForm.first_name, employeeForm.last_name),
     [employeeForm.first_name, employeeForm.last_name],
@@ -1083,8 +1397,14 @@ export default function PortalDashboardPage() {
   }, [reports, reportYearFilter])
   const showsCustomerPicker = canEditReports && !selectedCompanyId
   const isOwner = profile?.role === 'owner' || profile?.role === 'office_staff'
+  const canManageSites = isOwner
   const canViewEquipmentActivity = isOwner
   const isStaff = profile?.role === 'staff' || profile?.role === 'engineer'
+  const companySites = useMemo(() => (Array.isArray(company?.sites) ? company.sites : []), [company])
+  const activeSite = useMemo(() => {
+    if (!companySites.length) return null
+    return companySites.find((site) => String(site.id) === String(selectedSiteId)) || companySites[0]
+  }, [companySites, selectedSiteId])
   const activeSelectedEquipment = useMemo(() => {
     if (!selectedEquipment) return null
     return equipment.find((item) => String(item.id) === String(selectedEquipment.id)) || null
@@ -1131,17 +1451,28 @@ export default function PortalDashboardPage() {
     if (equipmentTableTab === 'all') return [...activeEquipment, ...decommissionedEquipment]
     return activeEquipment
   }, [activeEquipment, decommissionedEquipment, equipmentTableTab])
-  const urgencyFilteredEquipment = useMemo(() => {
-    if (inspectionUrgencyFilter === 'all') return currentTableEquipment
+  const statusFilteredEquipment = useMemo(() => {
+    if (equipmentTableTab !== 'active' || equipmentStatusFilter === EQUIPMENT_STATUS_FILTER_ALL) {
+      return currentTableEquipment
+    }
 
     return currentTableEquipment.filter((item) => {
+      const itemStatusKey =
+        String(item.inspection_status_key || '').trim().toLowerCase() || EQUIPMENT_STATUS_FILTER_NO_REPORT
+      return itemStatusKey === equipmentStatusFilter
+    })
+  }, [currentTableEquipment, equipmentStatusFilter, equipmentTableTab])
+  const urgencyFilteredEquipment = useMemo(() => {
+    if (inspectionUrgencyFilter === 'all') return statusFilteredEquipment
+
+    return statusFilteredEquipment.filter((item) => {
       const urgencyLabel = String(getInspectionStatusBadge(item.next_inspection_due).label || '').toLowerCase()
       if (inspectionUrgencyFilter === 'overdue') return urgencyLabel === 'overdue'
       if (inspectionUrgencyFilter === 'due_soon') return urgencyLabel === 'inspection due'
       if (inspectionUrgencyFilter === 'on_schedule') return urgencyLabel === 'on schedule'
       return true
     })
-  }, [currentTableEquipment, inspectionUrgencyFilter])
+  }, [inspectionUrgencyFilter, statusFilteredEquipment])
 
   const equipmentTotalPages = Math.max(1, Math.ceil(urgencyFilteredEquipment.length / equipmentPageSize))
   const equipmentStartIndex = (equipmentPage - 1) * equipmentPageSize
@@ -1262,8 +1593,9 @@ export default function PortalDashboardPage() {
       name: item.name,
       asset_tag: item.asset_tag,
       serial_number: item.serial_number,
+      safe_working_load: item.safe_working_load,
       location: item.location,
-      status: item.status,
+      status: item.status === 'decommissioned' ? 'decommissioned' : item.inspection_status_label || 'No Approved Report',
       inspection_interval_days: item.inspection_interval_days,
       last_inspected_at: item.last_inspected_at,
       next_inspection_due: item.next_inspection_due,
@@ -1277,6 +1609,7 @@ export default function PortalDashboardPage() {
         { key: 'name', header: 'Name' },
         { key: 'asset_tag', header: 'Asset Tag' },
         { key: 'serial_number', header: 'Serial Number' },
+        { key: 'safe_working_load', header: 'Safe Working Load' },
         { key: 'location', header: 'Location' },
         { key: 'status', header: 'Status' },
         { key: 'inspection_interval_days', header: 'Inspection Interval (Days)' },
@@ -1444,17 +1777,30 @@ export default function PortalDashboardPage() {
     if (!viewedReport) return
 
     const checklistSections = getChecklistSections(viewedReport.checklist_items)
+    const isNotPresentedReport = isChecklistMarkedNotPresented(checklistSections)
     const wornItemsHtml =
       checklistSections.worn.length === 0
         ? '<p class="muted">None reported.</p>'
         : `<ul>${checklistSections.worn
-            .map((item) => `<li><strong>${escapeHtml(item.label)}</strong>: ${escapeHtml(item.note || '-')}</li>`)
+            .map(
+              (item) =>
+                `<li><strong>${escapeHtml(item.label)}</strong><br/>Finding: ${escapeHtml(item.finding || '-')}<br/>Recommendation: ${escapeHtml(item.recommendation || '-')}</li>`,
+            )
             .join('')}</ul>`
     const attentionItemsHtml =
       checklistSections.attention.length === 0
         ? '<p class="muted">None reported.</p>'
         : `<ul>${checklistSections.attention
-            .map((item) => `<li><strong>${escapeHtml(item.label)}</strong>: ${escapeHtml(item.note || '-')}</li>`)
+            .map(
+              (item) =>
+                `<li><strong>${escapeHtml(item.label)}</strong><br/>Finding: ${escapeHtml(item.finding || '-')}<br/>Recommendation: ${escapeHtml(item.recommendation || '-')}</li>`,
+            )
+            .join('')}</ul>`
+    const notPresentedItemsHtml =
+      checklistSections.notPresented.length === 0
+        ? '<p class="muted">None reported.</p>'
+        : `<ul>${checklistSections.notPresented
+            .map((item) => `<li><strong>${escapeHtml(item.label)}</strong>: Not presented for examination.</li>`)
             .join('')}</ul>`
 
     const reportHtml = `
@@ -1469,14 +1815,15 @@ export default function PortalDashboardPage() {
         <h2>Summary</h2>
         <p>${escapeHtml(viewedReport.summary || '-')}</p>
       </div>
+      ${
+        isNotPresentedReport
+          ? `
       <div class="section">
-        <h2>Findings</h2>
-        <p>${escapeHtml(viewedReport.findings || '-')}</p>
+        <h2>Status</h2>
+        <div class="card" style="border:1px solid #fecaca;background:#fee2e2;color:#991b1b;font-weight:700;">Not Presented</div>
       </div>
-      <div class="section">
-        <h2>Recommendations</h2>
-        <p>${escapeHtml(viewedReport.recommendations || '-')}</p>
-      </div>
+      `
+          : `
       <div class="section">
         <h2>Worn but Servicable</h2>
         <div class="card">${wornItemsHtml}</div>
@@ -1485,6 +1832,12 @@ export default function PortalDashboardPage() {
         <h2>Attention Required</h2>
         <div class="card">${attentionItemsHtml}</div>
       </div>
+      <div class="section">
+        <h2>Not Presented</h2>
+        <div class="card">${notPresentedItemsHtml}</div>
+      </div>
+      `
+      }
     `
 
     const printWindow = window.open('', '_blank', 'width=980,height=760')
@@ -1494,55 +1847,6 @@ export default function PortalDashboardPage() {
     printWindow.document.close()
   }
 
-  function handlePrintCertificates() {
-    if (!activeSelectedEquipment) return
-
-    const certificatesRowsHtml = certificates.length
-      ? certificates
-          .map(
-            (certificate) => `
-              <tr>
-                <td>${escapeHtml(certificate.title || `Certificate ${certificate.id}`)}</td>
-                <td>${escapeHtml(certificate.issue_date || '-')}</td>
-                <td>${escapeHtml(certificate.expiry_date || '-')}</td>
-                <td>${escapeHtml(certificate.created_at ? String(certificate.created_at).slice(0, 10) : '-')}</td>
-              </tr>
-            `,
-          )
-          .join('')
-      : '<tr><td colspan="4">No certificates uploaded for this equipment.</td></tr>'
-
-    const certificatesHtml = `
-      <h1>Certificate Register</h1>
-      <div class="meta">
-        <p><strong>Equipment:</strong> ${escapeHtml(activeSelectedEquipment.name || '-')}</p>
-        <p><strong>Asset Tag:</strong> ${escapeHtml(activeSelectedEquipment.asset_tag || '-')}</p>
-        <p><strong>Serial Number:</strong> ${escapeHtml(activeSelectedEquipment.serial_number || '-')}</p>
-      </div>
-      <div class="section">
-        <h2>Certificates</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Title</th>
-              <th>Issue Date</th>
-              <th>Expiry Date</th>
-              <th>Uploaded</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${certificatesRowsHtml}
-          </tbody>
-        </table>
-      </div>
-    `
-
-    const printWindow = window.open('', '_blank', 'width=980,height=760')
-    if (!printWindow) return
-    printWindow.document.open()
-    printWindow.document.write(buildPrintDocument(`Certificates - ${activeSelectedEquipment.name || 'Equipment'}`, certificatesHtml))
-    printWindow.document.close()
-  }
   const equipmentNextDuePreview = useMemo(
     () => calculateNextInspectionDue(equipmentForm.last_inspected_at, equipmentForm.inspection_interval_days),
     [equipmentForm.inspection_interval_days, equipmentForm.last_inspected_at],
@@ -1611,13 +1915,15 @@ export default function PortalDashboardPage() {
     () => normalizeReportChecklistItems(reportForm.checklist_items),
     [reportForm.checklist_items],
   )
+  const existingChecklistImagesByLabel = useMemo(
+    () => getChecklistImagesByLabel(reportForm.existingImages),
+    [reportForm.existingImages],
+  )
   const isEditingReport = Boolean(reportForm.reportId)
   const isAnyModalOpen = Boolean(
     viewedReport ||
       showEditReportModal ||
       showRevisionsModal ||
-      showCreateCertificateForm ||
-      confirmDeleteCertificate ||
       showCreateReportForm ||
       showCreateCustomerForm ||
       showEditCustomerForm ||
@@ -1626,6 +1932,9 @@ export default function PortalDashboardPage() {
         showChangePasswordModal ||
       showCreateEquipmentForm ||
       showDecommissionConfirm ||
+      showReportSubmissionConfirmModal ||
+      showGeneratedCertificatePreviewModal ||
+        showEquipmentQrModal ||
       showSessionExpiryWarning,
   )
   const [isMobileViewport, setIsMobileViewport] = useState(() => {
@@ -1662,6 +1971,7 @@ export default function PortalDashboardPage() {
       String(equipmentForm.name || '').trim() !== '' ||
       String(equipmentForm.asset_tag || '').trim() !== '' ||
       String(equipmentForm.serial_number || '').trim() !== '' ||
+      String(equipmentForm.safe_working_load || '').trim() !== '' ||
       String(equipmentForm.location || '').trim() !== '' ||
       String(equipmentForm.status || 'active') !== 'active' ||
       Number(equipmentForm.inspection_interval_days || 365) !== 365 ||
@@ -1684,19 +1994,16 @@ export default function PortalDashboardPage() {
       String(reportForm.recommendations || '').trim() !== '' ||
       String(reportForm.report_date || createReportBaseDate) !== String(createReportBaseDate) ||
       normalizeReportChecklistItems(reportForm.checklist_items).some(
-        (item) => item.status !== REPORT_CHECKLIST_STATUS_GOOD || String(item.note || '').trim() !== '',
+        (item) =>
+          item.status !== REPORT_CHECKLIST_STATUS_GOOD ||
+          String(item.finding || '').trim() !== '' ||
+          String(item.recommendation || '').trim() !== '',
+      ) ||
+      Object.values(reportForm.checklistImageFilesByLabel || {}).some(
+        (files) => (Array.isArray(files) ? files : []).length > 0,
       ) ||
       (reportForm.images || []).length > 0,
     [reportForm, createReportBaseDate],
-  )
-  const isCreateCertificateDirty = useMemo(
-    () =>
-      String(certificateForm.title || '').trim() !== '' ||
-      String(certificateForm.issue_date || '').trim() !== '' ||
-      String(certificateForm.expiry_date || '').trim() !== '' ||
-      String(certificateForm.report_id || '').trim() !== '' ||
-      Boolean(certificateForm.file),
-    [certificateForm],
   )
   const isEditReportDirty = useMemo(() => {
     const initial = initialReportEditFormRef.current
@@ -1709,6 +2016,9 @@ export default function PortalDashboardPage() {
       String(reportForm.status || '') !== String(initial.status || '') ||
       JSON.stringify(normalizeReportChecklistItems(reportForm.checklist_items)) !==
         JSON.stringify(normalizeReportChecklistItems(initial.checklist_items)) ||
+      Object.values(reportForm.checklistImageFilesByLabel || {}).some(
+        (files) => (Array.isArray(files) ? files : []).length > 0,
+      ) ||
       (reportForm.images || []).length > 0 ||
       (reportForm.removedImageIds || []).length > 0
     )
@@ -1822,16 +2132,6 @@ export default function PortalDashboardPage() {
     }
   }
 
-  function closeCreateCertificateForm(force = false) {
-    if (!force && isCreateCertificateDirty) {
-      setUnsavedChangesPrompt('createCertificate')
-      return false
-    }
-    setShowCreateCertificateForm(false)
-    setCertificateForm(buildEmptyCertificateForm())
-    return true
-  }
-
   function clearPromptAndRun(action) {
     setUnsavedChangesPrompt('')
     action()
@@ -1864,9 +2164,6 @@ export default function PortalDashboardPage() {
       return
     }
 
-    if (unsavedChangesPrompt === 'createCertificate') {
-      clearPromptAndRun(() => closeCreateCertificateForm(true))
-    }
   }
 
   function handleUnsavedPromptRevert() {
@@ -1915,12 +2212,6 @@ export default function PortalDashboardPage() {
       return
     }
 
-    if (unsavedChangesPrompt === 'createCertificate') {
-      clearPromptAndRun(() => {
-        setShowCreateCertificateForm(false)
-        setCertificateForm(buildEmptyCertificateForm())
-      })
-    }
   }
 
   function openCreateReportForm() {
@@ -1937,6 +2228,7 @@ export default function PortalDashboardPage() {
         ...baseReportForm,
         ...storedDraft.form,
         checklist_items: normalizeReportChecklistItems(storedDraft.form?.checklist_items),
+        checklistImageFilesByLabel: {},
         images: [],
         existingImages: [],
         removedImageIds: [],
@@ -1947,14 +2239,9 @@ export default function PortalDashboardPage() {
     }
 
     setCreateReportError('')
+    setShowReportSubmissionConfirmModal(false)
+    setReportSubmissionConfirmChecks(REPORT_SUBMISSION_CONFIRMATION_ITEMS.map(() => false))
     setShowCreateReportForm(true)
-  }
-
-  function openCreateCertificateFormModal() {
-    setCertificateError('')
-    setCertificateSuccess('')
-    setCertificateForm(buildEmptyCertificateForm())
-    setShowCreateCertificateForm(true)
   }
 
   useEffect(() => {
@@ -1982,45 +2269,6 @@ export default function PortalDashboardPage() {
   useEffect(() => {
     if (typeof window === 'undefined') return
 
-    function handleGlobalShortcuts(event) {
-      if (!event.altKey || isAnyModalOpen || isKeyboardEditableTarget(event.target)) return
-
-      const key = String(event.key || '').toLowerCase()
-      if (key === 'n' && canEditReports && activeSelectedEquipment?.id) {
-        event.preventDefault()
-        openCreateReportForm()
-        return
-      }
-
-      if (key === 'u' && canEditReports && activeSelectedEquipment?.id) {
-        event.preventDefault()
-        openCreateCertificateFormModal()
-        return
-      }
-
-      if (key === 'e' && activeSelectedEquipment?.id) {
-        event.preventDefault()
-        handleExportReportsCsv()
-      }
-    }
-
-    window.addEventListener('keydown', handleGlobalShortcuts)
-    return () => window.removeEventListener('keydown', handleGlobalShortcuts)
-  }, [
-    isAnyModalOpen,
-    canEditReports,
-    activeSelectedEquipment?.id,
-    openCreateReportForm,
-    openCreateCertificateFormModal,
-    handleExportReportsCsv,
-  ])
-
-  useEffect(() => {
-    const interval = setInterval(() => setNowMs(Date.now()), 60000)
-    return () => clearInterval(interval)
-  }, [])
-
-  useEffect(() => {
     if (showCreateReportForm && isCreateReportDirty) {
       writeReportDraft({
         mode: 'create',
@@ -2079,8 +2327,7 @@ export default function PortalDashboardPage() {
       showEditCustomerForm ||
       showCreateEmployeeForm ||
       showCreateEquipmentForm ||
-      showChangePasswordModal ||
-      showCreateCertificateForm
+      showChangePasswordModal
     ) {
       return
     }
@@ -2092,7 +2339,6 @@ export default function PortalDashboardPage() {
     showCreateEmployeeForm,
     showCreateEquipmentForm,
     showChangePasswordModal,
-    showCreateCertificateForm,
   ])
 
   const customersLastUpdatedLabel = useMemo(
@@ -2148,9 +2394,17 @@ export default function PortalDashboardPage() {
   }, [isAuthenticated])
 
   useEffect(() => {
-    const nextParams = new URLSearchParams()
+    if (suppressQuerySyncUntilCustomerListRef.current) {
+      if (!selectedCompanyId) {
+        suppressQuerySyncUntilCustomerListRef.current = false
+      }
+      return
+    }
 
-    if (selectedCompanyId) nextParams.set('companyId', selectedCompanyId)
+    const nextParams = new URLSearchParams()
+    const queryCompanyId = String(selectedCompanyId || '').trim()
+
+    if (queryCompanyId) nextParams.set('companyId', queryCompanyId)
 
     if (searchQuery) nextParams.set('q', searchQuery)
 
@@ -2160,13 +2414,30 @@ export default function PortalDashboardPage() {
 
     if (inspectionUrgencyFilter !== 'all') nextParams.set('eqUrgency', inspectionUrgencyFilter)
 
+    if (equipmentTableTab === 'active' && equipmentStatusFilter !== EQUIPMENT_STATUS_FILTER_ALL) {
+      nextParams.set('eqStatus', equipmentStatusFilter)
+    }
+
     if (equipmentPage > 1) nextParams.set('eqPage', String(equipmentPage))
+
+    if (selectedEquipment?.id) {
+      nextParams.set('eqId', String(selectedEquipment.id))
+    } else if (pendingDeepLinkEquipmentId) {
+      nextParams.set('eqId', pendingDeepLinkEquipmentId)
+    }
 
     if (customerPage > 1) nextParams.set('customersPage', String(customerPage))
 
     if (employeePage > 1) nextParams.set('employeesPage', String(employeePage))
 
     if (buildStableQueryString(nextParams) !== buildStableQueryString(searchParams)) {
+      logEqIdSyncDebug('sync-query-params', {
+        nextQuery: buildStableQueryString(nextParams),
+        previousQuery: buildStableQueryString(searchParams),
+        selectedEquipmentId: String(selectedEquipment?.id || ''),
+        pendingDeepLinkEquipmentId,
+      })
+      skipNextEqIdSyncRef.current = true
       setSearchParams(nextParams, { replace: true })
     }
   }, [
@@ -2174,12 +2445,105 @@ export default function PortalDashboardPage() {
     employeePage,
     equipmentPage,
     equipmentTableTab,
+    equipmentStatusFilter,
     inspectionUrgencyFilter,
     reportYearFilter,
+    pendingDeepLinkEquipmentId,
+    selectedEquipment?.id,
     selectedCompanyId,
     searchParams,
     searchQuery,
     setSearchParams,
+  ])
+
+  useEffect(() => {
+    if (skipNextEqIdSyncRef.current) {
+      logEqIdSyncDebug('skip-next-eqid-read', {
+        reason: 'query-sync-echo',
+        currentQuery: buildStableQueryString(searchParams),
+      })
+      skipNextEqIdSyncRef.current = false
+      return
+    }
+
+    const nextDeepLinkId = String(searchParams.get('eqId') || '').trim()
+    if (!nextDeepLinkId) {
+      if (pendingDeepLinkEquipmentId) {
+        logEqIdSyncDebug('clear-pending-eqid', {
+          reason: 'query-missing-eqid',
+          previousPendingEqId: pendingDeepLinkEquipmentId,
+        })
+        setPendingDeepLinkEquipmentId('')
+      }
+      return
+    }
+
+    if (String(selectedEquipment?.id || '') === nextDeepLinkId) {
+      if (pendingDeepLinkEquipmentId) {
+        logEqIdSyncDebug('clear-pending-eqid', {
+          reason: 'query-eqid-already-selected',
+          queryEqId: nextDeepLinkId,
+        })
+        setPendingDeepLinkEquipmentId('')
+      }
+      return
+    }
+
+    if (nextDeepLinkId !== pendingDeepLinkEquipmentId) {
+      logEqIdSyncDebug('queue-pending-eqid', {
+        queryEqId: nextDeepLinkId,
+        previousPendingEqId: pendingDeepLinkEquipmentId,
+      })
+      setPendingDeepLinkEquipmentId(nextDeepLinkId)
+    }
+  }, [pendingDeepLinkEquipmentId, searchParams, selectedEquipment?.id])
+
+  useEffect(() => {
+    if (!pendingDeepLinkEquipmentId) return
+    if (loading || refreshingEquipment) {
+      logEqIdSyncDebug('defer-pending-eqid', {
+        reason: loading ? 'loading' : 'refreshing-equipment',
+        pendingEqId: pendingDeepLinkEquipmentId,
+      })
+      return
+    }
+    if (!selectedCompanyId || showsCustomerPicker) {
+      logEqIdSyncDebug('defer-pending-eqid', {
+        reason: !selectedCompanyId ? 'missing-company' : 'customer-picker-visible',
+        pendingEqId: pendingDeepLinkEquipmentId,
+      })
+      return
+    }
+
+    const matchedEquipment = equipment.find(
+      (item) => String(item.id) === String(pendingDeepLinkEquipmentId),
+    )
+
+    if (!matchedEquipment) {
+      logEqIdSyncDebug('clear-pending-eqid', {
+        reason: 'no-equipment-match',
+        pendingEqId: pendingDeepLinkEquipmentId,
+      })
+      setPendingDeepLinkEquipmentId('')
+      return
+    }
+
+    logEqIdSyncDebug('apply-pending-eqid', {
+      pendingEqId: pendingDeepLinkEquipmentId,
+      matchedEquipmentId: String(matchedEquipment.id),
+      matchedEquipmentName: String(matchedEquipment.name || ''),
+    })
+    setSelectedEquipment(matchedEquipment)
+    setEquipmentTableTab(matchedEquipment.status === 'decommissioned' ? 'decommissioned' : 'active')
+    setEquipmentPage(1)
+    setPendingDeepLinkEquipmentId('')
+  }, [
+    equipment,
+    loading,
+    pendingDeepLinkEquipmentId,
+    refreshingEquipment,
+    selectedCompanyId,
+    showsCustomerPicker,
   ])
 
   useEffect(() => {
@@ -2228,7 +2592,12 @@ export default function PortalDashboardPage() {
       return
     }
     setEquipmentPage(1)
-  }, [equipmentSortKey, equipmentSortDirection, inspectionUrgencyFilter])
+  }, [equipmentSortKey, equipmentSortDirection, equipmentStatusFilter, inspectionUrgencyFilter])
+
+  useEffect(() => {
+    if (equipmentTableTab === 'active') return
+    setEquipmentStatusFilter(EQUIPMENT_STATUS_FILTER_ALL)
+  }, [equipmentTableTab])
 
   useEffect(() => {
     setEquipmentActivityPage(1)
@@ -2290,6 +2659,22 @@ export default function PortalDashboardPage() {
   }, [isMobileViewport, selectedEquipment?.id])
 
   useEffect(() => {
+    if (!scrollToCustomerListOnBackRef.current || !showsCustomerPicker) return
+
+    scrollToCustomerListOnBackRef.current = false
+    const frameId = window.requestAnimationFrame(() => {
+      const section = customerListSectionRef.current
+      if (section && typeof section.scrollIntoView === 'function') {
+        section.scrollIntoView({ behavior: 'auto', block: 'start' })
+      } else {
+        window.scrollTo({ top: 0, behavior: 'auto' })
+      }
+    })
+
+    return () => window.cancelAnimationFrame(frameId)
+  }, [showsCustomerPicker])
+
+  useEffect(() => {
     setEquipmentStatusDraft(activeSelectedEquipment?.status || 'active')
     setShowDecommissionConfirm(false)
   }, [activeSelectedEquipment?.id, activeSelectedEquipment?.status])
@@ -2302,7 +2687,6 @@ export default function PortalDashboardPage() {
       setEditReportError('')
       setShowRevisionsModal(false)
       setRevisionsError('')
-      setShowCreateCertificateForm(false)
     }
   }, [activeSelectedEquipment])
 
@@ -2379,7 +2763,6 @@ export default function PortalDashboardPage() {
 
   useEffect(() => {
     const isAnyCreateModalOpen = Boolean(
-      showCreateCertificateForm ||
       showCreateCustomerForm ||
         showEditCustomerForm ||
         showCreateEmployeeForm ||
@@ -2394,10 +2777,6 @@ export default function PortalDashboardPage() {
 
       if (showCreateReportForm) {
         void closeCreateReportForm()
-      }
-
-      if (showCreateCertificateForm) {
-        closeCreateCertificateForm()
       }
 
       if (showCreateEquipmentForm) {
@@ -2425,7 +2804,6 @@ export default function PortalDashboardPage() {
     window.addEventListener('keydown', handleEscapeClose)
     return () => window.removeEventListener('keydown', handleEscapeClose)
   }, [
-    showCreateCertificateForm,
     showCreateCustomerForm,
     showEditCustomerForm,
     showCreateEmployeeForm,
@@ -2568,6 +2946,7 @@ export default function PortalDashboardPage() {
     try {
       const refreshedEquipment = await getPortalEquipment({
         companyId: companyIdForRefresh,
+        siteId: selectedSiteId,
         search: searchQuery,
       })
       setEquipment(refreshedEquipment)
@@ -2631,6 +3010,7 @@ export default function PortalDashboardPage() {
       try {
         await getPortalEquipment({
           companyId: activeSelectedEquipment?.company_id || selectedCompanyId,
+          siteId: selectedSiteId,
           search: searchQuery,
         }).then((refreshedEquipment) => {
           setEquipment(refreshedEquipment)
@@ -2717,33 +3097,6 @@ export default function PortalDashboardPage() {
   useEffect(() => {
     let cancelled = false
 
-    async function loadCertificates() {
-      if (!activeSelectedEquipment?.id) return
-
-      setCertificatesLoading(true)
-      setCertificateError('')
-      setCertificateSuccess('')
-      try {
-        const nextCertificates = await getEquipmentCertificates(activeSelectedEquipment.id)
-        if (cancelled) return
-        setCertificates(nextCertificates)
-      } catch (error) {
-        if (cancelled) return
-        setCertificateError(String(error?.message || 'Unable to load certificates for this equipment.'))
-      } finally {
-        if (!cancelled) setCertificatesLoading(false)
-      }
-    }
-
-    loadCertificates()
-    return () => {
-      cancelled = true
-    }
-  }, [activeSelectedEquipment?.id])
-
-  useEffect(() => {
-    let cancelled = false
-
     async function loadPortalData() {
       if (!isAuthenticated) {
         setLoading(false)
@@ -2798,17 +3151,27 @@ export default function PortalDashboardPage() {
 
         if (!activeCompanyId) {
           setCompany(null)
+          setSelectedSiteId('')
           setEquipment([])
           return
         }
 
-        const [nextCompany, nextEquipment] = await Promise.all([
-          getPortalCompanyHeader(activeCompanyId),
-          getPortalEquipment({ companyId: activeCompanyId, search: searchQuery }),
-        ])
+        const nextCompany = await getPortalCompanyHeader(activeCompanyId)
+        if (cancelled) return
+
+        const nextSites = Array.isArray(nextCompany?.sites) ? nextCompany.sites : []
+        const nextSiteId =
+          nextSites.find((site) => String(site.id) === String(selectedSiteId))?.id || nextSites[0]?.id || ''
+
+        const nextEquipment = await getPortalEquipment({
+          companyId: activeCompanyId,
+          siteId: nextSiteId,
+          search: searchQuery,
+        })
         if (cancelled) return
 
         setCompany(nextCompany)
+        setSelectedSiteId(nextSiteId ? String(nextSiteId) : '')
         setEquipment(nextEquipment)
         setEquipmentLastUpdatedAt(Date.now())
         setEquipmentPage(1)
@@ -2833,7 +3196,7 @@ export default function PortalDashboardPage() {
     return () => {
       cancelled = true
     }
-  }, [isAuthenticated, navigate, searchQuery, selectedCompanyId])
+  }, [isAuthenticated, navigate, searchQuery, selectedCompanyId, selectedSiteId])
 
   async function handleLogout() {
     if (loggingOut) return
@@ -2897,11 +3260,19 @@ export default function PortalDashboardPage() {
     if (creatingReport || savingReportEdit) return
 
     const normalizedChecklistItems = normalizeReportChecklistItems(reportForm.checklist_items)
+    const checklistImageUploads = flattenChecklistImageUploads(reportForm.checklistImageFilesByLabel)
+    const hasConfirmedSubmissionChecks = reportSubmissionConfirmChecks.every(Boolean)
     if (!isEditingReport) {
-      const missingChecklistNoteLabel = getMissingChecklistNoteLabel(normalizedChecklistItems)
-      if (missingChecklistNoteLabel) {
-        const message = `Add a note for '${missingChecklistNoteLabel}' before saving this report.`
+      const missingChecklistDetails = getMissingChecklistDetailsError(normalizedChecklistItems)
+      if (missingChecklistDetails) {
+        const message = `Add a ${missingChecklistDetails.field} for '${missingChecklistDetails.label}' before saving this report.`
         setCreateReportError(message)
+        return
+      }
+
+      if (!hasConfirmedSubmissionChecks) {
+        setCreateReportError('')
+        setShowReportSubmissionConfirmModal(true)
         return
       }
     }
@@ -2912,6 +3283,7 @@ export default function PortalDashboardPage() {
 
       const refreshedEquipment = await getPortalEquipment({
         companyId: companyIdForRefresh,
+        siteId: selectedSiteId,
         search: searchQuery,
       })
       setEquipment(refreshedEquipment)
@@ -2931,9 +3303,9 @@ export default function PortalDashboardPage() {
         const updatedReport = await updateReport(reportForm.reportId, {
           title: reportForm.title,
           summary: reportForm.summary,
-          findings: reportForm.findings,
-          recommendations: reportForm.recommendations,
           checklist_items: normalizedChecklistItems,
+          checklist_images: checklistImageUploads.checklist_images,
+          checklist_image_labels: checklistImageUploads.checklist_image_labels,
           report_date: reportForm.report_date,
           status: reportForm.status,
           images: reportForm.images,
@@ -2974,6 +3346,8 @@ export default function PortalDashboardPage() {
       await createEquipmentReport(activeSelectedEquipment.id, {
         ...reportForm,
         checklist_items: normalizedChecklistItems,
+        checklist_images: checklistImageUploads.checklist_images,
+        checklist_image_labels: checklistImageUploads.checklist_image_labels,
         status: 'submitted',
       })
       const refreshed = await getEquipmentReports(activeSelectedEquipment.id)
@@ -2983,6 +3357,8 @@ export default function PortalDashboardPage() {
       setReportForm(buildEmptyReportForm())
       setShowCreateReportForm(false)
       setReportUnsavedPrompt('')
+      setShowReportSubmissionConfirmModal(false)
+      setReportSubmissionConfirmChecks(REPORT_SUBMISSION_CONFIRMATION_ITEMS.map(() => false))
     } catch (error) {
       setCreateReportError(String(error?.message || 'Unable to create report.'))
     } finally {
@@ -2990,102 +3366,228 @@ export default function PortalDashboardPage() {
     }
   }
 
-  async function handleCreateCertificate(event) {
-    event.preventDefault()
-    if (!activeSelectedEquipment?.id || creatingCertificate) return
+  function handleConfirmReportSubmissionChecks() {
+    if (creatingReport || savingReportEdit) return
+    if (!reportSubmissionConfirmChecks.every(Boolean)) return
+    setShowReportSubmissionConfirmModal(false)
+    void handleCreateReport()
+  }
 
-    setCreatingCertificate(true)
+  async function handleGenerateSiteCertificates() {
+    if (generatingSiteCertificates) return
+
+    const siteId = Number(activeSite?.id || selectedSiteId || 0)
+    if (!siteId) {
+      setCertificateError('Select a site before generating certificates.')
+      return
+    }
+
+    setGeneratingSiteCertificates(true)
     setCertificateError('')
-    setCertificateSuccess('')
     try {
-      await uploadEquipmentCertificate(activeSelectedEquipment.id, {
-        ...certificateForm,
-        report_id: certificateForm.report_id || null,
-      })
-      const refreshed = await getEquipmentCertificates(activeSelectedEquipment.id)
-      setCertificates(refreshed)
-      setCertificateSuccess('Certificate uploaded successfully.')
-      showSuccessToast('Certificate uploaded successfully.', 'Certificate Uploaded')
-      setCertificateForm(buildEmptyCertificateForm())
-      setShowCreateCertificateForm(false)
+      await generateSiteCertificates(siteId)
+      const nextCertificates = await getSiteCertificates(siteId)
+      setGeneratedCertificates(nextCertificates)
+      setConfirmDeleteGeneratedCertificateId('')
+      showSuccessToast('Certificate generated and saved for this site.', 'Certificate Generated')
     } catch (error) {
-      setCertificateError(String(error?.message || 'Unable to upload certificate.'))
+      setCertificateError(String(error?.message || 'Unable to generate site certificates.'))
     } finally {
-      setCreatingCertificate(false)
+      setGeneratingSiteCertificates(false)
     }
   }
 
-  async function handleDownloadCertificate(certificate) {
-    if (!certificate?.id || downloadingCertificateId) return
+  function closeGeneratedCertificatePreviewModal() {
+    setShowGeneratedCertificatePreviewModal(false)
+    if (generatedCertificatePreviewUrl) {
+      window.URL.revokeObjectURL(generatedCertificatePreviewUrl)
+    }
+    setGeneratedCertificatePreviewUrl('')
+    setGeneratedCertificateFilename('')
+  }
 
-    setDownloadingCertificateId(Number(certificate.id))
+  function getGeneratedCertificateFilename(certificate) {
+    const rawTitle = String(certificate?.title || '').trim()
+    if (rawTitle && /\.[a-z0-9]+$/i.test(rawTitle)) return rawTitle
+    if (rawTitle) return `${rawTitle}.pdf`
+    const filePath = String(certificate?.file || '').trim()
+    const fallbackFromPath = filePath.split('/').pop() || ''
+    return fallbackFromPath || 'site-certificate-register.pdf'
+  }
+
+  async function openGeneratedCertificatePreview(certificate) {
+    const certificateId = Number(certificate?.id || 0)
+    if (!certificateId) return
+
+    setGeneratedCertificateActionId(certificateId)
     setCertificateError('')
     try {
-      const blob = await downloadCertificate(certificate.id)
-      const extensionFromUrl = String(certificate.file || '').split('.').pop()
-      const hasExtension = /\.[a-z0-9]+$/i.test(String(certificate.title || ''))
-      const filename = hasExtension
-        ? String(certificate.title || `certificate-${certificate.id}`)
-        : `${String(certificate.title || `certificate-${certificate.id}`)}${
-            extensionFromUrl ? `.${extensionFromUrl}` : '.pdf'
-          }`
-
+      const blob = await downloadCertificate(certificateId)
       const objectUrl = window.URL.createObjectURL(blob)
+      if (generatedCertificatePreviewUrl) {
+        window.URL.revokeObjectURL(generatedCertificatePreviewUrl)
+      }
+      setGeneratedCertificatePreviewUrl(objectUrl)
+      setGeneratedCertificateFilename(getGeneratedCertificateFilename(certificate))
+      setShowGeneratedCertificatePreviewModal(true)
+    } catch (error) {
+      setCertificateError(String(error?.message || 'Unable to open certificate preview.'))
+    } finally {
+      setGeneratedCertificateActionId(0)
+    }
+  }
+
+  async function handleDeleteGeneratedCertificate(certificate) {
+    if (!isOwner || !certificate?.id) return
+
+    const certificateId = String(certificate.id)
+    if (confirmDeleteGeneratedCertificateId !== certificateId) {
+      setConfirmDeleteGeneratedCertificateId(certificateId)
+      return
+    }
+
+    const numericCertificateId = Number(certificateId)
+    setGeneratedCertificateActionId(numericCertificateId)
+    setCertificateError('')
+    try {
+      await deleteEquipmentCertificate(numericCertificateId)
+      const siteId = Number(activeSite?.id || selectedSiteId || 0)
+      if (siteId) {
+        const nextCertificates = await getSiteCertificates(siteId)
+        setGeneratedCertificates(nextCertificates)
+      }
+      setConfirmDeleteGeneratedCertificateId('')
+      showSuccessToast('Generated certificate deleted.', 'Certificate Deleted')
+    } catch (error) {
+      setCertificateError(String(error?.message || 'Unable to delete certificate.'))
+    } finally {
+      setGeneratedCertificateActionId(0)
+    }
+  }
+
+  async function handleSaveGeneratedCertificate(certificate = null) {
+    if (!certificate) {
+      if (!generatedCertificatePreviewUrl) return
+      const filename = generatedCertificateFilename || 'site-certificate-register.pdf'
       const anchor = document.createElement('a')
-      anchor.href = objectUrl
+      anchor.href = generatedCertificatePreviewUrl
       anchor.download = filename
       document.body.appendChild(anchor)
       anchor.click()
       anchor.remove()
-      window.URL.revokeObjectURL(objectUrl)
+      return
+    }
+
+    const certificateId = Number(certificate?.id || 0)
+    if (!certificateId) return
+    setGeneratedCertificateActionId(certificateId)
+    setCertificateError('')
+    try {
+      const blob = await downloadCertificate(certificateId)
+      const previewUrl = window.URL.createObjectURL(blob)
+      const filename = getGeneratedCertificateFilename(certificate)
+      const anchor = document.createElement('a')
+      anchor.href = previewUrl
+      anchor.download = filename
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      window.URL.revokeObjectURL(previewUrl)
     } catch (error) {
       setCertificateError(String(error?.message || 'Unable to download certificate.'))
     } finally {
-      setDownloadingCertificateId(0)
+      setGeneratedCertificateActionId(0)
     }
   }
 
-  async function handleDeleteCertificate(certificate) {
-    if (!isOwner || !certificate?.id || deletingCertificateId || recoveringCertificateId || recoveringReportId) return
+  async function handlePrintGeneratedCertificate(certificate = null) {
+    const printFromUrl = (previewUrl, revokeAfterPrint = false) => {
+      const printFrame = document.createElement('iframe')
+      printFrame.style.position = 'fixed'
+      printFrame.style.right = '0'
+      printFrame.style.bottom = '0'
+      printFrame.style.width = '0'
+      printFrame.style.height = '0'
+      printFrame.style.border = '0'
+      printFrame.src = previewUrl
 
-    setConfirmDeleteCertificate({
-      id: Number(certificate.id),
-      title: String(certificate.title || `Certificate #${certificate.id}`),
-    })
-  }
-
-  async function confirmDeleteCertificateAction() {
-    if (!confirmDeleteCertificate?.id || deletingCertificateId || recoveringCertificateId || recoveringReportId) return
-
-    const certificateId = Number(confirmDeleteCertificate.id)
-
-    setDeletingCertificateId(certificateId)
-    setCertificateError('')
-    setCertificateSuccess('')
-    try {
-      await deleteEquipmentCertificate(certificateId)
-      if (activeSelectedEquipment?.id) {
-        const [nextCertificates, nextActivity] = await Promise.all([
-          getEquipmentCertificates(activeSelectedEquipment.id),
-          canViewEquipmentActivity ? getEquipmentActivity(activeSelectedEquipment.id) : Promise.resolve([]),
-        ])
-        setCertificates(nextCertificates)
-        if (canViewEquipmentActivity) {
-          setEquipmentActivity(nextActivity)
+      const cleanup = () => {
+        printFrame.remove()
+        if (revokeAfterPrint) {
+          window.URL.revokeObjectURL(previewUrl)
         }
       }
-      setCertificateSuccess('Certificate deleted. It can be recovered for 3 days from Equipment Activity.')
-      showSuccessToast('Certificate deleted. Recovery is available for 3 days.', 'Certificate Deleted')
-      setConfirmDeleteCertificate(null)
+
+      printFrame.onload = () => {
+        try {
+          printFrame.contentWindow?.focus()
+          printFrame.contentWindow?.print()
+        } finally {
+          window.setTimeout(cleanup, 1500)
+        }
+      }
+
+      document.body.appendChild(printFrame)
+    }
+
+    if (!certificate) {
+      if (!generatedCertificatePreviewUrl) return
+      printFromUrl(generatedCertificatePreviewUrl)
+      return
+    }
+
+    const certificateId = Number(certificate?.id || 0)
+    if (!certificateId) return
+    setGeneratedCertificateActionId(certificateId)
+    setCertificateError('')
+    try {
+      const blob = await downloadCertificate(certificateId)
+      const previewUrl = window.URL.createObjectURL(blob)
+      printFromUrl(previewUrl, true)
     } catch (error) {
-      setCertificateError(String(error?.message || 'Unable to delete certificate.'))
+      setCertificateError(String(error?.message || 'Unable to print certificate.'))
     } finally {
-      setDeletingCertificateId(0)
+      setGeneratedCertificateActionId(0)
     }
   }
 
+  useEffect(() => {
+    let cancelled = false
+    const siteId = Number(activeSite?.id || selectedSiteId || 0)
+
+    async function loadGeneratedSiteCertificates() {
+      if (!siteId) {
+        setGeneratedCertificates([])
+        setGeneratedCertificatesLoading(false)
+        return
+      }
+
+      setGeneratedCertificatesLoading(true)
+      setCertificateError('')
+      try {
+        const nextCertificates = await getSiteCertificates(siteId)
+        if (cancelled) return
+        setGeneratedCertificates(nextCertificates)
+        setConfirmDeleteGeneratedCertificateId('')
+      } catch (error) {
+        if (cancelled) return
+        setCertificateError(String(error?.message || 'Unable to load site certificates.'))
+      } finally {
+        if (!cancelled) {
+          setGeneratedCertificatesLoading(false)
+        }
+      }
+    }
+
+    loadGeneratedSiteCertificates()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeSite?.id, selectedSiteId])
+
   async function handleRecoverActivityFromEntry(entry) {
-    if (!isOwner || deletingCertificateId || deletingDraftReport || recoveringCertificateId || recoveringReportId) return
+    if (!isOwner || deletingDraftReport || recoveringCertificateId || recoveringReportId) return
 
     const recoveryState = getActivityRecoveryState(entry, Date.now(), recoveredAtMsByRecoverableTarget)
     if (!recoveryState.canRecover || !recoveryState.targetType || !recoveryState.targetId) {
@@ -3109,13 +3611,11 @@ export default function PortalDashboardPage() {
       }
 
       if (activeSelectedEquipment?.id) {
-        const [nextReports, nextCertificates, nextActivity] = await Promise.all([
+        const [nextReports, nextActivity] = await Promise.all([
           getEquipmentReports(activeSelectedEquipment.id),
-          getEquipmentCertificates(activeSelectedEquipment.id),
           canViewEquipmentActivity ? getEquipmentActivity(activeSelectedEquipment.id) : Promise.resolve([]),
         ])
         setReports(nextReports)
-        setCertificates(nextCertificates)
         if (canViewEquipmentActivity) {
           setEquipmentActivity(nextActivity)
         }
@@ -3365,9 +3865,83 @@ export default function PortalDashboardPage() {
     }
   }
 
+  async function handleCreateSite(event) {
+    event.preventDefault()
+    if (!selectedCompanyId || creatingSite) return
+
+    setCreatingSite(true)
+    setSiteCreateError('')
+    try {
+      const createdSite = await createPortalSite({
+        company_id: Number(selectedCompanyId),
+        name: String(siteForm.name || '').trim(),
+        address: String(siteForm.address || '').trim(),
+      })
+      const nextCompany = await getPortalCompanyHeader(selectedCompanyId)
+      setCompany(nextCompany)
+      setSelectedSiteId(String(createdSite.id))
+      setEquipment([])
+      setEquipmentPage(1)
+      setSiteForm(buildEmptySiteForm())
+      setShowCreateSiteForm(false)
+      showSuccessToast(`Created site ${createdSite.name}.`, 'Site Created')
+    } catch (error) {
+      setSiteCreateError(String(error?.message || 'Unable to create site.'))
+    } finally {
+      setCreatingSite(false)
+    }
+  }
+
+  async function handleUpdateSite(event) {
+    event.preventDefault()
+    if (!selectedCompanyId || !activeSite?.id || updatingSite) return
+
+    setUpdatingSite(true)
+    setSiteEditError('')
+    try {
+      const updatedSite = await updatePortalSite(activeSite.id, {
+        name: String(siteEditForm.name || '').trim(),
+        address: String(siteEditForm.address || '').trim(),
+      })
+      const nextCompany = await getPortalCompanyHeader(selectedCompanyId)
+      setCompany(nextCompany)
+      setSelectedSiteId(String(updatedSite.id))
+      setShowEditSiteForm(false)
+      showSuccessToast(`Updated site ${updatedSite.name}.`, 'Site Updated')
+    } catch (error) {
+      setSiteEditError(String(error?.message || 'Unable to update site.'))
+    } finally {
+      setUpdatingSite(false)
+    }
+  }
+
+  async function handleDeleteSite() {
+    if (!selectedCompanyId || !activeSite?.id || deletingSite) return
+    if (!window.confirm(`Delete site '${activeSite.name}'?`)) return
+
+    setDeletingSite(true)
+    setSiteEditError('')
+    try {
+      await deletePortalSite(activeSite.id)
+      const nextCompany = await getPortalCompanyHeader(selectedCompanyId)
+      const nextSites = Array.isArray(nextCompany?.sites) ? nextCompany.sites : []
+      const nextSiteId = nextSites[0]?.id || ''
+      setCompany(nextCompany)
+      setSelectedSiteId(nextSiteId ? String(nextSiteId) : '')
+      setSelectedEquipment(null)
+      setEquipment([])
+      setEquipmentPage(1)
+      showSuccessToast(`Deleted site ${activeSite.name}.`, 'Site Deleted')
+    } catch (error) {
+      setSiteEditError(String(error?.message || 'Unable to delete site.'))
+    } finally {
+      setDeletingSite(false)
+    }
+  }
+
   async function handleCreateEquipment(event) {
     event.preventDefault()
-    if (!canEditReports || !selectedCompanyId || creatingEquipment) return
+    if (!canEditReports || !selectedCompanyId || !selectedSiteId || creatingEquipment) return
 
     setCreatingEquipment(true)
     setEquipmentCreateError('')
@@ -3376,12 +3950,15 @@ export default function PortalDashboardPage() {
       const payload = {
         ...equipmentForm,
         company_id: Number(selectedCompanyId),
+        site_id: Number(selectedSiteId),
+        safe_working_load: String(equipmentForm.safe_working_load || '').trim(),
         inspection_interval_days: Number(equipmentForm.inspection_interval_days || 365),
         last_inspected_at: equipmentForm.last_inspected_at || null,
       }
       const created = await createPortalEquipment(payload)
       const refreshedEquipment = await getPortalEquipment({
         companyId: selectedCompanyId,
+        siteId: selectedSiteId,
         search: searchQuery,
       })
       setEquipment(refreshedEquipment)
@@ -3434,6 +4011,7 @@ export default function PortalDashboardPage() {
       await updatePortalEquipment(targetEquipmentId, { status: newStatus })
       const refreshedEquipment = await getPortalEquipment({
         companyId: companyIdForRefresh,
+        siteId: selectedSiteId,
         search: searchQuery,
       })
       setEquipment(refreshedEquipment)
@@ -3492,6 +4070,7 @@ export default function PortalDashboardPage() {
       report_date: report.report_date || new Date().toISOString().slice(0, 10),
       status: report.status || 'draft',
       checklist_items: normalizeReportChecklistItems(report.checklist_items),
+      checklistImageFilesByLabel: {},
       images: [],
       existingImages: Array.isArray(report.images) ? report.images : [],
       removedImageIds: [],
@@ -3509,6 +4088,7 @@ export default function PortalDashboardPage() {
         ...nextEditReportForm,
         ...storedDraft.form,
         checklist_items: normalizeReportChecklistItems(storedDraft.form?.checklist_items),
+        checklistImageFilesByLabel: {},
         images: [],
       })
       showSuccessToast('Restored your saved report draft.', 'Draft Restored')
@@ -3743,25 +4323,95 @@ export default function PortalDashboardPage() {
     }))
   }
 
+  function appendChecklistItemImages(label, fileList) {
+    const nextFiles = Array.from(fileList || []).filter(Boolean)
+    if (nextFiles.length === 0) return
+
+    setReportForm((current) => {
+      const currentMap = current.checklistImageFilesByLabel || {}
+      return {
+        ...current,
+        checklistImageFilesByLabel: {
+          ...currentMap,
+          [label]: [...(Array.isArray(currentMap[label]) ? currentMap[label] : []), ...nextFiles],
+        },
+      }
+    })
+  }
+
+  function removePendingChecklistItemImage(label, indexToRemove) {
+    setReportForm((current) => {
+      const currentMap = current.checklistImageFilesByLabel || {}
+      const nextFiles = (Array.isArray(currentMap[label]) ? currentMap[label] : []).filter(
+        (_, index) => index !== indexToRemove,
+      )
+      const nextMap = { ...currentMap }
+      if (nextFiles.length === 0) {
+        delete nextMap[label]
+      } else {
+        nextMap[label] = nextFiles
+      }
+      return {
+        ...current,
+        checklistImageFilesByLabel: nextMap,
+      }
+    })
+  }
+
   function updateReportChecklistItems(nextChecklistItems) {
-    setReportForm((current) => ({
-      ...current,
-      checklist_items: normalizeReportChecklistItems(nextChecklistItems),
-    }))
+    setReportForm((current) => {
+      const normalizedItems = normalizeReportChecklistItems(nextChecklistItems)
+      const nextMap = { ...(current.checklistImageFilesByLabel || {}) }
+      normalizedItems.forEach((item) => {
+        if (![REPORT_CHECKLIST_STATUS_WORN, REPORT_CHECKLIST_STATUS_ATTENTION].includes(item.status)) {
+          delete nextMap[item.label]
+        }
+      })
+      return {
+        ...current,
+        checklist_items: normalizedItems,
+        checklistImageFilesByLabel: nextMap,
+      }
+    })
+  }
+
+  function applyNotPresentedReportPreset() {
+    const equipmentName = String(activeSelectedEquipment?.name || '').trim()
+    const defaultTitle = equipmentName ? `Not Presented - ${equipmentName}` : 'Not Presented - Equipment'
+
+    setReportForm((current) => {
+      const nextChecklistItems = normalizeReportChecklistItems(current.checklist_items).map((item) => ({
+        ...item,
+        status: REPORT_CHECKLIST_STATUS_NOT_PRESENTED,
+        finding: '',
+        recommendation: '',
+        days_before_reinspection: '',
+      }))
+
+      return {
+        ...current,
+        title: defaultTitle,
+        summary: NOT_PRESENTED_DEFAULT_SUMMARY,
+        checklist_items: nextChecklistItems,
+        checklistImageFilesByLabel: {},
+      }
+    })
   }
 
   function handleCloseEquipmentDetails() {
+    logEqIdSyncDebug('close-equipment-details', {
+      selectedEquipmentId: String(selectedEquipment?.id || ''),
+    })
     setSelectedEquipment(null)
+    setPendingDeepLinkEquipmentId('')
     setReports([])
-    setCertificates([])
     setEquipmentActivity([])
     setViewedReport(null)
     setSelectedReportImage(null)
     setReportForm(buildEmptyReportForm())
-    setCertificateForm(buildEmptyCertificateForm())
+    setShowReportSubmissionConfirmModal(false)
+    setReportSubmissionConfirmChecks(REPORT_SUBMISSION_CONFIRMATION_ITEMS.map(() => false))
     setShowCreateReportForm(false)
-    setShowCreateCertificateForm(false)
-    setConfirmDeleteCertificate(null)
     setShowEditReportModal(false)
     setConfirmRemoveReportImageId('')
     setCreateReportError('')
@@ -3774,6 +4424,76 @@ export default function PortalDashboardPage() {
     setCertificateError('')
     setEquipmentActivityError('')
     setCertificateSuccess('')
+    setShowEquipmentQrModal(false)
+    setEquipmentQrImageDataUrl('')
+    setEquipmentQrLink('')
+    setEquipmentQrError('')
+    setGeneratingEquipmentQr(false)
+  }
+
+  function handleBackToCustomerList() {
+    suppressQuerySyncUntilCustomerListRef.current = true
+    scrollToCustomerListOnBackRef.current = true
+    handleCloseEquipmentDetails()
+    setSearchInput('')
+    setSearchQuery('')
+    setSearchParams({}, { replace: true })
+  }
+
+  async function handleOpenEquipmentQr() {
+    if (!activeSelectedEquipment?.id) return
+
+    const deepLink = buildEquipmentDeepLink(
+      activeSelectedEquipment.company_id || selectedCompanyId,
+      activeSelectedEquipment.id,
+    )
+    if (!deepLink) {
+      setEquipmentQrError('Unable to build equipment link for this record.')
+      setShowEquipmentQrModal(true)
+      return
+    }
+
+    setShowEquipmentQrModal(true)
+    setEquipmentQrError('')
+    setEquipmentQrImageDataUrl('')
+    setEquipmentQrLink(deepLink)
+    setGeneratingEquipmentQr(true)
+
+    try {
+      const qrModule = await import('qrcode')
+      const qrDataUrl = await qrModule.toDataURL(deepLink, {
+        width: 320,
+        margin: 1,
+        errorCorrectionLevel: 'M',
+      })
+      setEquipmentQrImageDataUrl(qrDataUrl)
+    } catch {
+      setEquipmentQrError('Unable to generate QR code right now. Please try again.')
+    } finally {
+      setGeneratingEquipmentQr(false)
+    }
+  }
+
+  function handleDownloadEquipmentQr() {
+    if (!equipmentQrImageDataUrl || !activeSelectedEquipment?.id) return
+
+    const anchor = document.createElement('a')
+    anchor.href = equipmentQrImageDataUrl
+    anchor.download = `equipment-${activeSelectedEquipment.id}-qr.png`
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+  }
+
+  function handlePrintEquipmentQr() {
+    if (!equipmentQrImageDataUrl) return
+    printEquipmentQrLabel(
+      `${activeSelectedEquipment?.name || 'Equipment'} QR Label`,
+      activeSelectedEquipment?.name || '',
+      activeSelectedEquipment?.asset_tag || '',
+      equipmentQrImageDataUrl,
+      equipmentQrLink,
+    )
   }
 
   if (!isAuthenticated) {
@@ -3814,43 +4534,6 @@ export default function PortalDashboardPage() {
               className="rounded-md bg-[#123A7A] px-3 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168] disabled:opacity-70"
             >
               {refreshingSession ? 'Refreshing Session...' : 'Stay Logged In'}
-            </button>
-          </div>
-        </div>
-      </Modal>
-      <Modal
-        open={Boolean(confirmDeleteCertificate)}
-        onClose={() => {
-          if (deletingCertificateId) return
-          setConfirmDeleteCertificate(null)
-        }}
-        panelClassName="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
-      >
-        <div onClick={(event) => event.stopPropagation()}>
-          <h3 className="text-lg font-bold text-[#123A7A]">Delete Certificate?</h3>
-          <p className="mt-2 text-sm text-slate-600">
-            Delete{' '}
-            <span className="font-semibold text-slate-800">
-              {confirmDeleteCertificate?.title || 'this certificate'}
-            </span>
-            ? You can recover it from Equipment Activity for 3 days.
-          </p>
-          <div className="mt-4 flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setConfirmDeleteCertificate(null)}
-              disabled={Boolean(deletingCertificateId)}
-              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-[#123A7A] hover:text-[#123A7A] disabled:opacity-70"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={confirmDeleteCertificateAction}
-              disabled={Boolean(deletingCertificateId)}
-              className="rounded-md border border-red-300 bg-white px-3 py-2 text-sm font-semibold text-red-700 transition hover:bg-red-600 hover:text-white disabled:opacity-70"
-            >
-              {deletingCertificateId ? 'Deleting...' : 'Delete Certificate'}
             </button>
           </div>
         </div>
@@ -3911,7 +4594,8 @@ export default function PortalDashboardPage() {
         )}
 
         {showsCustomerPicker && (
-          <CustomerListSection
+          <div ref={customerListSectionRef}>
+            <CustomerListSection
             isOwner={isOwner}
             companies={companies}
             dashboardStats={dashboardStats}
@@ -3950,7 +4634,8 @@ export default function PortalDashboardPage() {
             }}
             onOpenCustomer={(companyId) => setSearchParams({ companyId: String(companyId) })}
             onEditCustomer={handleStartEditCustomer}
-          />
+            />
+          </div>
         )}
 
         {showsCustomerPicker && isOwner && (
@@ -4036,11 +4721,7 @@ export default function PortalDashboardPage() {
           <div className="mt-6">
             <button
               type="button"
-              onClick={() => {
-                setSearchParams({})
-                setSearchInput('')
-                setSearchQuery('')
-              }}
+              onClick={handleBackToCustomerList}
               className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:border-[#123A7A]"
             >
               Back to Customer List
@@ -4082,9 +4763,230 @@ export default function PortalDashboardPage() {
                     {company.address || 'Not provided'}
                   </p>
                 </div>
+
+                <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-bold uppercase tracking-wide text-slate-700">Sites</h3>
+                      <p className="mt-1 text-sm text-slate-500">
+                        Choose a site to view only the equipment assigned to that location.
+                      </p>
+                    </div>
+                    {canManageSites && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowCreateSiteForm(true)
+                          setSiteCreateError('')
+                        }}
+                        className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                      >
+                        + Add Site
+                      </button>
+                    )}
+                  </div>
+
+                  {companySites.length === 0 ? (
+                    <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                      No sites have been added for this company yet.
+                    </div>
+                  ) : (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {companySites.map((site) => {
+                        const isActiveSite = String(activeSite?.id) === String(site.id)
+                        return (
+                          <button
+                            key={site.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedSiteId(String(site.id))
+                              setSelectedEquipment(null)
+                              setEquipmentPage(1)
+                            }}
+                            className={`rounded-full border px-3 py-2 text-sm font-semibold transition ${
+                              isActiveSite
+                                ? 'border-[#123A7A] bg-[#123A7A] text-white'
+                                : 'border-slate-300 bg-white text-slate-700 hover:border-[#123A7A] hover:text-[#123A7A]'
+                            }`}
+                          >
+                            {site.name}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+
+                  {activeSite && (
+                    <div className="mt-4 rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm text-slate-600">
+                      <p>
+                        <span className="font-semibold text-slate-700">Viewing site:</span>{' '}
+                        {activeSite.name}
+                      </p>
+                      <p className="mt-1">
+                        <span className="font-semibold text-slate-700">Site address:</span>{' '}
+                        {activeSite.address || 'Not provided'}
+                      </p>
+                      {canManageSites && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSiteEditForm({
+                                name: String(activeSite.name || ''),
+                                address: String(activeSite.address || ''),
+                              })
+                              setSiteEditError('')
+                              setShowEditSiteForm(true)
+                            }}
+                            className="rounded-md border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                          >
+                            Edit Site
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleDeleteSite}
+                            disabled={deletingSite}
+                            className="rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-700 transition hover:bg-red-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
+                          >
+                            {deletingSite ? 'Deleting...' : 'Delete Site'}
+                          </button>
+                        </div>
+                      )}
+                      {siteEditError && (
+                        <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                          {siteEditError}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </article>
+        )}
+
+        {!showsCustomerPicker && (
+          <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-2xl font-extrabold text-[#123A7A]">Certificates</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  Open the latest full site certificate register for this site.
+                </p>
+              </div>
+              {isOwner && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleGenerateSiteCertificates()
+                  }}
+                  disabled={generatingSiteCertificates}
+                  className="rounded-md border border-emerald-600 bg-white px-3 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {generatingSiteCertificates ? 'Generating Certificate...' : 'Generate Certificate'}
+                </button>
+              )}
+            </div>
+
+            {certificateError && (
+              <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {certificateError}
+              </div>
+            )}
+
+            <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
+              <div className="bg-slate-50 px-4 py-3">
+                <h3 className="text-sm font-semibold text-slate-700">Generated Certificates</h3>
+                <p className="mt-1 text-xs text-slate-500">Certificates generated for the selected site.</p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[680px] border-collapse text-left text-sm">
+                  <thead className="bg-[#123A7A] text-white">
+                    <tr>
+                      <th className="px-4 py-3 font-semibold">Certificate</th>
+                      <th className="px-4 py-3 font-semibold">Generated</th>
+                      <th className="px-4 py-3 font-semibold">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {generatedCertificatesLoading ? (
+                      <tr>
+                        <td className="px-4 py-4 text-slate-500" colSpan={3}>
+                          Loading generated certificates...
+                        </td>
+                      </tr>
+                    ) : generatedCertificates.length === 0 ? (
+                      <tr>
+                        <td className="px-4 py-4 text-slate-500" colSpan={3}>
+                          No certificates generated for this site yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      generatedCertificates.map((certificate) => (
+                          <tr key={certificate.id} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
+                            <td className="px-4 py-3 font-semibold text-slate-800">{getGeneratedCertificateFilename(certificate)}</td>
+                            <td className="px-4 py-3 text-slate-700">{formatGeneratedCertificateTimestamp(certificate.created_at)}</td>
+                            <td className="px-4 py-3">
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setConfirmDeleteGeneratedCertificateId('')
+                                    void openGeneratedCertificatePreview(certificate)
+                                  }}
+                                  disabled={generatedCertificateActionId === Number(certificate.id)}
+                                  className="rounded border border-[#123A7A] bg-white px-2 py-1 text-xs font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                                >
+                                  {generatedCertificateActionId === Number(certificate.id) ? 'Opening...' : 'View'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setConfirmDeleteGeneratedCertificateId('')
+                                    void handleSaveGeneratedCertificate(certificate)
+                                  }}
+                                  disabled={generatedCertificateActionId === Number(certificate.id)}
+                                  className="rounded border border-[#123A7A] bg-white px-2 py-1 text-xs font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                                >
+                                  {generatedCertificateActionId === Number(certificate.id) ? 'Preparing...' : 'Download'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setConfirmDeleteGeneratedCertificateId('')
+                                    void handlePrintGeneratedCertificate(certificate)
+                                  }}
+                                  disabled={generatedCertificateActionId === Number(certificate.id)}
+                                  className="rounded border border-[#123A7A] bg-[#123A7A] px-2 py-1 text-xs font-semibold text-white transition hover:bg-[#0f3168]"
+                                >
+                                  {generatedCertificateActionId === Number(certificate.id) ? 'Preparing...' : 'Print'}
+                                </button>
+                                {isOwner && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      void handleDeleteGeneratedCertificate(certificate)
+                                    }}
+                                    disabled={generatedCertificateActionId === Number(certificate.id)}
+                                    className="rounded border border-red-300 bg-white px-2 py-1 text-xs font-semibold text-red-700 transition hover:bg-red-600 hover:text-white"
+                                  >
+                                    {generatedCertificateActionId === Number(certificate.id)
+                                      ? 'Deleting...'
+                                      : confirmDeleteGeneratedCertificateId === String(certificate.id)
+                                      ? 'Confirm Delete'
+                                      : 'Delete'}
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
         )}
 
         {!showsCustomerPicker && (
@@ -4095,6 +4997,10 @@ export default function PortalDashboardPage() {
             onSearchSubmit={() => setSearchQuery(searchInput.trim())}
             lastUpdatedLabel={equipmentLastUpdatedLabel}
             onOpenCreateEquipment={() => {
+              if (!activeSite) {
+                setEquipmentCreateError('Add or select a site before creating equipment.')
+                return
+              }
               setShowCreateEquipmentForm(true)
               setEquipmentCreateError('')
             }}
@@ -4119,6 +5025,8 @@ export default function PortalDashboardPage() {
             onToggleEquipmentSort={handleToggleEquipmentSort}
             inspectionUrgencyFilter={inspectionUrgencyFilter}
             onInspectionUrgencyFilterChange={setInspectionUrgencyFilter}
+            equipmentStatusFilter={equipmentStatusFilter}
+            onEquipmentStatusFilterChange={setEquipmentStatusFilter}
             activeEquipment={activeEquipment}
             decommissionedEquipment={decommissionedEquipment}
             isMobileViewport={isMobileViewport}
@@ -4131,13 +5039,19 @@ export default function PortalDashboardPage() {
             }
             activeSelectedEquipment={activeSelectedEquipment}
             onSelectEquipmentForView={(item) => {
+              logEqIdSyncDebug('manual-select-equipment', {
+                selectedEquipmentId: String(item?.id || ''),
+                selectedEquipmentName: String(item?.name || ''),
+              })
               setSelectedEquipment(item)
+              setPendingDeepLinkEquipmentId('')
               setReportForm(buildEmptyReportForm())
               setShowCreateReportForm(false)
               setRevisionReportId('')
               setReportRevisions([])
             }}
             onCloseEquipmentDetails={handleCloseEquipmentDetails}
+            onOpenEquipmentQr={handleOpenEquipmentQr}
             isOwner={isOwner}
             onSetEquipmentActive={(itemId) => handleUpdateEquipmentStatus('active', itemId)}
             updatingEquipmentStatus={updatingEquipmentStatus}
@@ -4149,17 +5063,9 @@ export default function PortalDashboardPage() {
             certificateError={certificateError}
             equipmentActivityError={equipmentActivityError}
             canViewEquipmentActivity={canViewEquipmentActivity}
-            onOpenUploadCertificate={() => {
-              openCreateCertificateFormModal()
-            }}
             onOpenCreateReport={() => {
               openCreateReportForm()
             }}
-            certificatesLoading={certificatesLoading}
-            certificates={certificates}
-            onDownloadCertificate={handleDownloadCertificate}
-            downloadingCertificateId={downloadingCertificateId}
-            deletingCertificateId={deletingCertificateId}
             reportsLoading={reportsLoading}
             reports={reports}
             getReportStatusBadge={getReportStatusBadge}
@@ -4202,14 +5108,23 @@ export default function PortalDashboardPage() {
                   Equipment Details: {activeSelectedEquipment.name}
                 </h2>
               </div>
-              <button
-                type="button"
-                onClick={handleCloseEquipmentDetails}
-                aria-label="Close equipment details panel"
-                className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:border-[#123A7A]"
-              >
-                Close Details
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleOpenEquipmentQr}
+                  className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                >
+                  Show Equipment QR
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCloseEquipmentDetails}
+                  aria-label="Close equipment details panel"
+                  className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:border-[#123A7A]"
+                >
+                  Close Details
+                </button>
+              </div>
             </div>
 
             <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -4283,13 +5198,18 @@ export default function PortalDashboardPage() {
             )}
             {canEditReports && (
               <div className="mt-4 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={openCreateCertificateFormModal}
-                  className="rounded-md border border-emerald-600 bg-white px-3 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-600 hover:text-white"
-                >
-                  Upload Certificate
-                </button>
+                {isOwner && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleGenerateSiteCertificates()
+                    }}
+                    disabled={generatingSiteCertificates}
+                    className="rounded-md border border-emerald-600 bg-white px-3 py-2 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-600 hover:text-white"
+                  >
+                    {generatingSiteCertificates ? 'Generating Certificate...' : 'Generate Certificate'}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={openCreateReportForm}
@@ -4302,7 +5222,7 @@ export default function PortalDashboardPage() {
 
             <p className="mt-3 text-xs text-slate-500">
               Keyboard shortcuts: <span className="font-semibold">Alt+N</span> new report,{' '}
-              <span className="font-semibold">Alt+U</span> upload certificate,{' '}
+              <span className="font-semibold">Alt+U</span> generate certificate,{' '}
               <span className="font-semibold">Alt+E</span> export reports CSV.
             </p>
 
@@ -4377,7 +5297,7 @@ export default function PortalDashboardPage() {
                                       <button
                                         type="button"
                                         onClick={() => handleRecoverActivityFromEntry(entry)}
-                                        disabled={isRecovering || deletingCertificateId > 0 || deletingDraftReport}
+                                        disabled={isRecovering || deletingDraftReport}
                                         className="w-fit rounded border border-emerald-600 px-2 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
                                       >
                                         {isRecovering
@@ -4444,7 +5364,7 @@ export default function PortalDashboardPage() {
                                 <button
                                   type="button"
                                   onClick={() => handleRecoverActivityFromEntry(entry)}
-                                  disabled={isRecovering || deletingCertificateId > 0 || deletingDraftReport}
+                                  disabled={isRecovering || deletingDraftReport}
                                   className="rounded border border-emerald-600 px-2 py-1 text-[11px] font-semibold text-emerald-700 transition hover:bg-emerald-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
                                 >
                                   {isRecovering
@@ -4488,82 +5408,6 @@ export default function PortalDashboardPage() {
                 )}
               </div>
             )}
-
-            <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
-              <div className="flex items-center justify-between gap-3 bg-slate-50 px-4 py-3">
-                <h3 className="text-sm font-semibold text-slate-700">Certificates</h3>
-                <button
-                  type="button"
-                  onClick={handlePrintCertificates}
-                  className="rounded-md border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
-                >
-                  Print Certificates
-                </button>
-              </div>
-
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[780px] border-collapse text-left text-sm">
-                  <thead className="bg-[#123A7A] text-white">
-                    <tr>
-                      <th className="px-4 py-3 font-semibold">Title</th>
-                      <th className="px-4 py-3 font-semibold">Issue Date</th>
-                      <th className="px-4 py-3 font-semibold">Expiry Date</th>
-                      <th className="px-4 py-3 font-semibold">Uploaded</th>
-                      <th className="px-4 py-3 font-semibold">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {certificatesLoading ? (
-                      <tr>
-                        <td className="px-4 py-4 text-slate-500" colSpan={5}>
-                          Loading certificates...
-                        </td>
-                      </tr>
-                    ) : certificates.length === 0 ? (
-                      <tr>
-                        <td className="px-4 py-4 text-slate-500" colSpan={5}>
-                          No certificates uploaded for this equipment.
-                        </td>
-                      </tr>
-                    ) : (
-                      certificates.map((certificate) => (
-                        <tr key={certificate.id} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
-                          <td className="px-4 py-3 font-semibold text-slate-800">{certificate.title || `Certificate ${certificate.id}`}</td>
-                          <td className="px-4 py-3 text-slate-700">{certificate.issue_date || '-'}</td>
-                          <td className="px-4 py-3 text-slate-700">{certificate.expiry_date || '-'}</td>
-                          <td className="px-4 py-3 text-slate-700">{certificate.created_at ? String(certificate.created_at).slice(0, 10) : '-'}</td>
-                          <td className="px-4 py-3 text-slate-700">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => handleDownloadCertificate(certificate)}
-                                aria-label={`Download certificate ${certificate.title || certificate.id}`}
-                                disabled={downloadingCertificateId === Number(certificate.id) || deletingCertificateId === Number(certificate.id)}
-                                className="rounded border border-[#123A7A] px-2 py-1 text-xs font-semibold text-[#123A7A] disabled:cursor-not-allowed disabled:opacity-60"
-                              >
-                                {downloadingCertificateId === Number(certificate.id) ? 'Downloading...' : 'Download'}
-                              </button>
-                              {isOwner && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteCertificate(certificate)}
-                                  aria-label={`Delete certificate ${certificate.title || certificate.id}`}
-                                  disabled={deletingCertificateId === Number(certificate.id) || downloadingCertificateId > 0}
-                                  className="rounded border border-red-300 px-2 py-1 text-xs font-semibold text-red-700 transition hover:bg-red-600 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-                                >
-                                  {deletingCertificateId === Number(certificate.id) ? 'Deleting...' : 'Delete'}
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
 
             <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
               <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 px-4 py-3">
@@ -5244,6 +6088,114 @@ export default function PortalDashboardPage() {
           </div>
         )}
 
+        {canEditReports && showCreateSiteForm && (
+          <Modal open={showCreateSiteForm} onClose={() => setShowCreateSiteForm(false)}>
+            <form
+              onSubmit={handleCreateSite}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-lg font-bold text-[#123A7A]">Add Site</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowCreateSiteForm(false)}
+                  className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="mt-4 grid gap-3">
+                <label className="text-sm font-semibold text-slate-700">
+                  Site Name
+                  <input
+                    type="text"
+                    value={siteForm.name}
+                    onChange={(event) => setSiteForm((current) => ({ ...current, name: event.target.value }))}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    required
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Site Address
+                  <textarea
+                    value={siteForm.address}
+                    onChange={(event) => setSiteForm((current) => ({ ...current, address: event.target.value }))}
+                    className="mt-1 min-h-24 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </label>
+              </div>
+
+              {siteCreateError && (
+                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {siteCreateError}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={creatingSite}
+                className="mt-4 rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168] disabled:opacity-70"
+              >
+                {creatingSite ? 'Creating site...' : 'Create Site'}
+              </button>
+            </form>
+          </Modal>
+        )}
+
+        {canManageSites && showEditSiteForm && (
+          <Modal open={showEditSiteForm} onClose={() => setShowEditSiteForm(false)}>
+            <form
+              onSubmit={handleUpdateSite}
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-lg font-bold text-[#123A7A]">Edit Site</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowEditSiteForm(false)}
+                  className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
+                >
+                  Close
+                </button>
+              </div>
+              <div className="mt-4 grid gap-3">
+                <label className="text-sm font-semibold text-slate-700">
+                  Site Name
+                  <input
+                    type="text"
+                    value={siteEditForm.name}
+                    onChange={(event) => setSiteEditForm((current) => ({ ...current, name: event.target.value }))}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    required
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Site Address
+                  <textarea
+                    value={siteEditForm.address}
+                    onChange={(event) => setSiteEditForm((current) => ({ ...current, address: event.target.value }))}
+                    className="mt-1 min-h-24 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </label>
+              </div>
+
+              {siteEditError && (
+                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {siteEditError}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={updatingSite}
+                className="mt-4 rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168] disabled:opacity-70"
+              >
+                {updatingSite ? 'Saving...' : 'Save Site'}
+              </button>
+            </form>
+          </Modal>
+        )}
+
         {canEditReports && showCreateEquipmentForm && (
           <Modal open={showCreateEquipmentForm} onClose={closeCreateEquipmentForm}>
             <form
@@ -5261,6 +6213,10 @@ export default function PortalDashboardPage() {
                 </button>
               </div>
               <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700 md:col-span-2">
+                  <span className="font-semibold text-slate-800">Site:</span>{' '}
+                  {activeSite?.name || 'No site selected'}
+                </div>
                 <label className="text-sm font-semibold text-slate-700">
                   Name
                   <input
@@ -5291,6 +6247,19 @@ export default function PortalDashboardPage() {
                       setEquipmentForm((current) => ({ ...current, serial_number: event.target.value }))
                     }
                     className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="text-sm font-semibold text-slate-700">
+                  Safe Working Load
+                  <input
+                    type="text"
+                    value={equipmentForm.safe_working_load}
+                    onChange={(event) =>
+                      setEquipmentForm((current) => ({ ...current, safe_working_load: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                    placeholder="e.g. 1000 kg"
+                    required
                   />
                 </label>
                 <label className="text-sm font-semibold text-slate-700">
@@ -5514,29 +6483,15 @@ export default function PortalDashboardPage() {
                     className="mt-1 min-h-20 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                   />
                 </label>
-                <label className="text-sm font-semibold text-slate-700">
-                  Findings
-                  <textarea
-                    value={reportForm.findings}
-                    onChange={(event) =>
-                      setReportForm((current) => ({ ...current, findings: event.target.value }))
-                    }
-                    className="mt-1 min-h-20 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  />
-                </label>
-                <label className="text-sm font-semibold text-slate-700">
-                  Recommendations
-                  <textarea
-                    value={reportForm.recommendations}
-                    onChange={(event) =>
-                      setReportForm((current) => ({ ...current, recommendations: event.target.value }))
-                    }
-                    className="mt-1 min-h-20 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  />
-                </label>
                 <ReportChecklistEditor
                   checklistItems={normalizedReportChecklistItems}
                   onChange={updateReportChecklistItems}
+                  onApplyNotPresentedPreset={applyNotPresentedReportPreset}
+                  pendingChecklistImagesByLabel={reportForm.checklistImageFilesByLabel}
+                  existingChecklistImagesByLabel={existingChecklistImagesByLabel}
+                  onAddChecklistItemImages={appendChecklistItemImages}
+                  onRemovePendingChecklistItemImage={removePendingChecklistItemImage}
+                  onOpenChecklistItemImage={handleOpenReportImage}
                 />
                 <label className="text-sm font-semibold text-slate-700 md:col-span-2">
                   Images
@@ -5590,125 +6545,6 @@ export default function PortalDashboardPage() {
                 className="mt-4 rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168] disabled:opacity-70"
               >
                 {creatingReport ? 'Submitting...' : 'Submit Report'}
-              </button>
-            </form>
-          </div>
-        )}
-
-        {canEditReports && showCreateCertificateForm && activeSelectedEquipment && (
-          <div
-            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
-            onClick={() => closeCreateCertificateForm()}
-          >
-            <form
-              className="max-h-[calc(100vh-7rem)] w-full max-w-2xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
-              onSubmit={handleCreateCertificate}
-              onClick={(event) => event.stopPropagation()}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-lg font-bold text-[#123A7A]">Upload Certificate</h3>
-                  <p className="mt-1 text-sm text-slate-600">
-                    Add a certificate for {activeSelectedEquipment.name || 'this equipment'}.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => closeCreateCertificateForm()}
-                  className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
-                >
-                  Close
-                </button>
-              </div>
-
-              <div className="mt-4 grid gap-3 md:grid-cols-2">
-                <label className="text-sm font-semibold text-slate-700 md:col-span-2">
-                  Certificate Title
-                  <input
-                    type="text"
-                    value={certificateForm.title}
-                    onChange={(event) =>
-                      setCertificateForm((current) => ({ ...current, title: event.target.value }))
-                    }
-                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                    required
-                  />
-                </label>
-
-                <label className="text-sm font-semibold text-slate-700">
-                  Issue Date
-                  <input
-                    type="date"
-                    value={certificateForm.issue_date}
-                    onChange={(event) =>
-                      setCertificateForm((current) => ({ ...current, issue_date: event.target.value }))
-                    }
-                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  />
-                </label>
-
-                <label className="text-sm font-semibold text-slate-700">
-                  Expiry Date
-                  <input
-                    type="date"
-                    value={certificateForm.expiry_date}
-                    onChange={(event) =>
-                      setCertificateForm((current) => ({ ...current, expiry_date: event.target.value }))
-                    }
-                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  />
-                </label>
-
-                <label className="text-sm font-semibold text-slate-700 md:col-span-2">
-                  Link to Report (optional)
-                  <select
-                    value={certificateForm.report_id}
-                    onChange={(event) =>
-                      setCertificateForm((current) => ({ ...current, report_id: event.target.value }))
-                    }
-                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                  >
-                    <option value="">No linked report</option>
-                    {reports.map((report) => (
-                      <option key={report.id} value={String(report.id)}>
-                        {report.title || `Report ${report.id}`} ({report.report_date || '-'})
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="text-sm font-semibold text-slate-700 md:col-span-2">
-                  Certificate File (PDF, PNG, JPG, JPEG, max 10MB)
-                  <input
-                    type="file"
-                    accept=".pdf,.png,.jpg,.jpeg"
-                    onChange={(event) =>
-                      setCertificateForm((current) => ({
-                        ...current,
-                        file: event.target.files?.[0] || null,
-                      }))
-                    }
-                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                    required
-                  />
-                  {certificateForm.file && (
-                    <p className="mt-1 text-xs text-slate-500">Selected: {certificateForm.file.name}</p>
-                  )}
-                </label>
-              </div>
-
-              {certificateError && (
-                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                  {certificateError}
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={creatingCertificate}
-                className="mt-4 rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168] disabled:opacity-70"
-              >
-                {creatingCertificate ? 'Uploading...' : 'Upload Certificate'}
               </button>
             </form>
           </div>
@@ -5779,6 +6615,17 @@ export default function PortalDashboardPage() {
 
               {(() => {
                 const checklistSections = getChecklistSections(viewedReport.checklist_items)
+                const checklistImagesByLabel = getChecklistImagesByLabel(viewedReport.images)
+                const isNotPresentedReport = isChecklistMarkedNotPresented(checklistSections)
+
+                if (isNotPresentedReport) {
+                  return (
+                    <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-4">
+                      <p className="text-base font-bold uppercase tracking-wide text-rose-800">Not Presented</p>
+                    </div>
+                  )
+                }
+
                 return (
                   <div className="mt-4 grid gap-3 md:grid-cols-2">
                     <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
@@ -5790,7 +6637,26 @@ export default function PortalDashboardPage() {
                           {checklistSections.worn.map((item) => (
                             <li key={`worn-${item.label}`}>
                               <p className="font-semibold">{item.label}</p>
-                              <p>{item.note || '-'}</p>
+                              <p><span className="font-semibold">Finding:</span> {item.finding || '-'}</p>
+                              <p><span className="font-semibold">Recommendation:</span> {item.recommendation || '-'}</p>
+                              {(checklistImagesByLabel[item.label] || []).length > 0 && (
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  {(checklistImagesByLabel[item.label] || []).map((image) => (
+                                    <button
+                                      key={`worn-item-image-${image.id}`}
+                                      type="button"
+                                      onClick={() => handleOpenReportImage(image, checklistImagesByLabel[item.label])}
+                                      className="overflow-hidden rounded border border-slate-200 bg-white"
+                                    >
+                                      <img
+                                        src={image.image_url}
+                                        alt={`${item.label} checklist`}
+                                        className="h-12 w-12 object-cover"
+                                      />
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
                             </li>
                           ))}
                         </ul>
@@ -5805,7 +6671,41 @@ export default function PortalDashboardPage() {
                           {checklistSections.attention.map((item) => (
                             <li key={`attention-${item.label}`}>
                               <p className="font-semibold">{item.label}</p>
-                              <p>{item.note || '-'}</p>
+                              <p><span className="font-semibold">Finding:</span> {item.finding || '-'}</p>
+                              <p><span className="font-semibold">Recommendation:</span> {item.recommendation || '-'}</p>
+                              {(checklistImagesByLabel[item.label] || []).length > 0 && (
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  {(checklistImagesByLabel[item.label] || []).map((image) => (
+                                    <button
+                                      key={`attention-item-image-${image.id}`}
+                                      type="button"
+                                      onClick={() => handleOpenReportImage(image, checklistImagesByLabel[item.label])}
+                                      className="overflow-hidden rounded border border-slate-200 bg-white"
+                                    >
+                                      <img
+                                        src={image.image_url}
+                                        alt={`${item.label} checklist`}
+                                        className="h-12 w-12 object-cover"
+                                      />
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                    <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 md:col-span-2">
+                      <p className="text-sm font-semibold text-blue-800">Not Presented</p>
+                      {checklistSections.notPresented.length === 0 ? (
+                        <p className="mt-2 text-xs text-blue-700">None reported.</p>
+                      ) : (
+                        <ul className="mt-2 space-y-2 text-xs text-blue-900">
+                          {checklistSections.notPresented.map((item) => (
+                            <li key={`not-presented-${item.label}`}>
+                              <p className="font-semibold">{item.label}</p>
+                              <p>Not presented for examination.</p>
                             </li>
                           ))}
                         </ul>
@@ -6014,29 +6914,15 @@ export default function PortalDashboardPage() {
                       className="mt-1 min-h-20 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
                     />
                   </label>
-                  <label className="text-sm font-semibold text-slate-700">
-                    Findings
-                    <textarea
-                      value={reportForm.findings}
-                      onChange={(event) =>
-                        setReportForm((current) => ({ ...current, findings: event.target.value }))
-                      }
-                      className="mt-1 min-h-20 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                    />
-                  </label>
-                  <label className="text-sm font-semibold text-slate-700">
-                    Recommendations
-                    <textarea
-                      value={reportForm.recommendations}
-                      onChange={(event) =>
-                        setReportForm((current) => ({ ...current, recommendations: event.target.value }))
-                      }
-                      className="mt-1 min-h-20 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                    />
-                  </label>
                   <ReportChecklistEditor
                     checklistItems={normalizedReportChecklistItems}
                     onChange={updateReportChecklistItems}
+                    onApplyNotPresentedPreset={applyNotPresentedReportPreset}
+                    pendingChecklistImagesByLabel={reportForm.checklistImageFilesByLabel}
+                    existingChecklistImagesByLabel={existingChecklistImagesByLabel}
+                    onAddChecklistItemImages={appendChecklistItemImages}
+                    onRemovePendingChecklistItemImage={removePendingChecklistItemImage}
+                    onOpenChecklistItemImage={handleOpenReportImage}
                   />
                   <label className="text-sm font-semibold text-slate-700 md:col-span-2">
                     Add Images
@@ -6141,6 +7027,63 @@ export default function PortalDashboardPage() {
         )}
 
         <Modal
+          open={showReportSubmissionConfirmModal}
+          onClose={() => {
+            if (creatingReport || savingReportEdit) return
+            setShowReportSubmissionConfirmModal(false)
+          }}
+          closeOnBackdrop={false}
+          closeOnEscape={false}
+          panelClassName="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+        >
+          <h3 className="text-lg font-bold text-[#123A7A]">Confirm Report Submission</h3>
+          <p className="mt-1 text-sm text-slate-700">
+            Before submitting, confirm all statements below are true.
+          </p>
+          <div className="mt-4 space-y-3">
+            {REPORT_SUBMISSION_CONFIRMATION_ITEMS.map((statement, index) => (
+              <label
+                key={statement}
+                className="flex items-start gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"
+              >
+                <input
+                  type="checkbox"
+                  checked={Boolean(reportSubmissionConfirmChecks[index])}
+                  onChange={(event) => {
+                    const isChecked = Boolean(event.target.checked)
+                    setReportSubmissionConfirmChecks((current) => {
+                      const next = [...current]
+                      next[index] = isChecked
+                      return next
+                    })
+                  }}
+                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-[#123A7A]"
+                />
+                <span>{statement}</span>
+              </label>
+            ))}
+          </div>
+          <div className="mt-5 flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setShowReportSubmissionConfirmModal(false)}
+              disabled={creatingReport || savingReportEdit}
+              className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirmReportSubmissionChecks}
+              disabled={creatingReport || savingReportEdit || !reportSubmissionConfirmChecks.every(Boolean)}
+              className="rounded border border-[#123A7A] bg-[#123A7A] px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-[#0f3168] disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              Confirm and Submit
+            </button>
+          </div>
+        </Modal>
+
+        <Modal
           open={Boolean(reportUnsavedPrompt)}
           onClose={() => setReportUnsavedPrompt('')}
           closeOnBackdrop={false}
@@ -6218,6 +7161,119 @@ export default function PortalDashboardPage() {
               className="rounded border border-[#123A7A] bg-[#123A7A] px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-[#0f3168]"
             >
               Save Changes
+            </button>
+          </div>
+        </Modal>
+
+        <Modal
+          open={showGeneratedCertificatePreviewModal}
+          onClose={() => {
+            if (generatingSiteCertificates) return
+            closeGeneratedCertificatePreviewModal()
+          }}
+          panelClassName="w-full max-w-5xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+        >
+          <h3 className="text-lg font-bold text-[#123A7A]">Generated Site Certificate</h3>
+          <p className="mt-1 text-sm text-slate-600">
+            Review the generated certificate below. You can save or print it when ready.
+          </p>
+
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-2">
+            {generatedCertificatePreviewUrl ? (
+              <iframe
+                title="Generated certificate preview"
+                src={generatedCertificatePreviewUrl}
+                className="h-[65vh] w-full rounded-md border border-slate-200 bg-white"
+              />
+            ) : (
+              <p className="px-3 py-4 text-sm text-slate-600">Certificate preview is not available.</p>
+            )}
+          </div>
+
+          <div className="mt-5 flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              onClick={closeGeneratedCertificatePreviewModal}
+              className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveGeneratedCertificate}
+              disabled={!generatedCertificatePreviewUrl}
+              className="rounded border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Save PDF
+            </button>
+            <button
+              type="button"
+              onClick={handlePrintGeneratedCertificate}
+              disabled={!generatedCertificatePreviewUrl}
+              className="rounded border border-[#123A7A] bg-[#123A7A] px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-[#0f3168] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Print PDF
+            </button>
+          </div>
+        </Modal>
+
+        <Modal
+          open={showEquipmentQrModal}
+          onClose={() => {
+            if (generatingEquipmentQr) return
+            setShowEquipmentQrModal(false)
+          }}
+          panelClassName="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl"
+        >
+          <h3 className="text-lg font-bold text-[#123A7A]">Equipment QR Label</h3>
+          <p className="mt-1 text-sm text-slate-600">
+            Scan to open this equipment directly in the portal.
+          </p>
+          {activeSelectedEquipment && (
+            <p className="mt-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              {activeSelectedEquipment.name} - {activeSelectedEquipment.asset_tag || 'No Asset Tag'}
+            </p>
+          )}
+
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+            {generatingEquipmentQr ? (
+              <p className="text-sm text-slate-600">Generating QR code...</p>
+            ) : equipmentQrError ? (
+              <p className="text-sm text-red-700">{equipmentQrError}</p>
+            ) : equipmentQrImageDataUrl ? (
+              <img src={equipmentQrImageDataUrl} alt="Equipment QR code" className="mx-auto h-56 w-56" />
+            ) : (
+              <p className="text-sm text-slate-600">QR code not available.</p>
+            )}
+          </div>
+
+          {equipmentQrLink && (
+            <p className="mt-3 break-all text-xs text-slate-500">{equipmentQrLink}</p>
+          )}
+
+          <div className="mt-5 flex flex-wrap justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setShowEquipmentQrModal(false)}
+              className="rounded border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 transition hover:bg-slate-100"
+            >
+              Close
+            </button>
+            <button
+              type="button"
+              onClick={handleDownloadEquipmentQr}
+              disabled={!equipmentQrImageDataUrl || generatingEquipmentQr}
+              className="rounded border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Download PNG
+            </button>
+            <button
+              type="button"
+              onClick={handlePrintEquipmentQr}
+              disabled={!equipmentQrImageDataUrl || generatingEquipmentQr}
+              className="rounded border border-[#123A7A] bg-[#123A7A] px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-white transition hover:bg-[#0f3168] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Print Label
             </button>
           </div>
         </Modal>
@@ -6303,8 +7359,10 @@ export default function PortalDashboardPage() {
                                     <span className="font-semibold">Status:</span>{' '}
                                     {getChecklistStatusLabel(change.beforeStatus)} {'->'} {getChecklistStatusLabel(change.afterStatus)}
                                   </p>
-                                  <p><span className="font-semibold">Note Before:</span> {change.beforeNote || '-'}</p>
-                                  <p><span className="font-semibold">Note After:</span> {change.afterNote || '-'}</p>
+                                  <p><span className="font-semibold">Finding Before:</span> {change.beforeFinding || '-'}</p>
+                                  <p><span className="font-semibold">Finding After:</span> {change.afterFinding || '-'}</p>
+                                  <p><span className="font-semibold">Recommendation Before:</span> {change.beforeRecommendation || '-'}</p>
+                                  <p><span className="font-semibold">Recommendation After:</span> {change.afterRecommendation || '-'}</p>
                                 </li>
                               ))}
                             </ul>
@@ -6327,6 +7385,16 @@ export default function PortalDashboardPage() {
 
                     {(() => {
                       const checklistSections = getChecklistSections(selectedRevisionPreview.afterSnapshot.checklist_items)
+                      const isNotPresentedReport = isChecklistMarkedNotPresented(checklistSections)
+
+                      if (isNotPresentedReport) {
+                        return (
+                          <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-4">
+                            <p className="text-base font-bold uppercase tracking-wide text-rose-800">Not Presented</p>
+                          </div>
+                        )
+                      }
+
                       return (
                         <div className="mt-3 grid gap-3 md:grid-cols-2">
                           <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
@@ -6338,7 +7406,8 @@ export default function PortalDashboardPage() {
                                 {checklistSections.worn.map((item) => (
                                   <li key={`rev-worn-${item.label}`}>
                                     <p className="font-semibold">{item.label}</p>
-                                    <p>{item.note || '-'}</p>
+                                    <p><span className="font-semibold">Finding:</span> {item.finding || '-'}</p>
+                                    <p><span className="font-semibold">Recommendation:</span> {item.recommendation || '-'}</p>
                                   </li>
                                 ))}
                               </ul>
@@ -6353,7 +7422,23 @@ export default function PortalDashboardPage() {
                                 {checklistSections.attention.map((item) => (
                                   <li key={`rev-attention-${item.label}`}>
                                     <p className="font-semibold">{item.label}</p>
-                                    <p>{item.note || '-'}</p>
+                                    <p><span className="font-semibold">Finding:</span> {item.finding || '-'}</p>
+                                    <p><span className="font-semibold">Recommendation:</span> {item.recommendation || '-'}</p>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                          <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 md:col-span-2">
+                            <p className="text-sm font-semibold text-blue-800">Not Presented</p>
+                            {checklistSections.notPresented.length === 0 ? (
+                              <p className="mt-2 text-xs text-blue-700">None reported.</p>
+                            ) : (
+                              <ul className="mt-2 space-y-2 text-xs text-blue-900">
+                                {checklistSections.notPresented.map((item) => (
+                                  <li key={`rev-not-presented-${item.label}`}>
+                                    <p className="font-semibold">{item.label}</p>
+                                    <p>Not presented for examination.</p>
                                   </li>
                                 ))}
                               </ul>

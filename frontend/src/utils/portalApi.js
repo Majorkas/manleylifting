@@ -414,6 +414,38 @@ export async function getPortalCompanyHeader(companyId) {
   return parseResponse(response, path)
 }
 
+export async function createPortalSite(payload) {
+  const path = '/portal/company-sites/'
+  const response = await authFetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  return parseResponse(response, path)
+}
+
+export async function updatePortalSite(siteId, payload) {
+  const path = '/portal/company-sites/' + encodeURIComponent(String(siteId)) + '/'
+  const response = await authFetch(path, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  })
+  return parseResponse(response, path)
+}
+
+export async function deletePortalSite(siteId) {
+  const path = '/portal/company-sites/' + encodeURIComponent(String(siteId)) + '/'
+  const response = await authFetch(path, {
+    method: 'DELETE',
+  })
+  return parseResponse(response, path)
+}
+
 export async function getPortalCompanies() {
   const path = '/portal/companies/'
   const response = await authFetch(path)
@@ -521,9 +553,10 @@ export async function updatePortalCustomer(payload) {
   return parseResponse(response, path)
 }
 
-export async function getPortalEquipment({ companyId = '', search = '' } = {}) {
+export async function getPortalEquipment({ companyId = '', siteId = '', search = '' } = {}) {
   const params = new URLSearchParams()
   if (companyId) params.set('companyId', String(companyId))
+  if (siteId) params.set('siteId', String(siteId))
   if (search) params.set('search', String(search))
 
   const query = params.toString()
@@ -574,8 +607,14 @@ export async function getEquipmentActivity(equipmentId) {
 export async function createEquipmentReport(equipmentId, payload) {
   const path = '/portal/equipment/' + encodeURIComponent(String(equipmentId)) + '/reports/'
   const imageFiles = Array.isArray(payload?.images) ? payload.images.filter(Boolean) : []
+  const checklistImageFiles = Array.isArray(payload?.checklist_images)
+    ? payload.checklist_images.filter(Boolean)
+    : []
+  const checklistImageLabels = Array.isArray(payload?.checklist_image_labels)
+    ? payload.checklist_image_labels.filter((item) => String(item || '').trim() !== '')
+    : []
 
-  if (imageFiles.length > 0) {
+  if (imageFiles.length > 0 || checklistImageFiles.length > 0) {
     const formData = new FormData()
     formData.set('title', String(payload?.title || ''))
     formData.set('summary', String(payload?.summary || ''))
@@ -586,6 +625,12 @@ export async function createEquipmentReport(equipmentId, payload) {
     formData.set('status', String(payload?.status || 'draft'))
     imageFiles.forEach((file) => {
       formData.append('images', file)
+    })
+    checklistImageFiles.forEach((file) => {
+      formData.append('checklist_images', file)
+    })
+    checklistImageLabels.forEach((label) => {
+      formData.append('checklist_image_labels', String(label))
     })
 
     const response = await authFetch(path, {
@@ -608,13 +653,19 @@ export async function createEquipmentReport(equipmentId, payload) {
 export async function updateReport(reportId, payload) {
   const path = '/portal/reports/' + encodeURIComponent(String(reportId)) + '/'
   const imageFiles = Array.isArray(payload?.images) ? payload.images.filter(Boolean) : []
+  const checklistImageFiles = Array.isArray(payload?.checklist_images)
+    ? payload.checklist_images.filter(Boolean)
+    : []
+  const checklistImageLabels = Array.isArray(payload?.checklist_image_labels)
+    ? payload.checklist_image_labels.filter((item) => String(item || '').trim() !== '')
+    : []
   const removedImageIds = Array.isArray(payload?.removed_image_ids)
     ? payload.removed_image_ids.filter(Boolean)
     : Array.isArray(payload?.removedImageIds)
       ? payload.removedImageIds.filter(Boolean)
       : []
 
-  if (imageFiles.length > 0 || removedImageIds.length > 0) {
+  if (imageFiles.length > 0 || checklistImageFiles.length > 0 || removedImageIds.length > 0) {
     const formData = new FormData()
     formData.set('title', String(payload?.title || ''))
     formData.set('summary', String(payload?.summary || ''))
@@ -625,6 +676,12 @@ export async function updateReport(reportId, payload) {
     formData.set('status', String(payload?.status || 'draft'))
     imageFiles.forEach((file) => {
       formData.append('images', file)
+    })
+    checklistImageFiles.forEach((file) => {
+      formData.append('checklist_images', file)
+    })
+    checklistImageLabels.forEach((label) => {
+      formData.append('checklist_image_labels', String(label))
     })
     if (removedImageIds.length > 0) {
       formData.set('removed_image_ids', JSON.stringify(removedImageIds))
@@ -732,5 +789,30 @@ export async function recoverEquipmentCertificate(certificateId) {
     },
     body: JSON.stringify({}),
   })
+  return parseResponse(response, path)
+}
+
+export async function getSiteCertificates(siteId) {
+  const path = '/portal/company-sites/' + encodeURIComponent(String(siteId)) + '/certificates/'
+  const response = await authFetch(path)
+  const body = await parseResponse(response, path)
+  return Array.isArray(body?.results) ? body.results : []
+}
+
+export async function generateSiteCertificates(siteId) {
+  const path = '/portal/company-sites/' + encodeURIComponent(String(siteId)) + '/certificates/generate/'
+  const response = await authFetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  })
+
+  if (!response.ok) {
+    await parseResponse(response, path)
+    throw new Error('Unable to generate certificates')
+  }
+
   return parseResponse(response, path)
 }

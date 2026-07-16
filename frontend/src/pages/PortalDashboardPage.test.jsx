@@ -10,10 +10,15 @@ vi.mock('../components/PortalLayout', () => ({
 
 vi.mock('../utils/portalApi', () => ({
   clearPortalSession: vi.fn(),
+  createPortalSite: vi.fn(),
   createEquipmentReport: vi.fn(),
   changePortalPassword: vi.fn(),
+  deleteEquipmentCertificate: vi.fn(),
+  deletePortalSite: vi.fn(),
   deleteReport: vi.fn(),
   deleteStaffAssignment: vi.fn(),
+  downloadCertificate: vi.fn(),
+  generateSiteCertificates: vi.fn(),
   getAccessToken: vi.fn(),
   getEquipmentActivity: vi.fn(),
   getEquipmentReports: vi.fn(),
@@ -22,6 +27,7 @@ vi.mock('../utils/portalApi', () => ({
   getPortalCompanyHeader: vi.fn(),
   getPortalEquipment: vi.fn(),
   getPortalMe: vi.fn(),
+  getSiteCertificates: vi.fn(),
   getPendingReportApprovals: vi.fn(),
   reactivateStaffAssignment: vi.fn(),
   getReportRevisions: vi.fn(),
@@ -29,16 +35,22 @@ vi.mock('../utils/portalApi', () => ({
   hasPortalSession: vi.fn(),
   portalLogout: vi.fn(),
   refreshPortalSession: vi.fn(),
+  updatePortalSite: vi.fn(),
   updatePortalCustomer: vi.fn(),
   updatePortalEquipment: vi.fn(),
   updateReport: vi.fn(),
 }))
 
 import {
+  createPortalSite,
   createEquipmentReport,
   changePortalPassword,
+  deleteEquipmentCertificate,
+  deletePortalSite,
   deleteReport,
   deleteStaffAssignment,
+  downloadCertificate,
+  generateSiteCertificates,
   getAccessToken,
   getEquipmentActivity,
   getEquipmentReports,
@@ -47,12 +59,14 @@ import {
   getPortalCompanyHeader,
   getPortalEquipment,
   getPortalMe,
+  getSiteCertificates,
   getPendingReportApprovals,
   getReportRevisions,
   reactivateStaffAssignment,
   getStaffAssignments,
   hasPortalSession,
   refreshPortalSession,
+  updatePortalSite,
   updatePortalCustomer,
   updatePortalEquipment,
   updateReport,
@@ -92,6 +106,14 @@ function mockCustomerData() {
     contact_phone: '555-0100',
     address: 'Dublin',
     logo: '',
+    sites: [
+      {
+        id: 1,
+        company_id: 1,
+        name: 'Main Site',
+        address: 'Dublin',
+      },
+    ],
   })
   getPortalEquipment.mockResolvedValue([
     {
@@ -117,16 +139,23 @@ describe('PortalDashboardPage', () => {
     getEquipmentReports.mockResolvedValue([])
     getPortalCompanyHeader.mockResolvedValue({})
     getPortalEquipment.mockResolvedValue([])
+    getSiteCertificates.mockResolvedValue([])
     getPendingReportApprovals.mockResolvedValue([])
     getReportRevisions.mockResolvedValue([])
     getStaffAssignments.mockResolvedValue([])
     getAccessToken.mockReturnValue('')
     reactivateStaffAssignment.mockResolvedValue({})
+    deleteEquipmentCertificate.mockResolvedValue({ ok: true })
+    downloadCertificate.mockResolvedValue(new Blob(['pdf'], { type: 'application/pdf' }))
     deleteStaffAssignment.mockResolvedValue({ ok: true })
+    generateSiteCertificates.mockResolvedValue({ id: 1, title: 'site.pdf', created_at: '2026-07-16T00:00:00Z' })
     refreshPortalSession.mockResolvedValue('')
     updatePortalCustomer.mockResolvedValue({ id: 1, name: 'Acme Lifts' })
     updatePortalEquipment.mockResolvedValue({})
     updateReport.mockResolvedValue({})
+    createPortalSite.mockResolvedValue({})
+    updatePortalSite.mockResolvedValue({})
+    deletePortalSite.mockResolvedValue({ ok: true })
     deleteReport.mockResolvedValue({ ok: true })
   })
 
@@ -469,6 +498,145 @@ describe('PortalDashboardPage', () => {
     expect(screen.queryByRole('button', { name: 'Go to equipment' })).not.toBeInTheDocument()
   })
 
+  it('returns owners to customer list from equipment details', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 31,
+      username: 'demo_owner',
+      email: 'owner@example.com',
+      fullName: 'Demo Owner',
+      role: 'owner',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      {
+        id: 1,
+        name: 'Acme Lifts',
+        contact_email: 'hello@acme.test',
+        contact_phone: '555-0100',
+        address: 'Dublin',
+      },
+    ])
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+      sites: [
+        {
+          id: 1,
+          company_id: 1,
+          name: 'Main Site',
+          address: 'Dublin',
+        },
+      ],
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 101,
+        name: 'Warehouse Hoist',
+        asset_tag: 'WH-1',
+        serial_number: 'SN-101',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-09-01',
+      },
+    ])
+
+    renderDashboardPage('/portal')
+
+    expect(await screen.findByRole('heading', { name: 'Customer List' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Open Customer Profile' }))
+    expect(await screen.findByText('Company profile')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'View' }))
+    expect(await screen.findByRole('heading', { name: 'Equipment Details: Warehouse Hoist' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Back to Customer List' }))
+
+    expect(await screen.findByRole('heading', { name: 'Customer List' })).toBeInTheDocument()
+    expect(screen.queryByText('Company profile')).not.toBeInTheDocument()
+  })
+
+  it('auto-selects equipment details from eqId deep link query param', async () => {
+    mockCustomerData()
+
+    renderDashboardPage('/portal?companyId=1&eqId=101')
+
+    expect(await screen.findByRole('heading', { name: 'Equipment Details: Warehouse Hoist' })).toBeInTheDocument()
+  })
+
+  it('keeps the newly selected equipment after opening and closing the QR modal', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 11,
+      username: 'demo_customer',
+      email: 'customer@example.com',
+      fullName: 'Demo Customer',
+      role: 'customer',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+      sites: [
+        {
+          id: 1,
+          company_id: 1,
+          name: 'Main Site',
+          address: 'Dublin',
+        },
+      ],
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 101,
+        name: 'Warehouse Hoist',
+        asset_tag: 'WH-1',
+        serial_number: 'SN-101',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-09-01',
+      },
+      {
+        id: 102,
+        name: 'Dock Hoist',
+        asset_tag: 'DH-2',
+        serial_number: 'SN-102',
+        location: 'Bay 2',
+        status: 'active',
+        next_inspection_due: '2026-10-01',
+      },
+    ])
+    getEquipmentReports.mockResolvedValue([])
+
+    renderDashboardPage('/portal?companyId=1')
+
+    const initialViewButtons = await screen.findAllByRole('button', { name: 'View' })
+    await user.click(initialViewButtons[0])
+    expect(await screen.findByRole('heading', { name: 'Equipment Details: Warehouse Hoist' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Show Equipment QR' }))
+    expect(await screen.findByRole('heading', { name: 'Equipment QR Label' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Close' }))
+
+    const viewButtons = screen.getAllByRole('button', { name: 'View' })
+    await user.click(viewButtons[1])
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Equipment Details: Dock Hoist' })).toBeInTheDocument()
+    })
+    expect(screen.queryByRole('heading', { name: 'Equipment Details: Warehouse Hoist' })).not.toBeInTheDocument()
+  })
+
   it('shows the customer picker for staff users before a company is selected', async () => {
     getPortalMe.mockResolvedValue({
       id: 21,
@@ -533,7 +701,7 @@ describe('PortalDashboardPage', () => {
     expect(await screen.findByText('Acme Lifts')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Refresh Equipment' }))
 
-    expect(getPortalEquipment).toHaveBeenCalledTimes(2)
+    expect(getPortalEquipment).toHaveBeenCalledTimes(3)
   })
 
   it('sorts equipment by the nearest due date and paginates the table', async () => {
@@ -622,7 +790,7 @@ describe('PortalDashboardPage', () => {
     renderDashboardPage('/portal?companyId=1&q=Decom&eqTab=decommissioned&eqPage=2')
 
     expect(await screen.findByText('Acme Lifts')).toBeInTheDocument()
-    expect(getPortalEquipment).toHaveBeenCalledWith({ companyId: 1, search: 'Decom' })
+    expect(getPortalEquipment).toHaveBeenCalledWith({ companyId: 1, siteId: '', search: 'Decom' })
     expect(screen.getByRole('searchbox')).toHaveValue('Decom')
     expect(screen.getByText('Decommissioned Equipment (11)')).toBeInTheDocument()
   })
@@ -679,7 +847,10 @@ describe('PortalDashboardPage', () => {
     renderDashboardPage('/portal')
 
     expect(await screen.findByText('Zeta Lift')).toBeInTheDocument()
-    const equipmentTable = await screen.findByRole('table')
+    const equipmentTable = screen
+      .getAllByRole('table')
+      .find((table) => within(table).queryByRole('button', { name: /Name/i }))
+    expect(equipmentTable).toBeTruthy()
     const equipmentRows = within(equipmentTable).getAllByRole('row').slice(1)
     expect(within(equipmentRows[0]).getByText('Zeta Lift')).toBeInTheDocument()
 
@@ -760,6 +931,71 @@ describe('PortalDashboardPage', () => {
     expect(await screen.findByText('Overdue Lift')).toBeInTheDocument()
     expect(screen.queryByText('Due Soon Lift')).not.toBeInTheDocument()
     expect(screen.queryByText('On Schedule Lift')).not.toBeInTheDocument()
+  })
+
+  it('filters equipment by managed status', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 11,
+      username: 'demo_customer',
+      email: 'customer@example.com',
+      fullName: 'Demo Customer',
+      role: 'customer',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 1,
+        name: 'Good Order Lift',
+        asset_tag: 'GO-100',
+        serial_number: 'SN-1',
+        location: 'Bay 1',
+        status: 'active',
+        inspection_status_key: 'good_order',
+        inspection_status_label: 'Good Order',
+        next_inspection_due: '2026-09-01',
+      },
+      {
+        id: 2,
+        name: 'Worn Lift',
+        asset_tag: 'WO-200',
+        serial_number: 'SN-2',
+        location: 'Bay 2',
+        status: 'active',
+        inspection_status_key: 'worn_serviceable',
+        inspection_status_label: 'Worn',
+        next_inspection_due: '2026-09-01',
+      },
+      {
+        id: 3,
+        name: 'Attention Lift',
+        asset_tag: 'AT-300',
+        serial_number: 'SN-3',
+        location: 'Bay 3',
+        status: 'active',
+        inspection_status_key: 'attention_required',
+        inspection_status_label: 'Attention Required',
+        next_inspection_due: '2026-09-01',
+      },
+    ])
+
+    renderDashboardPage('/portal')
+
+    expect(await screen.findByText('Good Order Lift')).toBeInTheDocument()
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Status' }), 'worn_serviceable')
+
+    expect(await screen.findByText('Worn Lift')).toBeInTheDocument()
+    expect(screen.queryByText('Good Order Lift')).not.toBeInTheDocument()
+    expect(screen.queryByText('Attention Lift')).not.toBeInTheDocument()
   })
 
   it('warns before closing a dirty report form modal', async () => {
@@ -865,7 +1101,9 @@ describe('PortalDashboardPage', () => {
     renderDashboardPage('/portal?companyId=1')
 
     await user.click(await screen.findByRole('button', { name: 'View' }))
-    const reportsTable = screen.getAllByRole('table').slice(-1)[0]
+    const reportsTableHeader = await screen.findByRole('columnheader', { name: 'Inspector' })
+    const reportsTable = reportsTableHeader.closest('table')
+    expect(reportsTable).not.toBeNull()
     await user.click(within(reportsTable).getByRole('button', { name: 'View' }))
     await user.click(await screen.findByRole('button', { name: 'Edit Report' }))
 
@@ -897,9 +1135,9 @@ describe('PortalDashboardPage', () => {
     await waitFor(() => {
       expect(updateReport).toHaveBeenCalledWith('1', expect.objectContaining({ summary: 'Changed summary twice' }))
     })
-  })
+  }, 15000)
 
-  it('requires a checklist note when a report item is marked non-good', async () => {
+  it('requires checklist finding and recommendation when a report item is marked non-good', async () => {
     const user = userEvent.setup()
 
     getPortalMe.mockResolvedValue({
@@ -948,7 +1186,61 @@ describe('PortalDashboardPage', () => {
     await user.click(screen.getByRole('button', { name: 'Submit Report' }))
 
     expect(createEquipmentReport).not.toHaveBeenCalled()
-    expect(screen.getByText("Add a note for 'Initial Test Run' before saving this report.")).toBeInTheDocument()
+    expect(screen.getByText("Add a finding for 'Initial Test Run' before saving this report.")).toBeInTheDocument()
+  })
+
+  it('applies not presented preset and allows submission confirmation', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 21,
+      username: 'demo_staff',
+      email: 'staff@example.com',
+      fullName: 'Demo Staff',
+      role: 'staff',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 101,
+        name: 'Warehouse Hoist',
+        asset_tag: 'WH-1',
+        serial_number: 'SN-101',
+        location: 'Bay 1',
+        status: 'active',
+        next_inspection_due: '2026-09-01',
+      },
+    ])
+    getEquipmentReports.mockResolvedValue([])
+
+    renderDashboardPage('/portal?companyId=1')
+
+    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await user.click(screen.getByRole('button', { name: 'Create New Report' }))
+
+    await user.click(screen.getByRole('button', { name: 'Mark Not Presented' }))
+
+    expect(screen.getByLabelText('Report Title')).toHaveValue('Not Presented - Warehouse Hoist')
+    expect(screen.getByLabelText('Summary')).toHaveValue('Equipment was not presented for inspection at the time of visit.')
+    const checklistRow = screen.getByText('Initial Test Run').closest('div')
+    expect(checklistRow).not.toBeNull()
+    expect(within(checklistRow).getByRole('combobox')).toHaveValue('not_presented')
+
+    await user.click(screen.getByRole('button', { name: 'Submit Report' }))
+
+    expect(screen.queryByText("Add a finding for 'Initial Test Run' before saving this report.")).not.toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Confirm Report Submission' })).toBeInTheDocument()
   })
 
   it('saves an incomplete report as a draft from the close prompt', async () => {
@@ -1148,7 +1440,85 @@ describe('PortalDashboardPage', () => {
     await user.type(screen.getByLabelText('Report Title'), 'Submitted Inspection')
     await user.click(screen.getByRole('button', { name: 'Submit Report' }))
 
+    expect(await screen.findByRole('heading', { name: 'Confirm Report Submission' })).toBeInTheDocument()
+    const confirmationCheckboxes = screen.getAllByRole('checkbox')
+    for (const checkbox of confirmationCheckboxes) {
+      await user.click(checkbox)
+    }
+    await user.click(screen.getByRole('button', { name: 'Confirm and Submit' }))
+
     expect(await screen.findAllByText('30-06-2027')).toHaveLength(2)
+  })
+
+  it('requires confirming all report submission statements before submit', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 21,
+      username: 'demo_staff',
+      email: 'staff@example.com',
+      fullName: 'Demo Staff',
+      role: 'staff',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getPortalCompanyHeader.mockResolvedValue({
+      id: 1,
+      name: 'Acme Lifts',
+      contact_email: 'hello@acme.test',
+      contact_phone: '555-0100',
+      address: 'Dublin',
+      logo: '',
+    })
+    getPortalEquipment.mockResolvedValue([
+      {
+        id: 101,
+        company_id: 1,
+        name: 'Warehouse Hoist',
+        asset_tag: 'WH-1',
+        serial_number: 'SN-101',
+        location: 'Bay 1',
+        status: 'active',
+        inspection_interval_days: 365,
+        next_inspection_due: '2026-09-01',
+        last_inspected_at: '2025-09-01',
+      },
+    ])
+    createEquipmentReport.mockResolvedValue({ id: 77 })
+    getEquipmentReports.mockResolvedValue([])
+
+    renderDashboardPage('/portal?companyId=1')
+
+    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await user.click(screen.getByRole('button', { name: 'Create New Report' }))
+
+    await user.type(screen.getByLabelText('Report Title'), 'Submission Confirmation Required')
+    await user.click(screen.getByRole('button', { name: 'Submit Report' }))
+
+    expect(await screen.findByRole('heading', { name: 'Confirm Report Submission' })).toBeInTheDocument()
+    const confirmSubmitButton = screen.getByRole('button', { name: 'Confirm and Submit' })
+    expect(confirmSubmitButton).toBeDisabled()
+    expect(createEquipmentReport).not.toHaveBeenCalled()
+
+    const confirmationCheckboxes = screen.getAllByRole('checkbox')
+    for (const checkbox of confirmationCheckboxes) {
+      await user.click(checkbox)
+    }
+
+    expect(confirmSubmitButton).toBeEnabled()
+    await user.click(confirmSubmitButton)
+
+    await waitFor(() => {
+      expect(createEquipmentReport).toHaveBeenCalledWith(
+        101,
+        expect.objectContaining({
+          title: 'Submission Confirmation Required',
+          status: 'submitted',
+        }),
+      )
+    })
   })
 
   it('only shows draft report editing for staff on their own drafts', async () => {
@@ -1211,8 +1581,9 @@ describe('PortalDashboardPage', () => {
 
     expect(await screen.findByText('Draft Hoist Inspection')).toBeInTheDocument()
 
-    const tables = screen.getAllByRole('table')
-    const reportsTable = tables[tables.length - 1]
+    const reportsTableHeader = await screen.findByRole('columnheader', { name: 'Inspector' })
+    const reportsTable = reportsTableHeader.closest('table')
+    expect(reportsTable).not.toBeNull()
     const reportViewButtons = within(reportsTable).getAllByRole('button', { name: 'View' })
 
     await user.click(reportViewButtons[0])
@@ -1222,7 +1593,9 @@ describe('PortalDashboardPage', () => {
 
     await user.click(screen.getByRole('button', { name: 'Close' }))
 
-    const refreshedReportsTable = screen.getAllByRole('table').slice(-1)[0]
+    const refreshedReportsTableHeader = await screen.findByRole('columnheader', { name: 'Inspector' })
+    const refreshedReportsTable = refreshedReportsTableHeader.closest('table')
+    expect(refreshedReportsTable).not.toBeNull()
     const refreshedViewButtons = within(refreshedReportsTable).getAllByRole('button', { name: 'View' })
     await user.click(refreshedViewButtons[1])
     expect(await screen.findByRole('heading', { name: 'Submitted Hoist Inspection' })).toBeInTheDocument()
@@ -1287,8 +1660,9 @@ describe('PortalDashboardPage', () => {
 
     await user.click(await screen.findByRole('button', { name: 'View' }))
 
-    const tables = screen.getAllByRole('table')
-    const reportsTable = tables[tables.length - 1]
+    const reportsTableHeader = await screen.findByRole('columnheader', { name: 'Inspector' })
+    const reportsTable = reportsTableHeader.closest('table')
+    expect(reportsTable).not.toBeNull()
     const reportViewButtons = within(reportsTable).getAllByRole('button', { name: 'View' })
 
     await user.click(reportViewButtons[0])
@@ -1359,7 +1733,9 @@ describe('PortalDashboardPage', () => {
     renderDashboardPage('/portal?companyId=1')
 
     await user.click(await screen.findByRole('button', { name: 'View' }))
-    const reportsTable = screen.getAllByRole('table').slice(-1)[0]
+    const reportsTableHeader = await screen.findByRole('columnheader', { name: 'Inspector' })
+    const reportsTable = reportsTableHeader.closest('table')
+    expect(reportsTable).not.toBeNull()
     await user.click(within(reportsTable).getByRole('button', { name: 'View' }))
     await user.click(await screen.findByRole('button', { name: 'Edit Report' }))
 
@@ -1542,9 +1918,9 @@ describe('PortalDashboardPage', () => {
     const checklistChangesCard = checklistChangesHeading.closest('div')
     expect(checklistChangesCard).not.toBeNull()
     expect(within(checklistChangesCard).getByText('Hoist Brake')).toBeInTheDocument()
-    expect(within(checklistChangesCard).getByText('Note Before:')).toBeInTheDocument()
+    expect(within(checklistChangesCard).getByText('Finding Before:')).toBeInTheDocument()
     expect(within(checklistChangesCard).getByText('Slight wear observed')).toBeInTheDocument()
-    expect(within(checklistChangesCard).getByText('Note After:')).toBeInTheDocument()
+    expect(within(checklistChangesCard).getByText('Finding After:')).toBeInTheDocument()
     expect(within(checklistChangesCard).getByText('Brake chatter under load')).toBeInTheDocument()
     expect(screen.getByText('Full Report After This Revision')).toBeInTheDocument()
     expect(screen.getAllByText('Attention Required').length).toBeGreaterThan(0)
@@ -1985,8 +2361,6 @@ describe('PortalDashboardPage', () => {
       expect(updateReport).toHaveBeenCalledWith('2', expect.objectContaining({
         title: 'Updated Submitted Hoist Inspection',
         summary: 'Submitted summary',
-        findings: 'Findings',
-        recommendations: 'Recommendations',
         report_date: '2026-07-02',
         status: 'submitted',
         images: [],

@@ -26,6 +26,8 @@ export default function EquipmentTableSection({
   onToggleEquipmentSort,
   inspectionUrgencyFilter,
   onInspectionUrgencyFilterChange,
+  equipmentStatusFilter,
+  onEquipmentStatusFilterChange,
   activeEquipment,
   decommissionedEquipment,
   isMobileViewport,
@@ -37,6 +39,7 @@ export default function EquipmentTableSection({
   activeSelectedEquipment,
   onSelectEquipmentForView,
   onCloseEquipmentDetails,
+  onOpenEquipmentQr,
   isOwner,
   onSetEquipmentActive,
   updatingEquipmentStatus,
@@ -48,12 +51,7 @@ export default function EquipmentTableSection({
   certificateError,
   equipmentActivityError,
   canViewEquipmentActivity,
-  onOpenUploadCertificate,
   onOpenCreateReport,
-  certificatesLoading,
-  certificates,
-  onDownloadCertificate,
-  downloadingCertificateId,
   deletingCertificateId,
   reportsLoading,
   reports,
@@ -84,6 +82,28 @@ export default function EquipmentTableSection({
   const canBulkDecommission = isOwner && equipmentTableTab === 'active'
   const allSelected =
     canBulkDecommission && activeEquipment.length > 0 && selectedCount === activeEquipment.length
+
+  function getManagedEquipmentInspectionBadge(item) {
+    if (String(item.status || '').toLowerCase() === 'decommissioned') {
+      return { label: 'Decommissioned', color: 'bg-slate-100 text-slate-700 border-slate-300' }
+    }
+
+    const statusKey = String(item.inspection_status_key || '').trim().toLowerCase()
+    if (statusKey === 'attention_required') {
+      return { label: 'Attention Required', color: 'bg-red-100 text-red-700 border-red-300' }
+    }
+    if (statusKey === 'worn_serviceable') {
+      return { label: 'Worn', color: 'bg-amber-100 text-amber-700 border-amber-300' }
+    }
+    if (statusKey === 'not_presented') {
+      return { label: 'Not Presented', color: 'bg-red-100 text-red-700 border-red-300' }
+    }
+    if (statusKey === 'good_order') {
+      return { label: 'Good Order', color: 'bg-emerald-100 text-emerald-700 border-emerald-300' }
+    }
+
+    return { label: item.inspection_status_label || 'No Approved Report', color: 'bg-slate-100 text-slate-700 border-slate-300' }
+  }
 
   function getSortIndicator(columnKey) {
     if (equipmentSortKey !== columnKey) return ''
@@ -226,6 +246,23 @@ export default function EquipmentTableSection({
                   <option value="on_schedule">On Schedule</option>
                 </select>
               </label>
+              {equipmentTableTab === 'active' && (
+                <label className="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-600 sm:justify-end">
+                  Status
+                  <select
+                    value={equipmentStatusFilter}
+                    onChange={(event) => onEquipmentStatusFilterChange(event.target.value)}
+                    className="min-w-[180px] rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700"
+                  >
+                    <option value="all">All</option>
+                    <option value="good_order">Good Order</option>
+                    <option value="worn_serviceable">Worn</option>
+                    <option value="attention_required">Attention Required</option>
+                    <option value="not_presented">Not Presented</option>
+                    <option value="no_approved_report">No Approved Report</option>
+                  </select>
+                </label>
+              )}
             </div>
           </div>
 
@@ -233,6 +270,7 @@ export default function EquipmentTableSection({
             <div className="space-y-3 p-3">
               {visibleEquipment.map((item) => {
                 const inspectionStatus = getInspectionStatusBadge(item.next_inspection_due)
+                const managedStatusBadge = getManagedEquipmentInspectionBadge(item)
                 const isExpandedEquipmentCard = String(expandedEquipmentCardId) === String(item.id)
                 const isInlineSelectedEquipment =
                   equipmentTableTab === 'active' &&
@@ -255,12 +293,13 @@ export default function EquipmentTableSection({
                         )}
                         <h3 className="text-sm font-bold text-slate-800">{item.name}</h3>
                       </div>
-                      <span className="rounded-full border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-700">
-                        {item.status || 'unknown'}
+                        <span className={`inline-flex max-w-full items-center justify-center whitespace-nowrap rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${managedStatusBadge.color}`}>
+                          {managedStatusBadge.label}
                       </span>
                     </div>
                     <div className="mt-2 grid gap-1 text-xs text-slate-600">
                       <p><span className="font-semibold text-slate-700">Asset Tag:</span> {item.asset_tag || '-'}</p>
+                      <p><span className="font-semibold text-slate-700">Safe Working Load:</span> {item.safe_working_load || '-'}</p>
                       {equipmentTableTab === 'active' && (
                         <>
                           <p>
@@ -381,10 +420,21 @@ export default function EquipmentTableSection({
                           )}
                           <p><span className="font-semibold">Asset Tag:</span> {activeSelectedEquipment.asset_tag || '-'}</p>
                           <p><span className="font-semibold">Serial:</span> {activeSelectedEquipment.serial_number || '-'}</p>
+                          <p><span className="font-semibold">Safe Working Load:</span> {activeSelectedEquipment.safe_working_load || '-'}</p>
                           <p><span className="font-semibold">Location:</span> {activeSelectedEquipment.location || '-'}</p>
                           <p><span className="font-semibold">Interval:</span> {activeSelectedEquipment.inspection_interval_days || '-'} days</p>
                           <p><span className="font-semibold">Last Inspected:</span> {activeSelectedEquipment.last_inspected_at || '-'}</p>
                           <p><span className="font-semibold">Next Due:</span> {formatDateDDMMYYYY(activeSelectedEquipment.next_inspection_due)}</p>
+                        </div>
+
+                        <div className="mt-3">
+                          <button
+                            type="button"
+                            onClick={onOpenEquipmentQr}
+                            className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-xs font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                          >
+                            Show Equipment QR
+                          </button>
                         </div>
 
                         {equipmentStatusError && (
@@ -415,13 +465,6 @@ export default function EquipmentTableSection({
                           <div className="mt-3 flex flex-wrap gap-2">
                             <button
                               type="button"
-                              onClick={onOpenUploadCertificate}
-                              className="rounded-md border border-emerald-600 bg-white px-3 py-2 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-600 hover:text-white"
-                            >
-                              Upload Certificate
-                            </button>
-                            <button
-                              type="button"
                               onClick={onOpenCreateReport}
                               className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-xs font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
                             >
@@ -429,40 +472,6 @@ export default function EquipmentTableSection({
                             </button>
                           </div>
                         )}
-
-                        <details className="mt-3 rounded border border-slate-200 bg-white">
-                          <summary className="cursor-pointer px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-700">
-                            Certificates
-                          </summary>
-                          <div className="space-y-2 border-t border-slate-200 p-3">
-                            {certificatesLoading ? (
-                              <InlineListSkeleton />
-                            ) : certificates.length === 0 ? (
-                              <p className="text-xs text-slate-500">No certificates uploaded for this equipment.</p>
-                            ) : (
-                              certificates.map((certificate) => (
-                                <article key={certificate.id} className="rounded border border-slate-200 bg-white p-2.5">
-                                  <div className="flex items-start justify-between gap-2">
-                                    <div>
-                                      <p className="text-xs font-semibold text-slate-800">{certificate.title || `Certificate ${certificate.id}`}</p>
-                                      <p className="mt-1 text-[11px] text-slate-600">
-                                        Issued: {certificate.issue_date || '-'} | Expires: {certificate.expiry_date || '-'}
-                                      </p>
-                                    </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => onDownloadCertificate(certificate)}
-                                      disabled={downloadingCertificateId === Number(certificate.id)}
-                                      className="rounded border border-[#123A7A] px-2 py-1 text-[10px] font-semibold text-[#123A7A] disabled:cursor-not-allowed disabled:opacity-60"
-                                    >
-                                      {downloadingCertificateId === Number(certificate.id) ? 'Downloading...' : 'Download'}
-                                    </button>
-                                  </div>
-                                </article>
-                              ))
-                            )}
-                          </div>
-                        </details>
 
                         {canViewEquipmentActivity && (
                           <details className="mt-3 rounded border border-slate-200 bg-white">
@@ -599,8 +608,9 @@ export default function EquipmentTableSection({
                       </button>
                     </th>
                     <th className="px-4 py-3 font-semibold">Serial</th>
+                    <th className="px-4 py-3 font-semibold">SWL</th>
                     {equipmentTableTab === 'active' && <th className="px-4 py-3 font-semibold">Location</th>}
-                    <th className="px-4 py-3 font-semibold">Status</th>
+                    <th className="px-4 py-3 font-semibold whitespace-nowrap">Status</th>
                     {equipmentTableTab === 'active' && (
                       <>
                         <th className="px-4 py-3 font-semibold">Inspection Status</th>
@@ -625,6 +635,7 @@ export default function EquipmentTableSection({
                 <tbody>
                   {visibleEquipment.map((item) => {
                     const inspectionStatus = getInspectionStatusBadge(item.next_inspection_due)
+                    const managedStatusBadge = getManagedEquipmentInspectionBadge(item)
                     return (
                       <tr key={item.id} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
                         {canBulkDecommission && (
@@ -640,10 +651,11 @@ export default function EquipmentTableSection({
                         <td className="px-4 py-3 font-semibold text-slate-800">{item.name}</td>
                         <td className="px-4 py-3 text-slate-700">{item.asset_tag || '-'}</td>
                         <td className="px-4 py-3 text-slate-700">{item.serial_number || '-'}</td>
+                        <td className="px-4 py-3 text-slate-700">{item.safe_working_load || '-'}</td>
                         {equipmentTableTab === 'active' && <td className="px-4 py-3 text-slate-700">{item.location || '-'}</td>}
-                        <td className="px-4 py-3">
-                          <span className="rounded-full border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700">
-                            {item.status || 'unknown'}
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <span className={`inline-flex max-w-full items-center justify-center whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-semibold uppercase tracking-wide ${managedStatusBadge.color}`}>
+                            {managedStatusBadge.label}
                           </span>
                         </td>
                         {equipmentTableTab === 'active' && (
