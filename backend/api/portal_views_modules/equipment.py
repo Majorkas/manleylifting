@@ -6,15 +6,109 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from ..audit import log_portal_audit_event
-from ..models import AuditLog, Company, Equipment
+from ..models import AuditLog, Company, Equipment, InspectionReport, Site
 from ..portal_views import (
+    _get_or_create_default_site,
+    _is_owner,
     _get_pagination_params,
     _is_staff_or_owner,
     _paginate_queryset,
     _visible_company_ids,
 )
-from ..serializers import EquipmentCreateSerializer, EquipmentSerializer
+from ..serializers import EquipmentCreateSerializer, EquipmentSerializer, SiteCreateSerializer, SiteSerializer
 from ..throttles import PortalMethodRateThrottle
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
+def portal_company_sites(request):
+    company_id_raw = request.GET.get("companyId") if request.method == "GET" else request.data.get("company_id")
+    company_id = str(company_id_raw or "").strip()
+    if not company_id:
+        return Response({"detail": "company_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        company_id_int = int(company_id)
+    except (TypeError, ValueError):
+        return Response({"detail": "company_id must be a valid integer"}, status=status.HTTP_400_BAD_REQUEST)
+
+    if company_id_int not in _visible_company_ids(request.user):
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    company = Company.objects.filter(id=company_id_int, is_active=True).first()
+    if not company:
+        return Response({"detail": "Company not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == "GET":
+        _get_or_create_default_site(company)
+        serializer = SiteSerializer(company.sites.order_by("name", "id"), many=True)
+        return Response({"results": serializer.data})
+
+    if not _is_staff_or_owner(request.user):
+        return Response({"detail": "Insufficient permissions"}, status=status.HTTP_403_FORBIDDEN)
+
+    serializer = SiteCreateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    site_name = str(serializer.validated_data.get("name") or "").strip()
+    if Site.objects.filter(company=company, name__iexact=site_name).exists():
+        return Response({"detail": "A site with this name already exists for the company"}, status=status.HTTP_400_BAD_REQUEST)
+
+    site = Site.objects.create(
+        company=company,
+        name=site_name,
+        address=str(serializer.validated_data.get("address") or "").strip(),
+    )
+    return Response(SiteSerializer(site).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["PATCH", "DELETE"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
+def portal_company_site_detail(request, site_id):
+    site = Site.objects.select_related("company").filter(id=site_id).first()
+    if not site:
+        return Response({"detail": "Site not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if site.company_id not in _visible_company_ids(request.user):
+        return Response({"detail": "Not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if not _is_owner(request.user):
+        return Response({"detail": "Only owner or office staff can manage sites"}, status=status.HTTP_403_FORBIDDEN)
+
+    if request.method == "PATCH":
+        serializer = SiteCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        next_name = str(serializer.validated_data.get("name") or "").strip()
+        next_address = str(serializer.validated_data.get("address") or "").strip()
+
+        if (
+            Site.objects.filter(company_id=site.company_id, name__iexact=next_name)
+            .exclude(id=site.id)
+            .exists()
+        ):
+            return Response({"detail": "A site with this name already exists for the company"}, status=status.HTTP_400_BAD_REQUEST)
+
+        site.name = next_name
+        site.address = next_address
+        site.save(update_fields=["name", "address", "updated_at"])
+        return Response(SiteSerializer(site).data)
+
+    total_sites = Site.objects.filter(company_id=site.company_id).count()
+    if total_sites <= 1:
+        return Response({"detail": "A company must have at least one site"}, status=status.HTTP_400_BAD_REQUEST)
+
+    equipment_count = Equipment.objects.filter(site_id=site.id).count()
+    if equipment_count > 0:
+        return Response(
+            {"detail": "Move or remove equipment assigned to this site before deleting it"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    site.delete()
+    return Response({"ok": True})
 
 
 @api_view(["GET", "POST"])
@@ -42,12 +136,27 @@ def portal_equipment_list(request):
         if not company:
             return Response({"detail": "Company not found"}, status=status.HTTP_404_NOT_FOUND)
 
+        site_id_raw = request.data.get("site_id")
+        site_id = str(site_id_raw or "").strip()
+        if not site_id:
+            return Response({"detail": "site_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            site_id_int = int(site_id)
+        except (TypeError, ValueError):
+            return Response({"detail": "site_id must be a valid integer"}, status=status.HTTP_400_BAD_REQUEST)
+
+        site = Site.objects.filter(id=site_id_int, company=company).first()
+        if not site:
+            return Response({"detail": "Site not found for company"}, status=status.HTTP_400_BAD_REQUEST)
+
         serializer = EquipmentCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        equipment = serializer.save(company=company)
+        equipment = serializer.save(company=company, site=site)
         return Response(EquipmentSerializer(equipment).data, status=status.HTTP_201_CREATED)
 
     company_id = request.GET.get("companyId")
+    site_id = request.GET.get("siteId")
     search = (request.GET.get("search") or "").strip()
 
     visible_ids = _visible_company_ids(request.user)
@@ -55,6 +164,9 @@ def portal_equipment_list(request):
 
     if company_id:
         equipment = equipment.filter(company_id=company_id)
+
+    if site_id:
+        equipment = equipment.filter(site_id=site_id)
 
     if search:
         equipment = equipment.filter(
@@ -64,10 +176,30 @@ def portal_equipment_list(request):
             | Q(location__icontains=search)
         )
 
-    equipment = equipment.select_related("company").order_by("company__name", "name")
+    equipment = equipment.select_related("company", "site").order_by("company__name", "site__name", "name")
     page, page_size = _get_pagination_params(request)
     paginated = _paginate_queryset(equipment, page, page_size)
-    serializer = EquipmentSerializer(paginated["results"], many=True)
+
+    latest_approved_report_by_equipment_id = {}
+    latest_reports = (
+        InspectionReport.objects.filter(
+            equipment_id__in=[equipment_item.id for equipment_item in paginated["results"]],
+            status=InspectionReport.STATUS_APPROVED,
+            is_deleted=False,
+        )
+        .exclude(report_date__isnull=True)
+        .select_related("equipment")
+        .order_by("equipment_id", "-report_date", "-id")
+    )
+    for report in latest_reports:
+        if report.equipment_id not in latest_approved_report_by_equipment_id:
+            latest_approved_report_by_equipment_id[report.equipment_id] = report
+
+    serializer = EquipmentSerializer(
+        paginated["results"],
+        many=True,
+        context={"latest_approved_report_by_equipment_id": latest_approved_report_by_equipment_id},
+    )
     return Response(
         {
             "results": serializer.data,
@@ -83,7 +215,7 @@ def portal_equipment_list(request):
 @permission_classes([IsAuthenticated])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_equipment_update(request, equipment_id):
-    equipment = Equipment.objects.select_related("company").filter(id=equipment_id).first()
+    equipment = Equipment.objects.select_related("company", "site").filter(id=equipment_id).first()
     if not equipment:
         return Response({"detail": "Equipment not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -122,7 +254,7 @@ def portal_equipment_update(request, equipment_id):
 @permission_classes([IsAuthenticated])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_equipment_activity(request, equipment_id):
-    equipment = Equipment.objects.select_related("company").filter(id=equipment_id).first()
+    equipment = Equipment.objects.select_related("company", "site").filter(id=equipment_id).first()
     if not equipment:
         return Response({"detail": "Equipment not found"}, status=status.HTTP_404_NOT_FOUND)
 

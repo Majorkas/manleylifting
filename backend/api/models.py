@@ -153,6 +153,23 @@ class Company(models.Model):
         return self.name
 
 
+class Site(models.Model):
+    company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="sites")
+    name = models.CharField(max_length=200)
+    address = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["company", "name"], name="unique_site_name_per_company"),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.company.name})"
+
+
 class UserProfile(models.Model):
     ROLE_CUSTOMER = "customer"
     ROLE_ENGINEER = "engineer"
@@ -197,9 +214,11 @@ class Equipment(models.Model):
     ]
 
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="equipment")
+    site = models.ForeignKey(Site, on_delete=models.PROTECT, related_name="equipment")
     name = models.CharField(max_length=200)
     asset_tag = models.CharField(max_length=120, blank=True, default="")
     serial_number = models.CharField(max_length=120, blank=True, default="")
+    safe_working_load = models.CharField(max_length=120, default="Not Recorded")
     location = models.CharField(max_length=200, blank=True, default="")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
     inspection_interval_days = models.PositiveIntegerField(default=365)
@@ -213,6 +232,7 @@ class Equipment(models.Model):
     class Meta:
         ordering = ["company__name", "name", "asset_tag"]
         indexes = [
+            models.Index(fields=["company", "site", "status"]),
             models.Index(fields=["company", "status"]),
             models.Index(fields=["asset_tag"]),
             models.Index(fields=["serial_number"]),
@@ -283,6 +303,7 @@ class ReportImage(models.Model):
     report = models.ForeignKey(InspectionReport, on_delete=models.CASCADE, related_name="images")
     image_url = models.URLField(max_length=500)
     public_id = models.CharField(max_length=255, blank=True, default="", db_index=True)
+    checklist_label = models.CharField(max_length=220, blank=True, default="")
     uploaded_by = models.ForeignKey("auth.User", on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -308,6 +329,13 @@ class ReportRevision(models.Model):
 
 class Certificate(models.Model):
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name="certificates")
+    site = models.ForeignKey(
+        Site,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="certificates",
+    )
     equipment = models.ForeignKey(
         Equipment,
         on_delete=models.SET_NULL,

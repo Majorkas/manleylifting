@@ -24,7 +24,7 @@ from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, Ou
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .auth_cookies import clear_refresh_cookie
-from .models import Company, Equipment, InspectionReport, ReportImage, UserProfile
+from .models import Company, Equipment, InspectionReport, ReportImage, Site, UserProfile
 from .serializers import (
     CompanyHeaderSerializer,
     PortalMeSerializer,
@@ -152,8 +152,15 @@ def _suggest_available_username(base_username):
 def _selected_company(user, company_id):
     companies = _visible_companies(user)
     if company_id:
-        return companies.filter(id=company_id).first()
-    return companies.order_by("name").first()
+        return companies.prefetch_related("sites").filter(id=company_id).first()
+    return companies.prefetch_related("sites").order_by("name").first()
+
+
+def _get_or_create_default_site(company):
+    site = company.sites.order_by("id").first()
+    if site:
+        return site
+    return Site.objects.create(company=company, name="Main Site", address=company.address or "")
 
 
 def _revoke_user_refresh_tokens(user):
@@ -234,14 +241,64 @@ def _validate_report_images(report_images):
     return ""
 
 
-def _upload_report_images(report, report_images, uploaded_by=None):
+def _parse_checklist_image_labels(request_data):
+    if hasattr(request_data, "getlist"):
+        raw_labels = [str(item or "").strip() for item in request_data.getlist("checklist_image_labels")]
+        raw_labels = [item for item in raw_labels if item]
+        if raw_labels:
+            return raw_labels
+
+    raw_value = request_data.get("checklist_image_labels")
+    if raw_value in (None, ""):
+        return []
+
+    if isinstance(raw_value, list):
+        return [str(item or "").strip() for item in raw_value if str(item or "").strip()]
+
+    try:
+        parsed = json.loads(raw_value)
+    except (TypeError, ValueError):
+        parsed = raw_value
+
+    if isinstance(parsed, list):
+        return [str(item or "").strip() for item in parsed if str(item or "").strip()]
+
+    return [item.strip() for item in str(parsed).split(",") if item.strip()]
+
+
+def _validate_checklist_image_labels(checklist_items, checklist_image_labels):
+    if not checklist_image_labels:
+        return ""
+
+    checklist_by_label = {
+        str(item.get("label") or "").strip(): str(item.get("status") or "").strip()
+        for item in (checklist_items or [])
+        if isinstance(item, dict)
+    }
+
+    for label in checklist_image_labels:
+        status = checklist_by_label.get(label)
+        if not status:
+            return f"Checklist image label '{label}' is not a valid checklist item"
+        if status in {"good_order", "not_presented"}:
+            return (
+                f"Checklist item '{label}' is marked "
+                f"{'Good Order' if status == 'good_order' else 'Not Presented'} and cannot include checklist photos"
+            )
+
+    return ""
+
+
+def _upload_report_images(report, report_images, uploaded_by=None, checklist_image_labels=None):
     if cloudinary_uploader is None:
         raise ValueError("Cloudinary Python SDK is not installed")
 
     if not _cloudinary_is_configured():
         raise ValueError("Cloudinary is not configured")
 
-    for uploaded_file in report_images:
+    labels = checklist_image_labels or []
+    for index, uploaded_file in enumerate(report_images):
+        checklist_label = str(labels[index] or "").strip() if index < len(labels) else ""
         upload_result = cloudinary_uploader.upload(
             uploaded_file,
             folder="manleylifting/reports",
@@ -253,6 +310,7 @@ def _upload_report_images(report, report_images, uploaded_by=None):
             report=report,
             image_url=str(upload_result.get("secure_url") or upload_result.get("url") or ""),
             public_id=str(upload_result.get("public_id") or ""),
+            checklist_label=checklist_label,
             uploaded_by=uploaded_by,
         )
 
@@ -318,6 +376,53 @@ def _report_snapshot(report):
     }
 
 
+def _latest_reinspection_days_from_report(report):
+    checklist_items = getattr(report, "checklist_items", []) if report else []
+    if not isinstance(checklist_items, list):
+        return None
+
+    days_values = []
+    for item in checklist_items:
+        if not isinstance(item, dict):
+            continue
+
+        status = str(item.get("status") or "").strip().lower()
+        if status not in {"worn_serviceable", "attention_required"}:
+            continue
+
+        raw_days = str(item.get("days_before_reinspection") or "").strip()
+        if not raw_days:
+            continue
+
+        try:
+            days_value = int(raw_days)
+        except (TypeError, ValueError):
+            continue
+
+        if days_value > 0:
+            days_values.append(days_value)
+
+    if not days_values:
+        return None
+
+    return min(days_values)
+
+
+def _report_has_not_presented_item(report):
+    checklist_items = getattr(report, "checklist_items", []) if report else []
+    if not isinstance(checklist_items, list):
+        return False
+
+    for item in checklist_items:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "").strip().lower()
+        if status == "not_presented":
+            return True
+
+    return False
+
+
 def _refresh_equipment_next_due_from_approved_reports(equipment):
     latest_approved_report = (
         equipment.reports.filter(status=InspectionReport.STATUS_APPROVED)
@@ -326,9 +431,13 @@ def _refresh_equipment_next_due_from_approved_reports(equipment):
         .first()
     )
 
-    inspection_interval_days = equipment.inspection_interval_days or 365
     if latest_approved_report and latest_approved_report.report_date:
-        equipment.next_inspection_due = latest_approved_report.report_date + timedelta(days=inspection_interval_days)
+        if _report_has_not_presented_item(latest_approved_report):
+            return
+        reinspection_days = _latest_reinspection_days_from_report(latest_approved_report)
+        if reinspection_days is None:
+            reinspection_days = equipment.inspection_interval_days or 365
+        equipment.next_inspection_due = latest_approved_report.report_date + timedelta(days=reinspection_days)
     else:
         equipment.next_inspection_due = None
 
@@ -574,6 +683,7 @@ def portal_create_customer(request):
             address=payload.get("company_address", "").strip(),
             is_active=True,
         )
+        _get_or_create_default_site(company)
 
         customer_user = user_model.objects.create_user(
             username=username,
@@ -608,8 +718,7 @@ def portal_create_customer(request):
         },
     }
 
-    output = PortalCustomerCreateResponseSerializer(body)
-    return Response(output.data, status=status.HTTP_201_CREATED)
+    return Response(body, status=status.HTTP_201_CREATED)
 
 # Split domain-specific endpoints into dedicated modules while keeping shared helpers above.
 from .portal_views_modules.certificates import (  # noqa: E402
@@ -617,8 +726,12 @@ from .portal_views_modules.certificates import (  # noqa: E402
     portal_certificate_download,
     portal_certificate_recover,
     portal_equipment_certificates,
+    portal_site_certificates,
+    portal_site_certificates_generate,
 )
 from .portal_views_modules.equipment import (  # noqa: E402
+    portal_company_site_detail,
+    portal_company_sites,
     portal_equipment_activity,
     portal_equipment_list,
     portal_equipment_update,

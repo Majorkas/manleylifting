@@ -405,6 +405,7 @@ class Command(BaseCommand):
                 defaults={
                     "name": eq_name,
                     "serial_number": serial,
+                    "safe_working_load": random.choice(["500 kg", "1000 kg", "2000 kg", "3.2 t"]),
                     "location": f"Bay {eq_idx}, {company.address.split(',')[0]}",
                     "status": Equipment.STATUS_ACTIVE,
                     "inspection_interval_days": interval,

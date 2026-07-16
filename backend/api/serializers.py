@@ -8,9 +8,30 @@ import json
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
 
-from .models import Certificate, Company, Equipment, InspectionReport, ReportImage, ReportRevision, UserProfile
+from .models import Certificate, Company, Equipment, InspectionReport, ReportImage, ReportRevision, Site, UserProfile
 
-REPORT_CHECKLIST_ALLOWED_STATUSES = {"good_order", "worn_serviceable", "attention_required"}
+REPORT_CHECKLIST_ALLOWED_STATUSES = {
+    "good_order",
+    "worn_serviceable",
+    "attention_required",
+    "not_presented",
+}
+
+
+def _normalize_days_before_reinspection(value):
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return ""
+
+    try:
+        days_before_reinspection = int(raw_value)
+    except (TypeError, ValueError):
+        raise serializers.ValidationError("Days before reinspection must be a whole number.")
+
+    if days_before_reinspection < 1:
+        raise serializers.ValidationError("Days before reinspection must be at least 1.")
+
+    return days_before_reinspection
 
 
 def validate_report_checklist_items(items, require_notes=True):
@@ -33,7 +54,9 @@ def validate_report_checklist_items(items, require_notes=True):
 
         label = str(item.get("label") or "").strip()
         status = str(item.get("status") or "good_order").strip()
-        note = str(item.get("note") or "").strip()
+        finding = str(item.get("finding") or item.get("note") or "").strip()
+        recommendation = str(item.get("recommendation") or "").strip()
+        days_before_reinspection = _normalize_days_before_reinspection(item.get("days_before_reinspection"))
 
         if not label:
             raise serializers.ValidationError(f"Checklist item {index + 1} is missing a label.")
@@ -43,12 +66,25 @@ def validate_report_checklist_items(items, require_notes=True):
                 f"Checklist item '{label}' has an invalid status '{status}'."
             )
 
-        if require_notes and status in {"worn_serviceable", "attention_required"} and not note:
+        if require_notes and status in {"worn_serviceable", "attention_required"} and not finding:
             raise serializers.ValidationError(
-                f"Checklist item '{label}' requires a note when status is not Good Order."
+                f"Checklist item '{label}' requires a finding when status is not Good Order."
             )
 
-        validated_items.append({"label": label, "status": status, "note": note})
+        if require_notes and status in {"worn_serviceable", "attention_required"} and not recommendation:
+            raise serializers.ValidationError(
+                f"Checklist item '{label}' requires a recommendation when status is not Good Order."
+            )
+
+        validated_items.append(
+            {
+                "label": label,
+                "status": status,
+                "finding": finding,
+                "recommendation": recommendation,
+                "days_before_reinspection": days_before_reinspection,
+            }
+        )
 
     return validated_items
 
@@ -56,6 +92,10 @@ def validate_report_checklist_items(items, require_notes=True):
 class CompanyHeaderSerializer(serializers.ModelSerializer):
     inspections_due_count = serializers.IntegerField(read_only=True)
     inspections_overdue_count = serializers.IntegerField(read_only=True)
+    sites = serializers.SerializerMethodField()
+
+    def get_sites(self, obj):
+        return SiteSerializer(obj.sites.all(), many=True).data
 
     class Meta:
         model = Company
@@ -67,14 +107,27 @@ class CompanyHeaderSerializer(serializers.ModelSerializer):
             "contact_email",
             "contact_phone",
             "address",
+            "sites",
             "inspections_due_count",
             "inspections_overdue_count",
         ]
 
 
+class SiteSerializer(serializers.ModelSerializer):
+    company_id = serializers.IntegerField(source="company.id", read_only=True)
+
+    class Meta:
+        model = Site
+        fields = ["id", "company_id", "name", "address", "created_at", "updated_at"]
+
+
 class EquipmentSerializer(serializers.ModelSerializer):
     company_id = serializers.IntegerField(source="company.id", read_only=True)
     company_name = serializers.CharField(source="company.name", read_only=True)
+    site_id = serializers.IntegerField(source="site.id", read_only=True)
+    site_name = serializers.CharField(source="site.name", read_only=True)
+    inspection_status_key = serializers.SerializerMethodField()
+    inspection_status_label = serializers.SerializerMethodField()
 
     class Meta:
         model = Equipment
@@ -82,17 +135,70 @@ class EquipmentSerializer(serializers.ModelSerializer):
             "id",
             "company_id",
             "company_name",
+            "site_id",
+            "site_name",
             "name",
             "asset_tag",
             "serial_number",
+            "safe_working_load",
             "location",
             "status",
+            "inspection_status_key",
+            "inspection_status_label",
             "inspection_interval_days",
             "next_inspection_due",
             "last_inspected_at",
             "decommissioned_at",
             "notes",
         ]
+
+    def _get_latest_approved_report(self, obj):
+        report_by_id = self.context.get("latest_approved_report_by_equipment_id") or {}
+        report = report_by_id.get(obj.id)
+        if report is not None:
+            return report
+
+        return (
+            obj.reports.filter(status=InspectionReport.STATUS_APPROVED, is_deleted=False)
+            .exclude(report_date__isnull=True)
+            .order_by("-report_date", "-id")
+            .first()
+        )
+
+    def _get_inspection_status(self, obj):
+        latest_report = self._get_latest_approved_report(obj)
+        if not latest_report:
+            return "no_approved_report", "No Approved Report"
+
+        checklist_items = getattr(latest_report, "checklist_items", []) if isinstance(getattr(latest_report, "checklist_items", []), list) else []
+        has_attention_required = False
+        has_worn_serviceable = False
+        has_not_presented = False
+        for item in checklist_items:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").strip().lower()
+            if status == "attention_required":
+                has_attention_required = True
+                break
+            if status == "worn_serviceable":
+                has_worn_serviceable = True
+            if status == "not_presented":
+                has_not_presented = True
+
+        if has_attention_required:
+            return "attention_required", "Attention Required"
+        if has_worn_serviceable:
+            return "worn_serviceable", "Worn"
+        if has_not_presented:
+            return "not_presented", "Not Presented"
+        return "good_order", "Good Order"
+
+    def get_inspection_status_key(self, obj):
+        return self._get_inspection_status(obj)[0]
+
+    def get_inspection_status_label(self, obj):
+        return self._get_inspection_status(obj)[1]
 
 
 class EquipmentCreateSerializer(serializers.ModelSerializer):
@@ -102,12 +208,22 @@ class EquipmentCreateSerializer(serializers.ModelSerializer):
             "name",
             "asset_tag",
             "serial_number",
+            "safe_working_load",
             "location",
             "status",
             "inspection_interval_days",
             "last_inspected_at",
             "notes",
         ]
+        extra_kwargs = {
+            "safe_working_load": {"required": True, "allow_blank": False},
+        }
+
+    def validate_safe_working_load(self, value):
+        safe_working_load = str(value or "").strip()
+        if not safe_working_load:
+            raise serializers.ValidationError("Safe working load is required.")
+        return safe_working_load
 
     def create(self, validated_data):
         last_inspected_at = validated_data.get("last_inspected_at")
@@ -121,6 +237,12 @@ class EquipmentCreateSerializer(serializers.ModelSerializer):
             validated_data["next_inspection_due"] = None
 
         return super().create(validated_data)
+
+
+class SiteCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Site
+        fields = ["name", "address"]
 
 
 class InspectionReportSerializer(serializers.ModelSerializer):
@@ -174,7 +296,7 @@ class InspectionReportSerializer(serializers.ModelSerializer):
 class ReportImageSerializer(serializers.ModelSerializer):
     class Meta:
         model = ReportImage
-        fields = ["id", "image_url", "public_id", "created_at"]
+        fields = ["id", "image_url", "public_id", "checklist_label", "created_at"]
 
 
 class InspectionReportCreateSerializer(serializers.ModelSerializer):
@@ -256,12 +378,14 @@ class ReportRevisionSerializer(serializers.ModelSerializer):
 class CertificateSerializer(serializers.ModelSerializer):
     company_id = serializers.IntegerField(source="company.id", read_only=True)
     equipment_id = serializers.IntegerField(source="equipment.id", read_only=True)
+    site_id = serializers.IntegerField(source="site.id", read_only=True)
 
     class Meta:
         model = Certificate
         fields = [
             "id",
             "company_id",
+            "site_id",
             "equipment_id",
             "report",
             "title",

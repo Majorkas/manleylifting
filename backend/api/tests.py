@@ -16,6 +16,7 @@ from .models import (
     AuditLog,
     CatalogCollection,
     CatalogProduct,
+    Certificate,
     Company,
     Equipment,
     InspectionReport,
@@ -23,6 +24,7 @@ from .models import (
     ProcessedStripeEvent,
     ReportImage,
     ReportRevision,
+    Site,
     UserProfile,
 )
 from .throttles import PortalMethodRateThrottle
@@ -278,15 +280,20 @@ class PortalRBACTests(TestCase):
 
         self.company_a = Company.objects.create(name="Acme Lifts", slug="acme-lifts")
         self.company_b = Company.objects.create(name="Beta Lifts", slug="beta-lifts")
+        self.site_a = Site.objects.create(company=self.company_a, name="Dublin Depot", address="Dublin")
+        self.site_a_secondary = Site.objects.create(company=self.company_a, name="Galway Yard", address="Galway")
+        self.site_b = Site.objects.create(company=self.company_b, name="Cork Base", address="Cork")
 
         self.equipment_a = Equipment.objects.create(
             company=self.company_a,
+            site=self.site_a,
             name="Chain Block A",
             asset_tag="AC-001",
             serial_number="SER-AC-001",
         )
         self.equipment_b = Equipment.objects.create(
             company=self.company_b,
+            site=self.site_b,
             name="Hoist B",
             asset_tag="BE-001",
             serial_number="SER-BE-001",
@@ -519,6 +526,56 @@ class PortalRBACTests(TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["company_id"], self.company_a.id)
 
+    def test_equipment_list_shows_latest_approved_report_status(self):
+        InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Approved attention report",
+            report_date="2026-06-20",
+            status=InspectionReport.STATUS_APPROVED,
+            checklist_items=[
+                {
+                    "label": "Brake",
+                    "status": "attention_required",
+                    "finding": "Brake issue",
+                    "recommendation": "Repair immediately",
+                }
+            ],
+        )
+
+        self.client.force_authenticate(user=self.customer_user)
+        response = self.client.get("/api/portal/equipment/")
+
+        self.assertEqual(response.status_code, 200)
+        equipment_row = next(item for item in response.json()["results"] if item["id"] == self.equipment_a.id)
+        self.assertEqual(equipment_row["inspection_status_key"], "attention_required")
+        self.assertEqual(equipment_row["inspection_status_label"], "Attention Required")
+
+    def test_equipment_list_shows_not_presented_for_latest_approved_report(self):
+        InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Approved not presented report",
+            report_date="2026-06-20",
+            status=InspectionReport.STATUS_APPROVED,
+            checklist_items=[
+                {
+                    "label": "Brake",
+                    "status": "not_presented",
+                    "finding": "",
+                    "recommendation": "",
+                }
+            ],
+        )
+
+        self.client.force_authenticate(user=self.customer_user)
+        response = self.client.get("/api/portal/equipment/")
+
+        self.assertEqual(response.status_code, 200)
+        equipment_row = next(item for item in response.json()["results"] if item["id"] == self.equipment_a.id)
+        self.assertEqual(equipment_row["inspection_status_key"], "not_presented")
+        self.assertEqual(equipment_row["inspection_status_label"], "Not Presented")
+
     def test_customer_only_sees_approved_reports(self):
         InspectionReport.objects.create(
             equipment=self.equipment_a,
@@ -659,6 +716,151 @@ class PortalRBACTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json().get("detail"), "Report image content does not match the file extension")
 
+    @patch("api.portal_views.cloudinary_uploader.upload")
+    @patch.dict(
+        "os.environ",
+        {
+            "CLOUDINARY_CLOUD_NAME": "demo",
+            "CLOUDINARY_API_KEY": "key",
+            "CLOUDINARY_API_SECRET": "secret",
+        },
+        clear=False,
+    )
+    def test_staff_can_upload_checklist_item_images(self, mock_upload):
+        mock_upload.return_value = {
+            "secure_url": "https://res.cloudinary.com/demo/image/upload/v1/report-checklist-image.jpg",
+            "public_id": "manleylifting/reports/report-checklist-image",
+        }
+
+        image_buffer = BytesIO()
+        Image.new("RGB", (1, 1), color=(0, 0, 255)).save(image_buffer, format="PNG")
+        image_buffer.seek(0)
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            f"/api/portal/equipment/{self.equipment_a.id}/reports/",
+            data={
+                "title": "Report with checklist image",
+                "report_date": "2026-06-30",
+                "status": InspectionReport.STATUS_DRAFT,
+                "checklist_items": json.dumps(
+                    [
+                        {
+                            "label": "Hoist Brake",
+                            "status": "attention_required",
+                            "finding": "Brake vibration",
+                            "recommendation": "Inspect and adjust",
+                        }
+                    ]
+                ),
+                "checklist_images": [
+                    SimpleUploadedFile("checklist-damage.png", image_buffer.getvalue(), content_type="image/png")
+                ],
+                "checklist_image_labels": ["Hoist Brake"],
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(len(response.json().get("images", [])), 1)
+        self.assertEqual(response.json().get("images", [])[0].get("checklist_label"), "Hoist Brake")
+
+    @patch("api.portal_views.cloudinary_uploader.upload")
+    @patch.dict(
+        "os.environ",
+        {
+            "CLOUDINARY_CLOUD_NAME": "demo",
+            "CLOUDINARY_API_KEY": "key",
+            "CLOUDINARY_API_SECRET": "secret",
+        },
+        clear=False,
+    )
+    def test_staff_cannot_upload_checklist_item_images_for_good_order(self, mock_upload):
+        mock_upload.return_value = {
+            "secure_url": "https://res.cloudinary.com/demo/image/upload/v1/report-checklist-image.jpg",
+            "public_id": "manleylifting/reports/report-checklist-image",
+        }
+
+        image_buffer = BytesIO()
+        Image.new("RGB", (1, 1), color=(0, 255, 0)).save(image_buffer, format="PNG")
+        image_buffer.seek(0)
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            f"/api/portal/equipment/{self.equipment_a.id}/reports/",
+            data={
+                "title": "Invalid checklist image",
+                "report_date": "2026-06-30",
+                "status": InspectionReport.STATUS_DRAFT,
+                "checklist_items": json.dumps(
+                    [
+                        {
+                            "label": "Hoist Brake",
+                            "status": "good_order",
+                            "finding": "",
+                            "recommendation": "",
+                        }
+                    ]
+                ),
+                "checklist_images": [
+                    SimpleUploadedFile("checklist-good-order.png", image_buffer.getvalue(), content_type="image/png")
+                ],
+                "checklist_image_labels": ["Hoist Brake"],
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cannot include checklist photos", response.json().get("detail", ""))
+
+    @patch("api.portal_views.cloudinary_uploader.upload")
+    @patch.dict(
+        "os.environ",
+        {
+            "CLOUDINARY_CLOUD_NAME": "demo",
+            "CLOUDINARY_API_KEY": "key",
+            "CLOUDINARY_API_SECRET": "secret",
+        },
+        clear=False,
+    )
+    def test_staff_cannot_upload_checklist_item_images_for_not_presented(self, mock_upload):
+        mock_upload.return_value = {
+            "secure_url": "https://res.cloudinary.com/demo/image/upload/v1/report-checklist-image.jpg",
+            "public_id": "manleylifting/reports/report-checklist-image",
+        }
+
+        image_buffer = BytesIO()
+        Image.new("RGB", (1, 1), color=(0, 255, 0)).save(image_buffer, format="PNG")
+        image_buffer.seek(0)
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            f"/api/portal/equipment/{self.equipment_a.id}/reports/",
+            data={
+                "title": "Invalid not presented checklist image",
+                "report_date": "2026-06-30",
+                "status": InspectionReport.STATUS_DRAFT,
+                "checklist_items": json.dumps(
+                    [
+                        {
+                            "label": "Hoist Brake",
+                            "status": "not_presented",
+                            "finding": "",
+                            "recommendation": "",
+                        }
+                    ]
+                ),
+                "checklist_images": [
+                    SimpleUploadedFile("checklist-not-presented.png", image_buffer.getvalue(), content_type="image/png")
+                ],
+                "checklist_image_labels": ["Hoist Brake"],
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cannot include checklist photos", response.json().get("detail", ""))
+
     def test_staff_can_save_incomplete_report_draft(self):
         self.client.force_authenticate(user=self.staff_user)
         response = self.client.post(
@@ -754,7 +956,69 @@ class PortalRBACTests(TestCase):
         )
         self.assertEqual(blocked_response.status_code, 404)
 
-    def test_staff_cannot_submit_report_with_missing_checklist_note(self):
+    def test_approved_report_can_override_next_due_by_reinspection_days(self):
+        report = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Attention report",
+            summary="Needs follow-up",
+            report_date="2026-06-30",
+            status=InspectionReport.STATUS_SUBMITTED,
+            checklist_items=[
+                {
+                    "label": "Hoist Brake",
+                    "status": "attention_required",
+                    "finding": "Brake wear detected",
+                    "recommendation": "Replace brake assembly",
+                    "days_before_reinspection": 21,
+                }
+            ],
+        )
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.patch(
+            f"/api/portal/reports/{report.id}/",
+            data={"status": InspectionReport.STATUS_APPROVED},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.equipment_a.refresh_from_db()
+        self.assertEqual(self.equipment_a.next_inspection_due.isoformat(), "2026-07-21")
+
+    def test_approved_not_presented_report_does_not_reset_next_due_date(self):
+        self.equipment_a.next_inspection_due = date(2027, 1, 15)
+        self.equipment_a.save(update_fields=["next_inspection_due", "updated_at"])
+
+        report = InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Not presented report",
+            summary="Item was not available",
+            report_date="2026-06-30",
+            status=InspectionReport.STATUS_SUBMITTED,
+            checklist_items=[
+                {
+                    "label": "Hoist Brake",
+                    "status": "not_presented",
+                    "finding": "",
+                    "recommendation": "",
+                }
+            ],
+        )
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.patch(
+            f"/api/portal/reports/{report.id}/",
+            data={"status": InspectionReport.STATUS_APPROVED},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.equipment_a.refresh_from_db()
+        self.assertEqual(self.equipment_a.next_inspection_due.isoformat(), "2027-01-15")
+
+    def test_staff_cannot_submit_report_with_missing_checklist_finding(self):
         self.client.force_authenticate(user=self.staff_user)
         response = self.client.post(
             f"/api/portal/equipment/{self.equipment_a.id}/reports/",
@@ -775,7 +1039,7 @@ class PortalRBACTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("requires a note", str(response.json()))
+        self.assertIn("requires a finding", str(response.json()))
 
     def test_draft_report_does_not_clear_existing_next_due_date(self):
         self.equipment_a.next_inspection_due = date(2027, 1, 15)
@@ -832,7 +1096,7 @@ class PortalRBACTests(TestCase):
             ).exists()
         )
 
-    def test_owner_cannot_save_missing_checklist_note(self):
+    def test_owner_cannot_save_missing_checklist_finding(self):
         report = InspectionReport.objects.create(
             equipment=self.equipment_a,
             submitted_by=self.staff_user,
@@ -861,7 +1125,7 @@ class PortalRBACTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("requires a note", str(response.json()))
+        self.assertIn("requires a finding", str(response.json()))
 
     def test_staff_can_edit_own_draft_report(self):
         report = InspectionReport.objects.create(
@@ -1089,6 +1353,239 @@ class PortalRBACTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json().get("detail"), "Certificate file content does not match the file extension")
 
+    def test_owner_can_generate_site_certificates_pdf(self):
+        InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="June report",
+            summary="Routine check",
+            report_date="2026-06-30",
+            status=InspectionReport.STATUS_SUBMITTED,
+        )
+
+        InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="July report",
+            summary="Most recent",
+            report_date="2026-07-15",
+            status=InspectionReport.STATUS_APPROVED,
+        )
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.post(
+            f"/api/portal/company-sites/{self.site_a.id}/certificates/generate/",
+            data={},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        certificate_id = response.json().get("id")
+        self.assertTrue(certificate_id)
+        certificate = Certificate.objects.filter(id=certificate_id).first()
+        self.assertIsNotNone(certificate)
+        self.assertEqual(certificate.site_id, self.site_a.id)
+        self.assertTrue(str(certificate.file.name or "").endswith(".pdf"))
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action="certificate.generated",
+                target_type="certificate",
+                target_id=str(certificate_id),
+            ).exists()
+        )
+
+    def test_staff_cannot_generate_site_certificates_pdf(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            f"/api/portal/company-sites/{self.site_a.id}/certificates/generate/",
+            data={},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_customer_cannot_generate_site_certificates_pdf(self):
+        self.client.force_authenticate(user=self.customer_user)
+        response = self.client.post(
+            f"/api/portal/company-sites/{self.site_a.id}/certificates/generate/",
+            data={},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    @patch("api.portal_views_modules.certificates._build_site_certificate_pdf")
+    def test_site_certificate_generation_uses_latest_approved_report_only(self, mock_build_pdf):
+        InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Approved report",
+            summary="Approved baseline",
+            report_date="2026-06-10",
+            status=InspectionReport.STATUS_APPROVED,
+        )
+        InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Submitted but newer",
+            summary="Should not be selected",
+            report_date="2026-07-10",
+            status=InspectionReport.STATUS_SUBMITTED,
+        )
+        InspectionReport.objects.create(
+            equipment=self.equipment_a,
+            submitted_by=self.staff_user,
+            title="Draft but newest",
+            summary="Should not be selected",
+            report_date="2026-07-15",
+            status=InspectionReport.STATUS_DRAFT,
+        )
+
+        mock_build_pdf.return_value = BytesIO(b"%PDF-1.4\nmock")
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.post(
+            f"/api/portal/company-sites/{self.site_a.id}/certificates/generate/",
+            data={},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        mock_build_pdf.assert_called_once()
+
+        _called_site, called_equipment_reports = mock_build_pdf.call_args.args
+        self.assertEqual(len(called_equipment_reports), 1)
+        selected_report = called_equipment_reports[0].get("report")
+        self.assertIsNotNone(selected_report)
+        self.assertEqual(selected_report.status, InspectionReport.STATUS_APPROVED)
+        self.assertEqual(selected_report.title, "Approved report")
+
+    @patch("api.portal_views_modules.certificates._build_site_certificate_pdf")
+    def test_site_certificate_generation_groups_equipment_by_checklist_severity(self, mock_build_pdf):
+        equipment_not_presented = Equipment.objects.create(
+            company=self.company_a,
+            site=self.site_a,
+            name="Not Presented Lift",
+            asset_tag="NP-1",
+            serial_number="SN-NP-1",
+        )
+        equipment_attention = Equipment.objects.create(
+            company=self.company_a,
+            site=self.site_a,
+            name="Attention Lift",
+            asset_tag="ATT-1",
+            serial_number="SN-ATT-1",
+        )
+        equipment_worn = Equipment.objects.create(
+            company=self.company_a,
+            site=self.site_a,
+            name="Worn Lift",
+            asset_tag="WRN-1",
+            serial_number="SN-WRN-1",
+        )
+        equipment_good = Equipment.objects.create(
+            company=self.company_a,
+            site=self.site_a,
+            name="Good Lift",
+            asset_tag="GOD-1",
+            serial_number="SN-GOD-1",
+        )
+
+        InspectionReport.objects.create(
+            equipment=equipment_not_presented,
+            submitted_by=self.owner_user,
+            title="Not presented report",
+            report_date="2026-07-10",
+            status=InspectionReport.STATUS_APPROVED,
+            checklist_items=[
+                {
+                    "label": "Hook",
+                    "status": "not_presented",
+                    "finding": "",
+                    "recommendation": "",
+                }
+            ],
+        )
+        InspectionReport.objects.create(
+            equipment=equipment_attention,
+            submitted_by=self.owner_user,
+            title="Attention report",
+            report_date="2026-07-10",
+            status=InspectionReport.STATUS_APPROVED,
+            checklist_items=[
+                {
+                    "label": "Brake",
+                    "status": "attention_required",
+                    "finding": "Immediate issue",
+                    "recommendation": "Repair now",
+                }
+            ],
+        )
+        InspectionReport.objects.create(
+            equipment=equipment_worn,
+            submitted_by=self.owner_user,
+            title="Worn report",
+            report_date="2026-07-10",
+            status=InspectionReport.STATUS_APPROVED,
+            checklist_items=[
+                {
+                    "label": "Chain",
+                    "status": "worn_serviceable",
+                    "finding": "Wear observed",
+                    "recommendation": "Monitor",
+                }
+            ],
+        )
+        InspectionReport.objects.create(
+            equipment=equipment_good,
+            submitted_by=self.owner_user,
+            title="Good report",
+            report_date="2026-07-10",
+            status=InspectionReport.STATUS_APPROVED,
+            checklist_items=[
+                {
+                    "label": "Hook",
+                    "status": "good_order",
+                    "finding": "",
+                    "recommendation": "",
+                }
+            ],
+        )
+
+        mock_build_pdf.return_value = BytesIO(b"%PDF-1.4\nmock")
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.post(
+            f"/api/portal/company-sites/{self.site_a.id}/certificates/generate/",
+            data={},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        mock_build_pdf.assert_called_once()
+
+        _called_site, called_equipment_reports = mock_build_pdf.call_args.args
+        ordered_names = [item["equipment"].name for item in called_equipment_reports]
+
+        self.assertLess(ordered_names.index("Not Presented Lift"), ordered_names.index("Attention Lift"))
+        self.assertLess(ordered_names.index("Attention Lift"), ordered_names.index("Worn Lift"))
+        self.assertLess(ordered_names.index("Worn Lift"), ordered_names.index("Good Lift"))
+
+    def test_customer_can_list_generated_site_certificates(self):
+        certificate = Certificate.objects.create(
+            company=self.company_a,
+            site=self.site_a,
+            title="Site Certificate Register - Dublin Depot",
+            file=SimpleUploadedFile("site-cert.pdf", b"%PDF-1.4\ncontent", content_type="application/pdf"),
+            uploaded_by=self.owner_user,
+        )
+
+        self.client.force_authenticate(user=self.customer_user)
+        response = self.client.get(f"/api/portal/company-sites/{self.site_a.id}/certificates/")
+
+        self.assertEqual(response.status_code, 200)
+        results = response.json().get("results") or []
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].get("id"), certificate.id)
+
     def test_owner_can_manage_staff_assignments(self):
         self.client.force_authenticate(user=self.owner_user)
 
@@ -1242,6 +1739,33 @@ class PortalRBACTests(TestCase):
             "/api/portal/equipment/",
             data={
                 "company_id": self.company_a.id,
+                "site_id": self.site_a.id,
+                "name": "New Demo Hoist",
+                "asset_tag": "NEW-101",
+                "serial_number": "SER-NEW-101",
+                "safe_working_load": "1000 kg",
+                "location": "Bay 3",
+                "status": Equipment.STATUS_ACTIVE,
+                "inspection_interval_days": 180,
+                "last_inspected_at": "2026-06-01",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["name"], "New Demo Hoist")
+        self.assertEqual(response.json()["site_id"], self.site_a.id)
+        self.assertEqual(response.json()["safe_working_load"], "1000 kg")
+        self.assertEqual(response.json()["next_inspection_due"], "2026-11-28")
+        self.assertTrue(Equipment.objects.filter(name="New Demo Hoist", company=self.company_a, site=self.site_a).exists())
+
+    def test_staff_cannot_create_equipment_without_safe_working_load(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.post(
+            "/api/portal/equipment/",
+            data={
+                "company_id": self.company_a.id,
+                "site_id": self.site_a.id,
                 "name": "New Demo Hoist",
                 "asset_tag": "NEW-101",
                 "serial_number": "SER-NEW-101",
@@ -1253,10 +1777,79 @@ class PortalRBACTests(TestCase):
             format="json",
         )
 
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("safe_working_load", response.json())
+
+    def test_equipment_list_can_be_filtered_by_site(self):
+        Equipment.objects.create(
+            company=self.company_a,
+            site=self.site_a_secondary,
+            name="Remote Winch",
+            asset_tag="AC-010",
+            serial_number="SER-AC-010",
+        )
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.get(f"/api/portal/equipment/?companyId={self.company_a.id}&siteId={self.site_a_secondary.id}")
+
+        self.assertEqual(response.status_code, 200)
+        results = response.json()["results"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["site_id"], self.site_a_secondary.id)
+        self.assertEqual(results[0]["site_name"], "Galway Yard")
+
+    def test_owner_can_create_additional_company_site(self):
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.post(
+            "/api/portal/company-sites/",
+            data={
+                "company_id": self.company_a.id,
+                "name": "Limerick Hub",
+                "address": "Limerick",
+            },
+            format="json",
+        )
+
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.json()["name"], "New Demo Hoist")
-        self.assertEqual(response.json()["next_inspection_due"], "2026-11-28")
-        self.assertTrue(Equipment.objects.filter(name="New Demo Hoist", company=self.company_a).exists())
+        self.assertEqual(response.json()["name"], "Limerick Hub")
+        self.assertTrue(Site.objects.filter(company=self.company_a, name="Limerick Hub").exists())
+
+    def test_owner_can_rename_site(self):
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.patch(
+            f"/api/portal/company-sites/{self.site_a.id}/",
+            data={"name": "Dublin Central", "address": "Dublin 2"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.site_a.refresh_from_db()
+        self.assertEqual(self.site_a.name, "Dublin Central")
+        self.assertEqual(self.site_a.address, "Dublin 2")
+
+    def test_staff_cannot_rename_site(self):
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.patch(
+            f"/api/portal/company-sites/{self.site_a.id}/",
+            data={"name": "Blocked Rename", "address": ""},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_owner_cannot_delete_site_with_equipment(self):
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.delete(f"/api/portal/company-sites/{self.site_a.id}/")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Move or remove equipment", response.json()["detail"])
+
+    def test_owner_can_delete_empty_site(self):
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.delete(f"/api/portal/company-sites/{self.site_a_secondary.id}/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Site.objects.filter(id=self.site_a_secondary.id).exists())
 
     def test_customer_cannot_create_equipment(self):
         self.client.force_authenticate(user=self.customer_user)

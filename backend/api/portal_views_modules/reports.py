@@ -16,12 +16,14 @@ from ..portal_views import (
     _is_owner,
     _is_staff_or_owner,
     _paginate_queryset,
+    _parse_checklist_image_labels,
     _parse_removed_report_image_ids,
     _profile_for_user,
     _refresh_equipment_next_due_from_approved_reports,
     _remove_report_images,
     _report_snapshot,
     _upload_report_images,
+    _validate_checklist_image_labels,
     _validate_report_images,
     _visible_company_ids,
 )
@@ -82,12 +84,32 @@ def portal_equipment_reports(request, equipment_id):
         return Response({"detail": "Insufficient permissions"}, status=status.HTTP_403_FORBIDDEN)
 
     report_images = request.FILES.getlist("images")
+    checklist_images = request.FILES.getlist("checklist_images")
+    checklist_image_labels = _parse_checklist_image_labels(request.data)
+
     upload_error = _validate_report_images(report_images)
     if upload_error:
         return Response({"detail": upload_error}, status=status.HTTP_400_BAD_REQUEST)
 
+    upload_error = _validate_report_images(checklist_images)
+    if upload_error:
+        return Response({"detail": upload_error}, status=status.HTTP_400_BAD_REQUEST)
+
+    if checklist_images and len(checklist_images) != len(checklist_image_labels):
+        return Response(
+            {"detail": "Checklist image labels must be provided for each checklist image"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     serializer = InspectionReportCreateSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
+    checklist_label_error = _validate_checklist_image_labels(
+        serializer.validated_data.get("checklist_items", []),
+        checklist_image_labels,
+    )
+    if checklist_label_error:
+        return Response({"detail": checklist_label_error}, status=status.HTTP_400_BAD_REQUEST)
+
     status_value = serializer.validated_data.get("status", InspectionReport.STATUS_DRAFT)
     if status_value not in {InspectionReport.STATUS_DRAFT, InspectionReport.STATUS_SUBMITTED}:
         return Response(
@@ -100,6 +122,13 @@ def portal_equipment_reports(request, equipment_id):
             report = serializer.save(equipment=equipment, submitted_by=request.user)
             if report_images:
                 _upload_report_images(report, report_images, request.user)
+            if checklist_images:
+                _upload_report_images(
+                    report,
+                    checklist_images,
+                    request.user,
+                    checklist_image_labels=checklist_image_labels,
+                )
     except ValueError as error:
         return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -231,15 +260,35 @@ def portal_report_owner_edit(request, report_id):
 
     if _is_owner(request.user):
         report_images = request.FILES.getlist("images")
+        checklist_images = request.FILES.getlist("checklist_images")
+        checklist_image_labels = _parse_checklist_image_labels(request.data)
         removed_image_ids = _parse_removed_report_image_ids(request.data)
+
         upload_error = _validate_report_images(report_images)
         if upload_error:
             return Response({"detail": upload_error}, status=status.HTTP_400_BAD_REQUEST)
+
+        upload_error = _validate_report_images(checklist_images)
+        if upload_error:
+            return Response({"detail": upload_error}, status=status.HTTP_400_BAD_REQUEST)
+
+        if checklist_images and len(checklist_images) != len(checklist_image_labels):
+            return Response(
+                {"detail": "Checklist image labels must be provided for each checklist image"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         previous_data = _report_snapshot(report)
 
         serializer = InspectionReportOwnerEditSerializer(report, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
+
+        checklist_label_error = _validate_checklist_image_labels(
+            serializer.validated_data.get("checklist_items", report.checklist_items),
+            checklist_image_labels,
+        )
+        if checklist_label_error:
+            return Response({"detail": checklist_label_error}, status=status.HTTP_400_BAD_REQUEST)
 
         status_value = serializer.validated_data.get("status", report.status)
         allowed_statuses = {InspectionReport.STATUS_SUBMITTED, InspectionReport.STATUS_APPROVED}
@@ -264,6 +313,13 @@ def portal_report_owner_edit(request, report_id):
 
                 if report_images:
                     _upload_report_images(report, report_images, request.user)
+                if checklist_images:
+                    _upload_report_images(
+                        report,
+                        checklist_images,
+                        request.user,
+                        checklist_image_labels=checklist_image_labels,
+                    )
 
                 ReportRevision.objects.create(
                     report=report,
@@ -300,13 +356,32 @@ def portal_report_owner_edit(request, report_id):
         return Response({"detail": "Staff can only edit their own draft reports"}, status=status.HTTP_403_FORBIDDEN)
 
     report_images = request.FILES.getlist("images")
+    checklist_images = request.FILES.getlist("checklist_images")
+    checklist_image_labels = _parse_checklist_image_labels(request.data)
     removed_image_ids = _parse_removed_report_image_ids(request.data)
     upload_error = _validate_report_images(report_images)
     if upload_error:
         return Response({"detail": upload_error}, status=status.HTTP_400_BAD_REQUEST)
 
+    upload_error = _validate_report_images(checklist_images)
+    if upload_error:
+        return Response({"detail": upload_error}, status=status.HTTP_400_BAD_REQUEST)
+
+    if checklist_images and len(checklist_images) != len(checklist_image_labels):
+        return Response(
+            {"detail": "Checklist image labels must be provided for each checklist image"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     serializer = InspectionReportUpdateSerializer(report, data=request.data, partial=True)
     serializer.is_valid(raise_exception=True)
+
+    checklist_label_error = _validate_checklist_image_labels(
+        serializer.validated_data.get("checklist_items", report.checklist_items),
+        checklist_image_labels,
+    )
+    if checklist_label_error:
+        return Response({"detail": checklist_label_error}, status=status.HTTP_400_BAD_REQUEST)
 
     status_value = serializer.validated_data.get("status", report.status)
     if status_value not in {InspectionReport.STATUS_DRAFT, InspectionReport.STATUS_SUBMITTED}:
@@ -322,6 +397,13 @@ def portal_report_owner_edit(request, report_id):
                 _remove_report_images(report, removed_image_ids)
             if report_images:
                 _upload_report_images(report, report_images, request.user)
+            if checklist_images:
+                _upload_report_images(
+                    report,
+                    checklist_images,
+                    request.user,
+                    checklist_image_labels=checklist_image_labels,
+                )
     except ValueError as error:
         return Response({"detail": str(error)}, status=status.HTTP_400_BAD_REQUEST)
 
