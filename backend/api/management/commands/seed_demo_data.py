@@ -19,7 +19,7 @@ from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.utils.text import slugify
 
-from api.models import Company, Equipment, InspectionReport, UserProfile
+from api.models import Company, Equipment, InspectionReport, Site, UserProfile
 
 User = get_user_model()
 
@@ -297,11 +297,11 @@ class Command(BaseCommand):
         # ── 1. Companies + customers + equipment + reports ──────────────────
         all_company_ids = []
         for idx, (company_name, county, _slug) in enumerate(COMPANIES, start=1):
-            company, customer_user = self._create_company_and_customer(
+            company, customer_user, site = self._create_company_and_customer(
                 company_name, county, idx, password
             )
             all_company_ids.append(company.id)
-            self._create_equipment_and_reports(company, customer_user, idx)
+            self._create_equipment_and_reports(company, site, customer_user, idx)
             self.stdout.write(f"  ✓ Company {idx:02d}/20: {company_name}")
 
         # ── 2. Employees ─────────────────────────────────────────────────────
@@ -327,10 +327,15 @@ class Command(BaseCommand):
         for idx, (first, last, _role) in enumerate(EMPLOYEES, start=1):
             demo_usernames.append(self._employee_username(first, last, idx))
 
-        User.objects.filter(username__in=demo_usernames).delete()
-
         demo_names = [cn for cn, _, _ in COMPANIES]
-        Company.objects.filter(name__in=demo_names).delete()
+        demo_companies = Company.objects.filter(name__in=demo_names)
+
+        # Delete dependent rows explicitly to avoid Site->Equipment PROTECT conflicts.
+        Equipment.objects.filter(company__in=demo_companies).delete()
+        Site.objects.filter(company__in=demo_companies).delete()
+        demo_companies.delete()
+
+        User.objects.filter(username__in=demo_usernames).delete()
 
     def _create_company_and_customer(self, company_name, county, idx, password):
         username = f"demo.customer.{idx:02d}"
@@ -378,9 +383,17 @@ class Command(BaseCommand):
         profile.allowed_companies.add(company)
         profile.save(update_fields=["role", "updated_at"])
 
-        return company, user
+        site, _ = Site.objects.get_or_create(
+            company=company,
+            name="Main Site",
+            defaults={
+                "address": company.address or f"{county} Industrial Estate, {county}, Ireland",
+            },
+        )
 
-    def _create_equipment_and_reports(self, company, customer_user, company_idx):
+        return company, user, site
+
+    def _create_equipment_and_reports(self, company, site, customer_user, company_idx):
         # 5 report patterns to cycle across equipment: approved, approved, submitted, draft, approved+worn
         report_plan = [
             # (status, count)
@@ -403,6 +416,7 @@ class Command(BaseCommand):
                 company=company,
                 asset_tag=asset_tag,
                 defaults={
+                    "site": site,
                     "name": eq_name,
                     "serial_number": serial,
                     "safe_working_load": random.choice(["500 kg", "1000 kg", "2000 kg", "3.2 t"]),
@@ -414,6 +428,10 @@ class Command(BaseCommand):
                     "notes": f"Demo equipment — {eq_type} class asset.",
                 },
             )
+
+            if eq.site_id != site.id:
+                eq.site = site
+                eq.save(update_fields=["site", "updated_at"])
 
             plan = report_plan[eq_idx % len(report_plan)]
             for report_status, report_num in plan:
