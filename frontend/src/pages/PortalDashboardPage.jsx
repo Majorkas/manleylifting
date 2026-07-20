@@ -3054,11 +3054,16 @@ export default function PortalDashboardPage() {
   // Handle session expiry and redirect to login with message
   useEffect(() => {
     const handleSessionExpired = () => {
-      navigate('/portal/login', { state: { sessionExpired: true } })
+      navigate(loginRedirectQuery, {
+        state: {
+          sessionExpired: true,
+          redirectTo: loginRedirectPath,
+        },
+      })
     }
     window.addEventListener('portalSessionExpired', handleSessionExpired)
     return () => window.removeEventListener('portalSessionExpired', handleSessionExpired)
-  }, [navigate])
+  }, [loginRedirectPath, loginRedirectQuery, navigate])
 
   useEffect(() => {
     if (!isAuthenticated) return undefined
