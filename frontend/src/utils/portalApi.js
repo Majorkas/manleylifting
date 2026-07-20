@@ -43,6 +43,7 @@ const apiBaseUrl = (effectiveConfiguredApiBaseUrl || defaultApiBaseUrl).replace(
 
 const SESSION_FLAG_KEY = 'manley-portal-session-v1'
 let accessTokenMemory = ''
+let refreshAccessTokenPromise = null
 
 function apiUrl(path) {
   return apiBaseUrl + path
@@ -297,25 +298,37 @@ export function clearPortalSession() {
 }
 
 async function refreshAccessToken() {
-  const path = '/auth/token/refresh/'
-  const response = await fetch(apiUrl(path), {
-    method: 'POST',
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify({}),
-  })
-
-  const body = await parseResponse(response, path)
-  const nextAccess = String(body?.access || '')
-  if (!nextAccess) {
-    throw new Error('Refresh token response missing access token')
+  if (refreshAccessTokenPromise) {
+    return refreshAccessTokenPromise
   }
 
-  savePortalAccessToken(nextAccess)
-  return nextAccess
+  refreshAccessTokenPromise = (async () => {
+    const path = '/auth/token/refresh/'
+    const response = await fetch(apiUrl(path), {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({}),
+    })
+
+    const body = await parseResponse(response, path)
+    const nextAccess = String(body?.access || '')
+    if (!nextAccess) {
+      throw new Error('Refresh token response missing access token')
+    }
+
+    savePortalAccessToken(nextAccess)
+    return nextAccess
+  })()
+
+  try {
+    return await refreshAccessTokenPromise
+  } finally {
+    refreshAccessTokenPromise = null
+  }
 }
 
 export async function refreshPortalSession() {
