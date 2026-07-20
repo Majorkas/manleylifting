@@ -153,7 +153,7 @@ export default function ContactPage() {
           <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
             <h2 className="text-2xl font-extrabold text-[#123A7A]">Start a Conversation</h2>
             <p className="mt-2 text-slate-600">
-              Tell us about your project. Include timelines, location, equipment details, and any compliance context. We'll respond with a clear plan within one business day.
+              Tell us about your project. Include timelines, location, equipment details, and any compliance context.
             </p>
 
             <form className="mt-8 space-y-5" onSubmit={onSubmit}>
