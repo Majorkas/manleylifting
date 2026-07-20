@@ -15,7 +15,6 @@ const legalLinks = [
 
 const portalNavItems = [
   { label: 'Portal', to: '/portal' },
-  { label: 'Shop', to: '/shop' },
   { label: 'Contact', to: '/contact' },
 ]
 

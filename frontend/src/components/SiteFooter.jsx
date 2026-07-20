@@ -8,17 +8,8 @@ export default function SiteFooter({ legalLinks }) {
           <div>
             <h3 className="text-lg font-extrabold text-[#123A7A]">Manley Lifting</h3>
             <p className="mt-3 text-sm leading-relaxed text-slate-600">
-              Family-run and based in Oulart, Co. Wexford, Manley Lifting provides trusted inspection, certification, training, and equipment support to the crane and lifting industry.
+              Manley Lifting is a specialist team based in Oulart, Co. Wexford, providing professional inspection, certification, training, and lifting equipment support to industrial clients.
             </p>
-
-            <div className="mt-4">
-              <Link
-                to="/shop"
-                className="inline-flex items-center text-sm font-bold uppercase tracking-wide text-[#C61F2A] transition hover:text-[#9f1720]"
-              >
-                Visit the shop
-              </Link>
-            </div>
           </div>
 
           <div>
@@ -37,9 +28,9 @@ export default function SiteFooter({ legalLinks }) {
           <div>
             <h4 className="text-sm font-bold uppercase tracking-[0.12em] text-[#C61F2A]">Company Details</h4>
             <ul className="mt-3 space-y-2 text-sm text-slate-700">
-              <li>Family Business: Michael Manley and Jackie Manley</li>
+              <li>Team: Inspection, certification, and lifting support specialists</li>
               <li>Location: Oulart, Co. Wexford, Ireland</li>
-              <li>Email: info@manleylifting.ie</li>
+              <li>Email: michael@manleylifting.ie</li>
             </ul>
           </div>
         </div>

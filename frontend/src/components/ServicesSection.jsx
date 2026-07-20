@@ -5,10 +5,10 @@ export default function ServicesSection() {
         <div className="mb-10">
           <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">Services</p>
           <h2 className="mt-2 text-3xl font-extrabold text-[#123A7A] md:text-4xl">
-            Trusted Lifting Support from Oulart, Co. Wexford
+            Professional Lifting Services for Safety-Critical Operations
           </h2>
           <p className="mt-4 max-w-3xl text-slate-600">
-            As a local family business, we combine practical expertise with personal service across inspection, training, supply, and installation.
+            Our team provides structured, compliant support across inspection, training, supply, and installation so your sites can operate with confidence.
           </p>
         </div>
 

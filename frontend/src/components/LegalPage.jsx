@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import usePageMeta from '../utils/usePageMeta'
 
@@ -714,6 +715,10 @@ function policyContentByTitle(title) {
 }
 
 export default function LegalPage({ title }) {
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [title])
+
   usePageMeta({
     title,
     description: `${title} for Manley Lifting.`,

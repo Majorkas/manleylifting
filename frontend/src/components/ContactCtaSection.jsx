@@ -10,7 +10,7 @@ export default function ContactCtaSection() {
             Need Reliable Lifting Support for Your Next Project?
           </h2>
           <p className="mt-4 max-w-3xl text-slate-100">
-            Speak directly with Michael and Jackie about your project requirements. From our base in Oulart, Co. Wexford, we provide responsive, professional support for inspections, certification, training, supply, and installation.
+            Speak with our team about your project requirements. We provide responsive professional support for inspections, certification, training, supply, and installation.
           </p>
           <div className="mt-8 flex flex-wrap gap-4">
             <Link
@@ -18,12 +18,6 @@ export default function ContactCtaSection() {
               className="rounded-md bg-[#C61F2A] px-6 py-3 text-sm font-bold uppercase tracking-wide text-white hover:bg-[#b41c25]"
             >
               Contact Manley Lifting
-            </Link>
-            <Link
-              to="/shop"
-              className="rounded-md border-2 border-white px-6 py-3 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-white hover:text-[#123A7A]"
-            >
-              Browse the Shop
             </Link>
           </div>
         </div>

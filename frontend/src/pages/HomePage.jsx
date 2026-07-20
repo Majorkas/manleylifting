@@ -5,6 +5,7 @@ import SiteHeader from '../components/SiteHeader'
 import HeroSection from '../components/HeroSection'
 import ServicesSection from '../components/ServicesSection'
 import TrustSection from '../components/TrustSection'
+import PortalPlatformSection from '../components/PortalPlatformSection'
 import ContactCtaSection from '../components/ContactCtaSection'
 import SiteFooter from '../components/SiteFooter'
 import usePageMeta from '../utils/usePageMeta'
@@ -23,6 +24,10 @@ export default function HomePage() {
   const [isScrolled, setIsScrolled] = useState(false)
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const regionPolicy = useMemo(() => getRegionPolicy(), [])
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [])
 
   useEffect(() => {
     function onScroll() {
@@ -46,9 +51,9 @@ export default function HomePage() {
   const navItems = [
     { label: 'Services', href: '#services' },
     { label: 'Certification', href: '#trust' },
+    { label: 'Portal', href: '#portal-platform' },
     { label: 'Contact', href: '#contact' },
-    { label: 'Portal', to: '/portal/login' },
-    { label: 'Shop', to: '/shop' },
+    { label: 'Portal Login', to: '/portal/login' },
   ]
 
   return (
@@ -66,6 +71,7 @@ export default function HomePage() {
         <HeroSection heroLogo={heroLogo} />
         <ServicesSection />
         <TrustSection />
+        <PortalPlatformSection />
         <ContactCtaSection />
       </main>
 

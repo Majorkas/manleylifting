@@ -3,25 +3,20 @@ import './App.css'
 import ContactPage from './components/ContactPage'
 import LegalPage from './components/LegalPage'
 import HomePage from './pages/HomePage'
-import ShopPage from './pages/ShopPage'
-import ShopCollectionPage from './pages/ShopCollectionPage'
-import ShopProductPage from './pages/ShopProductPage'
-import CartPage from './pages/CartPage'
-import CheckoutPage from './pages/CheckoutPage'
-import OrderConfirmedPage from './pages/OrderConfirmedPage'
 import PortalDashboardPage from './pages/PortalDashboardPage'
 import PortalLoginPage from './pages/PortalLoginPage'
+import StoreWorkInProgressPage from './pages/StoreWorkInProgressPage'
 
 export default function App() {
   return (
     <Routes>
       <Route path="/" element={<HomePage />} />
-      <Route path="/shop" element={<ShopPage />} />
-      <Route path="/shop/collections/:handle" element={<ShopCollectionPage />} />
-      <Route path="/shop/products/:handle" element={<ShopProductPage />} />
-      <Route path="/cart" element={<CartPage />} />
-      <Route path="/checkout" element={<CheckoutPage />} />
-      <Route path="/order-confirmed" element={<OrderConfirmedPage />} />
+      <Route path="/shop" element={<StoreWorkInProgressPage />} />
+      <Route path="/shop/collections/:handle" element={<StoreWorkInProgressPage />} />
+      <Route path="/shop/products/:handle" element={<StoreWorkInProgressPage />} />
+      <Route path="/cart" element={<StoreWorkInProgressPage />} />
+      <Route path="/checkout" element={<StoreWorkInProgressPage />} />
+      <Route path="/order-confirmed" element={<StoreWorkInProgressPage />} />
       <Route path="/portal" element={<PortalDashboardPage />} />
       <Route path="/portal/login" element={<PortalLoginPage />} />
       <Route path="/contact" element={<ContactPage />} />

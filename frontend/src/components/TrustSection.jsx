@@ -5,10 +5,10 @@ export default function TrustSection() {
         <div className="fade-up">
           <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">Trust and Compliance</p>
           <h2 className="mt-2 text-3xl font-extrabold text-[#123A7A] md:text-4xl">
-            Family Values. Professional Standards.
+            Technical Standards. Accountable Delivery.
           </h2>
           <p className="mt-4 text-slate-600">
-            At Manley Lifting, Michael and Jackie Manley have built the business on reliability, honest advice, and safety-first delivery. From our base in Oulart, Co. Wexford, we support industrial clients with certified processes and practical, site-ready knowledge.
+            Manley Lifting supports industrial teams with certified processes, practical field knowledge, and consistent communication from planning through completion.
           </p>
         </div>
 
@@ -16,7 +16,7 @@ export default function TrustSection() {
           <ul className="space-y-4 text-slate-700">
             <li className="flex gap-3">
               <span className="mt-2 h-2 w-2 rounded-full bg-[#C61F2A]" />
-              Owner-led service from Michael and Jackie Manley
+              Experienced inspection and compliance team
             </li>
             <li className="flex gap-3">
               <span className="mt-2 h-2 w-2 rounded-full bg-[#123A7A]" />
@@ -28,7 +28,7 @@ export default function TrustSection() {
             </li>
             <li className="flex gap-3">
               <span className="mt-2 h-2 w-2 rounded-full bg-[#123A7A]" />
-              Supply of slings, shackles, eyebolts, and load restraint equipment
+              Reliable documentation, traceability, and service follow-through
             </li>
           </ul>
         </div>
