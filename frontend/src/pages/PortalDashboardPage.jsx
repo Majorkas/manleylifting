@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import CustomerListSection from '../components/CustomerListSection'
 import EmployeeControlsSection from '../components/EmployeeControlsSection'
 import EquipmentTableSection from '../components/EquipmentTableSection'
@@ -8,6 +9,12 @@ import PaginationControls from '../components/PaginationControls'
 import PortalToast from '../components/PortalToast'
 import PendingApprovalsSection from '../components/PendingApprovalsSection'
 import PortalLayout from '../components/PortalLayout'
+import {
+  CompanyProfileSkeleton,
+  CertificatesSkeleton,
+  ReportsSkeleton,
+  EquipmentActivitySkeleton,
+} from '../components/PortalLoadingSkeletons'
 import usePageMeta from '../utils/usePageMeta'
 import { exportRowsToCsv } from '../utils/csvExport'
 import {
@@ -65,6 +72,30 @@ const EQUIPMENT_STATUS_FILTER_WORN = 'worn_serviceable'
 const EQUIPMENT_STATUS_FILTER_ATTENTION = 'attention_required'
 const EQUIPMENT_STATUS_FILTER_NOT_PRESENTED = 'not_presented'
 const EQUIPMENT_STATUS_FILTER_NO_REPORT = 'no_approved_report'
+const portalQueryKeys = {
+  profile: () => ['portal-profile'],
+  companies: () => ['portal-companies'],
+  companyHeader: (companyId = '') => ['portal-company-header', String(companyId || '')],
+  equipment: ({ companyId = '', siteId = '', search = '' } = {}) => [
+    'portal-equipment',
+    String(companyId || ''),
+    String(siteId || ''),
+    String(search || ''),
+  ],
+  equipmentRoot: () => ['portal-equipment'],
+  reports: (equipmentId = '') => ['portal-reports', String(equipmentId || '')],
+  reportsRoot: () => ['portal-reports'],
+  equipmentActivity: (equipmentId = '') => ['portal-equipment-activity', String(equipmentId || '')],
+  equipmentActivityRoot: () => ['portal-equipment-activity'],
+  generatedCertificates: (siteId = '') => ['portal-generated-certificates', String(siteId || '')],
+  generatedCertificatesRoot: () => ['portal-generated-certificates'],
+  pendingApprovals: (role = '') => ['portal-pending-approvals', String(role || '')],
+  pendingApprovalsRoot: () => ['portal-pending-approvals'],
+  dashboardStats: (role = '') => ['portal-dashboard-stats', String(role || '')],
+  dashboardStatsRoot: () => ['portal-dashboard-stats'],
+  staffAssignments: (status = '') => ['portal-staff-assignments', String(status || '')],
+  staffAssignmentsRoot: () => ['portal-staff-assignments'],
+}
 const REPORT_SUBMISSION_CONFIRMATION_ITEMS = [
   'We have undertaken the test / thorough examination as prescribed.',
   'We have identified defects which are or could be a danger to persons.',
@@ -1105,6 +1136,27 @@ function readReportDraft() {
   }
 }
 
+function getMostRecentReport(reportList) {
+  if (!Array.isArray(reportList) || reportList.length === 0) return null
+
+  return reportList.reduce((latest, candidate) => {
+    if (!latest) return candidate
+
+    const latestDateMs = Date.parse(latest.report_date || '')
+    const candidateDateMs = Date.parse(candidate.report_date || '')
+    const latestIsValid = Number.isFinite(latestDateMs)
+    const candidateIsValid = Number.isFinite(candidateDateMs)
+
+    if (candidateIsValid && !latestIsValid) return candidate
+    if (candidateIsValid && latestIsValid && candidateDateMs > latestDateMs) return candidate
+    if (candidateIsValid && latestIsValid && candidateDateMs === latestDateMs) {
+      return Number(candidate.id || 0) > Number(latest.id || 0) ? candidate : latest
+    }
+
+    return latest
+  }, null)
+}
+
 function writeReportDraft(draft) {
   if (typeof window === 'undefined') return
   try {
@@ -1164,6 +1216,7 @@ export default function PortalDashboardPage() {
 
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
+  const queryClient = useQueryClient()
   const initialSearchQuery = String(searchParams.get('q') || '').trim()
   const initialReportYearFilter = String(searchParams.get('reportYear') || '').trim()
   const initialEquipmentTab = parseEnum(searchParams.get('eqTab'), ['active', 'decommissioned'], 'active')
@@ -1213,7 +1266,6 @@ export default function PortalDashboardPage() {
   const [selectedEquipment, setSelectedEquipment] = useState(null)
   const [reports, setReports] = useState([])
   const [reportYearFilter, setReportYearFilter] = useState(initialReportYearFilter)
-  const [reportsLoading, setReportsLoading] = useState(false)
   const [reportError, setReportError] = useState('')
   const [createReportError, setCreateReportError] = useState('')
   const [editReportError, setEditReportError] = useState('')
@@ -1224,12 +1276,9 @@ export default function PortalDashboardPage() {
   const [showGeneratedCertificatePreviewModal, setShowGeneratedCertificatePreviewModal] = useState(false)
   const [generatedCertificatePreviewUrl, setGeneratedCertificatePreviewUrl] = useState('')
   const [generatedCertificateFilename, setGeneratedCertificateFilename] = useState('')
-  const [generatedCertificates, setGeneratedCertificates] = useState([])
-  const [generatedCertificatesLoading, setGeneratedCertificatesLoading] = useState(false)
   const [generatedCertificateActionId, setGeneratedCertificateActionId] = useState(0)
   const [confirmDeleteGeneratedCertificateId, setConfirmDeleteGeneratedCertificateId] = useState('')
   const [equipmentActivity, setEquipmentActivity] = useState([])
-  const [equipmentActivityLoading, setEquipmentActivityLoading] = useState(false)
   const [equipmentActivityError, setEquipmentActivityError] = useState('')
   const [equipmentActivityPage, setEquipmentActivityPage] = useState(1)
   const [, setCertificateSuccess] = useState('')
@@ -1342,6 +1391,7 @@ export default function PortalDashboardPage() {
   const [equipmentStatusFilter, setEquipmentStatusFilter] = useState(initialEquipmentStatusFilter)
   const [expandedEquipmentCardId, setExpandedEquipmentCardId] = useState('')
   const [expandedReportCardId, setExpandedReportCardId] = useState('')
+  const [showReportHistory, setShowReportHistory] = useState(false)
   const previousSelectedEquipmentIdRef = useRef('')
   const previousDesktopSelectedEquipmentIdRef = useRef('')
   const skipNextEqIdSyncRef = useRef(false)
@@ -1395,6 +1445,7 @@ export default function PortalDashboardPage() {
     if (!reportYearFilter) return reports
     return reports.filter((report) => report.report_date?.startsWith(reportYearFilter))
   }, [reports, reportYearFilter])
+  const latestReport = useMemo(() => getMostRecentReport(reports), [reports])
   const showsCustomerPicker = canEditReports && !selectedCompanyId
   const isOwner = profile?.role === 'owner' || profile?.role === 'office_staff'
   const canManageSites = isOwner
@@ -1405,10 +1456,669 @@ export default function PortalDashboardPage() {
     if (!companySites.length) return null
     return companySites.find((site) => String(site.id) === String(selectedSiteId)) || companySites[0]
   }, [companySites, selectedSiteId])
+  const generatedCertificatesSiteId = Number(activeSite?.id || selectedSiteId || 0)
   const activeSelectedEquipment = useMemo(() => {
     if (!selectedEquipment) return null
     return equipment.find((item) => String(item.id) === String(selectedEquipment.id)) || null
   }, [equipment, selectedEquipment])
+  const reportsQuery = useQuery({
+    queryKey: portalQueryKeys.reports(activeSelectedEquipment?.id),
+    queryFn: () => getEquipmentReports(activeSelectedEquipment.id),
+    enabled: Boolean(activeSelectedEquipment?.id),
+    staleTime: 30 * 1000,
+  })
+  const reportsLoading = reportsQuery.isLoading || reportsQuery.isFetching
+
+  const equipmentActivityQuery = useQuery({
+    queryKey: portalQueryKeys.equipmentActivity(activeSelectedEquipment?.id),
+    queryFn: () => getEquipmentActivity(activeSelectedEquipment.id),
+    enabled: Boolean(activeSelectedEquipment?.id && canViewEquipmentActivity),
+    staleTime: 60 * 1000,
+  })
+  const generatedCertificatesQuery = useQuery({
+    queryKey: portalQueryKeys.generatedCertificates(generatedCertificatesSiteId),
+    queryFn: () => getSiteCertificates(generatedCertificatesSiteId),
+    enabled: Boolean(generatedCertificatesSiteId),
+    staleTime: 5 * 60 * 1000,
+  })
+  const generatedCertificates = generatedCertificatesQuery.data || []
+  const generatedCertificatesLoading = generatedCertificatesQuery.isLoading || generatedCertificatesQuery.isFetching
+  const approveReportMutation = useMutation({
+    mutationFn: ({ reportId }) => updateReport(reportId, { status: 'approved' }),
+    onMutate: async ({ reportSnapshot }) => {
+      const wasSubmitted = String(reportSnapshot?.status || '').toLowerCase() === 'submitted'
+      const previousReports = reports
+      const previousViewedReport = viewedReport
+      const previousPendingApprovals = pendingReportApprovals
+      const previousDashboardStats = dashboardStats
+
+      setApprovingReport(true)
+      setViewedReportError('')
+
+      if (wasSubmitted && reportSnapshot?.id) {
+        const optimisticReport = { ...reportSnapshot, status: 'approved' }
+        setReports((current) =>
+          current.map((report) =>
+            String(report.id) === String(optimisticReport.id) ? optimisticReport : report,
+          ),
+        )
+        setViewedReport(optimisticReport)
+        setPendingReportApprovals((current) =>
+          current.filter((report) => String(report.id) !== String(optimisticReport.id)),
+        )
+        setDashboardStats((current) => ({
+          ...current,
+          pending_approvals_count: Math.max(0, Number(current.pending_approvals_count || 0) - 1),
+        }))
+      }
+
+      return {
+        wasSubmitted,
+        previousReports,
+        previousViewedReport,
+        previousPendingApprovals,
+        previousDashboardStats,
+      }
+    },
+    onSuccess: async (updatedReport) => {
+      await invalidatePortalCaches([
+        portalQueryKeys.reportsRoot(),
+        portalQueryKeys.equipmentRoot(),
+        portalQueryKeys.pendingApprovalsRoot(),
+        portalQueryKeys.dashboardStatsRoot(),
+      ])
+
+      setReports((current) =>
+        current.map((report) => (String(report.id) === String(updatedReport.id) ? updatedReport : report)),
+      )
+      setViewedReport(updatedReport)
+
+      if (!selectedCompanyId) {
+        await Promise.all([
+          refreshPendingReportApprovals().catch(() => {}),
+          refreshDashboardStats().catch(() => {}),
+        ])
+      }
+
+      try {
+        await fetchPortalEquipmentList({
+          companyId: activeSelectedEquipment?.company_id || selectedCompanyId,
+          siteId: selectedSiteId,
+          search: searchQuery,
+        }).then((refreshedEquipment) => {
+          setEquipment(refreshedEquipment)
+          if (selectedEquipment) {
+            const nextSelectedEquipment = refreshedEquipment.find(
+              (item) => String(item.id) === String(selectedEquipment.id),
+            )
+            setSelectedEquipment(nextSelectedEquipment || null)
+          }
+        })
+      } catch {
+        // Keep the optimistic/final report status update even if equipment refresh fails.
+      }
+    },
+    onError: (error, _variables, context) => {
+      if (context?.wasSubmitted) {
+        setReports(context.previousReports)
+        setViewedReport(context.previousViewedReport)
+        setPendingReportApprovals(context.previousPendingApprovals)
+        setDashboardStats(context.previousDashboardStats)
+      }
+      setViewedReportError(String(error?.message || 'Unable to approve report.'))
+    },
+    onSettled: () => {
+      setApprovingReport(false)
+    },
+  })
+  const updateEquipmentStatusMutation = useMutation({
+    mutationFn: ({ equipmentId, status }) => updatePortalEquipment(equipmentId, { status }),
+    onMutate: async ({ equipmentId, status }) => {
+      const previousEquipment = equipment
+      const previousSelectedEquipment = selectedEquipment
+      const selectedEquipmentIdToMaintain = selectedEquipment?.id || null
+
+      const optimisticEquipment = equipment.map((item) =>
+        String(item.id) === String(equipmentId)
+          ? {
+              ...item,
+              status,
+            }
+          : item,
+      )
+
+      setUpdatingEquipmentStatus(true)
+      setEquipmentStatusError('')
+      setEquipment(optimisticEquipment)
+      setEquipmentLastUpdatedAt(Date.now())
+      if (selectedEquipmentIdToMaintain && String(selectedEquipmentIdToMaintain) === String(equipmentId)) {
+        setSelectedEquipment((current) =>
+          current
+            ? {
+                ...current,
+                status,
+              }
+            : current,
+        )
+      }
+
+      return {
+        previousEquipment,
+        previousSelectedEquipment,
+        selectedEquipmentIdToMaintain,
+      }
+    },
+    onSuccess: async (_result, variables, context) => {
+      await invalidatePortalCaches([
+        portalQueryKeys.equipmentRoot(),
+        portalQueryKeys.dashboardStatsRoot(),
+      ])
+
+      const refreshedEquipment = await fetchPortalEquipmentList({
+        companyId: variables.companyIdForRefresh,
+        siteId: variables.siteId,
+        search: variables.search,
+      })
+      setEquipment(refreshedEquipment)
+      setEquipmentLastUpdatedAt(Date.now())
+      if (context?.selectedEquipmentIdToMaintain) {
+        const nextSelectedEquipment = refreshedEquipment.find(
+          (item) => String(item.id) === String(context.selectedEquipmentIdToMaintain),
+        )
+        setSelectedEquipment(nextSelectedEquipment || null)
+      }
+      setEquipmentPage(1)
+    },
+    onError: (error, _variables, context) => {
+      setEquipment(context?.previousEquipment || [])
+      if (context?.selectedEquipmentIdToMaintain) {
+        setSelectedEquipment(context.previousSelectedEquipment || null)
+      }
+      setEquipmentStatusError(String(error?.message || 'Unable to update equipment status.'))
+    },
+    onSettled: () => {
+      setUpdatingEquipmentStatus(false)
+    },
+  })
+  const bulkApproveReportsMutation = useMutation({
+    mutationFn: ({ reportIds }) =>
+      Promise.all(reportIds.map((reportId) => updateReport(reportId, { status: 'approved' }))),
+    onMutate: async () => {
+      setBulkApprovingReports(true)
+      setPendingApprovalsError('')
+    },
+    onSuccess: async () => {
+      await invalidatePortalCaches([
+        portalQueryKeys.reportsRoot(),
+        portalQueryKeys.equipmentRoot(),
+        portalQueryKeys.pendingApprovalsRoot(),
+        portalQueryKeys.dashboardStatsRoot(),
+      ])
+
+      setSelectedPendingApprovalIds([])
+      await Promise.all([refreshPendingReportApprovals(true), refreshDashboardStats(true)])
+      showSuccessToast('Selected submitted reports have been approved.', 'Reports Approved')
+    },
+    onError: (error) => {
+      setPendingApprovalsError(String(error?.message || 'Unable to bulk approve reports.'))
+    },
+    onSettled: () => {
+      setBulkApprovingReports(false)
+    },
+  })
+  const bulkDecommissionEquipmentMutation = useMutation({
+    mutationFn: ({ equipmentIds }) =>
+      Promise.all(
+        equipmentIds.map((equipmentId) => updatePortalEquipment(equipmentId, { status: 'decommissioned' })),
+      ),
+    onMutate: async () => {
+      setBulkDecommissioningEquipment(true)
+      setEquipmentStatusError('')
+    },
+    onSuccess: async () => {
+      await invalidatePortalCaches([
+        portalQueryKeys.equipmentRoot(),
+        portalQueryKeys.dashboardStatsRoot(),
+      ])
+
+      setSelectedEquipmentIds([])
+      await Promise.all([refreshEquipmentData(), refreshDashboardStats(true)])
+      showSuccessToast('Selected equipment has been decommissioned.', 'Equipment Updated')
+    },
+    onError: (error) => {
+      setEquipmentStatusError(String(error?.message || 'Unable to decommission selected equipment.'))
+    },
+    onSettled: () => {
+      setBulkDecommissioningEquipment(false)
+    },
+  })
+  const editCustomerMutation = useMutation({
+    mutationFn: ({ payload }) => updatePortalCustomer(payload),
+    onMutate: async () => {
+      setEditingCustomer(true)
+      setCustomerEditError('')
+      setCustomerEditSuccess('')
+    },
+    onSuccess: async (updated, variables) => {
+      await invalidatePortalCaches([
+        portalQueryKeys.companies(),
+      ])
+      const refreshedCompanies = await fetchPortalCompanies()
+      setCompanies(refreshedCompanies)
+      setCustomersLastUpdatedAt(Date.now())
+      setShowEditCustomerForm(false)
+      setConfirmCustomerDeactivate(false)
+      setCustomerEditForm(buildEmptyCustomerEditForm())
+      const nextCustomerMessage = variables?.deactivateCustomer
+        ? `Deactivated customer ${updated.name}.`
+        : `Updated customer ${updated.name}.`
+      setCustomerEditSuccess(nextCustomerMessage)
+      showSuccessToast(
+        nextCustomerMessage,
+        variables?.deactivateCustomer ? 'Customer Deactivated' : 'Customer Updated',
+      )
+    },
+    onError: (error) => {
+      setCustomerEditError(String(error?.message || 'Unable to update customer.'))
+    },
+    onSettled: () => {
+      setEditingCustomer(false)
+    },
+  })
+  const createEmployeeAssignmentMutation = useMutation({
+    mutationFn: ({ payload }) => createStaffAssignment(payload),
+    onMutate: async () => {
+      setCreatingStaffAssignment(true)
+      setStaffAssignmentsError('')
+      setStaffAssignmentsSuccess('')
+    },
+    onSuccess: async (created) => {
+      await invalidatePortalCaches([
+        portalQueryKeys.staffAssignmentsRoot(),
+      ])
+      await refreshStaffAssignments(true)
+      setEmployeeForm(buildEmptyEmployeeForm())
+      setShowCreateEmployeeForm(false)
+      setStaffAssignmentsSuccess(`Created employee ${created.username}.`)
+      showSuccessToast(`Created employee ${created.username}.`, 'Employee Created')
+    },
+    onError: (error) => {
+      setStaffAssignmentsError(String(error?.message || 'Unable to create employee account.'))
+    },
+    onSettled: () => {
+      setCreatingStaffAssignment(false)
+    },
+  })
+  const saveEmployeeAssignmentMutation = useMutation({
+    mutationFn: ({ assignment }) =>
+      updateStaffAssignment({
+        user_id: assignment.user_id,
+        role: assignment.role,
+        allowed_company_ids: assignment.allowed_company_ids || [],
+      }),
+    onMutate: async ({ assignment }) => {
+      setSavingStaffUserId(Number(assignment.user_id))
+      setStaffAssignmentsError('')
+      setStaffAssignmentsSuccess('')
+    },
+    onSuccess: async (_result, variables) => {
+      await invalidatePortalCaches([
+        portalQueryKeys.staffAssignmentsRoot(),
+      ])
+      setStaffAssignmentsSuccess(`Updated permissions for ${variables.assignment.username}.`)
+      showSuccessToast(`Updated permissions for ${variables.assignment.username}.`, 'Permissions Updated')
+      await refreshStaffAssignments(true)
+      if (String(companyPickerUserId) === String(variables.assignment.user_id)) {
+        setCompanyPickerUserId('')
+        setCompanyPickerSearchInput('')
+      }
+      window.requestAnimationFrame(() => {
+        employeeControlsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      })
+    },
+    onError: (error) => {
+      setStaffAssignmentsError(String(error?.message || 'Unable to update employee permissions.'))
+    },
+    onSettled: () => {
+      setSavingStaffUserId(0)
+    },
+  })
+  const employeeRoleChangeMutation = useMutation({
+    mutationFn: ({ assignment, nextRole }) =>
+      updateStaffAssignment({
+        user_id: assignment.user_id,
+        role: nextRole,
+        allowed_company_ids: assignment.allowed_company_ids || [],
+      }),
+    onMutate: async ({ assignment, nextRole }) => {
+      const previousRole = assignment.role
+      setActiveStaffAssignments((current) =>
+        current.map((item) =>
+          item.user_id === assignment.user_id
+            ? { ...item, role: nextRole }
+            : item,
+        ),
+      )
+      setSavingStaffUserId(Number(assignment.user_id))
+      setStaffAssignmentsError('')
+      setStaffAssignmentsSuccess('')
+      return { previousRole }
+    },
+    onSuccess: async (_result, variables) => {
+      await invalidatePortalCaches([
+        portalQueryKeys.staffAssignmentsRoot(),
+      ])
+      setStaffAssignmentsSuccess(`Updated employee type for ${variables.assignment.username}.`)
+      showSuccessToast(`Updated employee type for ${variables.assignment.username}.`, 'Employee Updated')
+      await refreshStaffAssignments(true)
+    },
+    onError: (error, variables, context) => {
+      setActiveStaffAssignments((current) =>
+        current.map((item) =>
+          item.user_id === variables.assignment.user_id
+            ? { ...item, role: context?.previousRole || item.role }
+            : item,
+        ),
+      )
+      setStaffAssignmentsError(String(error?.message || 'Unable to update employee type.'))
+    },
+    onSettled: () => {
+      setSavingStaffUserId(0)
+    },
+  })
+  const removeEmployeeAssignmentMutation = useMutation({
+    mutationFn: ({ assignment }) => deleteStaffAssignment(assignment.user_id),
+    onMutate: async ({ assignment }) => {
+      setRemovingStaffUserId(Number(assignment.user_id))
+      setStaffAssignmentsError('')
+      setStaffAssignmentsSuccess('')
+    },
+    onSuccess: async (_result, variables) => {
+      await invalidatePortalCaches([
+        portalQueryKeys.staffAssignmentsRoot(),
+      ])
+      setStaffAssignmentsSuccess(`Deactivated employee ${variables.assignment.username}.`)
+      showSuccessToast(`Deactivated employee ${variables.assignment.username}.`, 'Employee Deactivated')
+      await refreshStaffAssignments(true)
+    },
+    onError: (error) => {
+      setStaffAssignmentsError(String(error?.message || 'Unable to remove employee account.'))
+    },
+    onSettled: () => {
+      setRemovingStaffUserId(0)
+    },
+  })
+  const reactivateEmployeeAssignmentMutation = useMutation({
+    mutationFn: ({ assignment }) => reactivateStaffAssignment(assignment.user_id),
+    onMutate: async ({ assignment }) => {
+      setReactivatingStaffUserId(Number(assignment.user_id))
+      setStaffAssignmentsError('')
+      setStaffAssignmentsSuccess('')
+    },
+    onSuccess: async (_result, variables) => {
+      await invalidatePortalCaches([
+        portalQueryKeys.staffAssignmentsRoot(),
+      ])
+      setStaffAssignmentsSuccess(`Reactivated employee ${variables.assignment.username}.`)
+      showSuccessToast(`Reactivated employee ${variables.assignment.username}.`, 'Employee Reactivated')
+      await refreshStaffAssignments(true)
+    },
+    onError: (error) => {
+      setStaffAssignmentsError(String(error?.message || 'Unable to reactivate employee account.'))
+    },
+    onSettled: () => {
+      setReactivatingStaffUserId(0)
+    },
+  })
+  const createCustomerMutation = useMutation({
+    mutationFn: ({ formData }) => createPortalCustomer(formData),
+    onMutate: async () => {
+      setCreatingCustomer(true)
+      setCustomerCreateError('')
+      setCustomerCreateSuccess('')
+    },
+    onSuccess: async (created) => {
+      await invalidatePortalCaches([
+        portalQueryKeys.companies(),
+      ])
+      const refreshedCompanies = await fetchPortalCompanies()
+      setCompanies(refreshedCompanies)
+      setCustomersLastUpdatedAt(Date.now())
+      setCustomerForm(buildEmptyCustomerForm())
+      setShowCreateCustomerForm(false)
+      setCustomerCreateSuccess(`Created customer ${created.customer.username} for ${created.company.name}.`)
+      showSuccessToast(
+        `Created customer ${created.customer.username} for ${created.company.name}.`,
+        'Customer Created',
+      )
+    },
+    onError: (error) => {
+      setCustomerCreateError(String(error?.message || 'Unable to create customer account.'))
+    },
+    onSettled: () => {
+      setCreatingCustomer(false)
+    },
+  })
+  const createSiteMutation = useMutation({
+    mutationFn: ({ companyId, name, address }) =>
+      createPortalSite({
+        company_id: Number(companyId),
+        name: String(name || '').trim(),
+        address: String(address || '').trim(),
+      }),
+    onMutate: async () => {
+      setCreatingSite(true)
+      setSiteCreateError('')
+    },
+    onSuccess: async (createdSite, variables) => {
+      await invalidatePortalCaches([
+        portalQueryKeys.companyHeader(variables.companyId),
+        portalQueryKeys.equipmentRoot(),
+      ])
+      const nextCompany = await fetchPortalCompanyHeader(variables.companyId)
+      setCompany(nextCompany)
+      setSelectedSiteId(String(createdSite.id))
+      setEquipment([])
+      setEquipmentPage(1)
+      setSiteForm(buildEmptySiteForm())
+      setShowCreateSiteForm(false)
+      showSuccessToast(`Created site ${createdSite.name}.`, 'Site Created')
+    },
+    onError: (error) => {
+      setSiteCreateError(String(error?.message || 'Unable to create site.'))
+    },
+    onSettled: () => {
+      setCreatingSite(false)
+    },
+  })
+  const updateSiteMutation = useMutation({
+    mutationFn: ({ siteId, name, address }) =>
+      updatePortalSite(siteId, {
+        name: String(name || '').trim(),
+        address: String(address || '').trim(),
+      }),
+    onMutate: async () => {
+      setUpdatingSite(true)
+      setSiteEditError('')
+    },
+    onSuccess: async (updatedSite, variables) => {
+      await invalidatePortalCaches([
+        portalQueryKeys.companyHeader(variables.companyId),
+        portalQueryKeys.equipmentRoot(),
+      ])
+      const nextCompany = await fetchPortalCompanyHeader(variables.companyId)
+      setCompany(nextCompany)
+      setSelectedSiteId(String(updatedSite.id))
+      setShowEditSiteForm(false)
+      showSuccessToast(`Updated site ${updatedSite.name}.`, 'Site Updated')
+    },
+    onError: (error) => {
+      setSiteEditError(String(error?.message || 'Unable to update site.'))
+    },
+    onSettled: () => {
+      setUpdatingSite(false)
+    },
+  })
+  const deleteSiteMutation = useMutation({
+    mutationFn: ({ siteId }) => deletePortalSite(siteId),
+    onMutate: async () => {
+      setDeletingSite(true)
+      setSiteEditError('')
+    },
+    onSuccess: async (_result, variables) => {
+      await invalidatePortalCaches([
+        portalQueryKeys.companyHeader(variables.companyId),
+        portalQueryKeys.equipmentRoot(),
+      ])
+      const nextCompany = await fetchPortalCompanyHeader(variables.companyId)
+      const nextSites = Array.isArray(nextCompany?.sites) ? nextCompany.sites : []
+      const nextSiteId = nextSites[0]?.id || ''
+      setCompany(nextCompany)
+      setSelectedSiteId(nextSiteId ? String(nextSiteId) : '')
+      setSelectedEquipment(null)
+      setEquipment([])
+      setEquipmentPage(1)
+      showSuccessToast(`Deleted site ${variables.siteName}.`, 'Site Deleted')
+    },
+    onError: (error) => {
+      setSiteEditError(String(error?.message || 'Unable to delete site.'))
+    },
+    onSettled: () => {
+      setDeletingSite(false)
+    },
+  })
+  const createEquipmentMutation = useMutation({
+    mutationFn: ({ payload }) => createPortalEquipment(payload),
+    onMutate: async () => {
+      setCreatingEquipment(true)
+      setEquipmentCreateError('')
+      setEquipmentCreateSuccess('')
+    },
+    onSuccess: async (created, variables) => {
+      await invalidatePortalCaches([
+        portalQueryKeys.equipmentRoot(),
+        portalQueryKeys.dashboardStatsRoot(),
+      ])
+      const refreshedEquipment = await fetchPortalEquipmentList({
+        companyId: variables.companyId,
+        siteId: variables.siteId,
+        search: variables.search,
+      })
+      setEquipment(refreshedEquipment)
+      setEquipmentLastUpdatedAt(Date.now())
+      setEquipmentPage(1)
+      setEquipmentForm(buildEmptyEquipmentForm())
+      setShowCreateEquipmentForm(false)
+      setEquipmentCreateSuccess(`Created equipment ${created.name}.`)
+      showSuccessToast(`Created equipment ${created.name}.`, 'Equipment Created')
+    },
+    onError: (error) => {
+      setEquipmentCreateError(String(error?.message || 'Unable to create equipment.'))
+    },
+    onSettled: () => {
+      setCreatingEquipment(false)
+    },
+  })
+  const editReportMutation = useMutation({
+    mutationFn: ({ reportId, payload }) => updateReport(reportId, payload),
+    onMutate: async () => {
+      setSavingReportEdit(true)
+      setEditReportError('')
+    },
+    onSuccess: async (updatedReport, variables) => {
+      await invalidatePortalCaches([
+        portalQueryKeys.reportsRoot(),
+        portalQueryKeys.equipmentRoot(),
+        portalQueryKeys.pendingApprovalsRoot(),
+        portalQueryKeys.dashboardStatsRoot(),
+        portalQueryKeys.equipmentActivityRoot(),
+      ])
+
+      if (activeSelectedEquipment?.id) {
+        const refreshed = await fetchEquipmentReportsList(activeSelectedEquipment.id)
+        setReports(refreshed)
+        setViewedReport(
+          refreshed.find((item) => String(item.id) === String(variables.reportId)) || updatedReport,
+        )
+      } else {
+        setViewedReport(updatedReport)
+      }
+
+      if (isOwner && !selectedCompanyId) {
+        await Promise.all([refreshPendingReportApprovals(), refreshDashboardStats()])
+      }
+
+      await refreshEquipmentListForCurrentSelection()
+      clearReportDraft()
+      setReportForm(buildEmptyReportForm())
+      setShowEditReportModal(false)
+      setReportUnsavedPrompt('')
+    },
+    onError: (error) => {
+      setEditReportError(String(error?.message || 'Unable to save report changes.'))
+    },
+    onSettled: () => {
+      setSavingReportEdit(false)
+    },
+  })
+  const createReportMutation = useMutation({
+    mutationFn: ({ equipmentId, payload }) => createEquipmentReport(equipmentId, payload),
+    onMutate: async () => {
+      setCreatingReport(true)
+      setCreateReportError('')
+    },
+    onSuccess: async (_result, variables) => {
+      await invalidatePortalCaches([
+        portalQueryKeys.reportsRoot(),
+        portalQueryKeys.equipmentRoot(),
+        portalQueryKeys.pendingApprovalsRoot(),
+        portalQueryKeys.dashboardStatsRoot(),
+        portalQueryKeys.equipmentActivityRoot(),
+      ])
+      const refreshed = await fetchEquipmentReportsList(variables.equipmentId)
+      setReports(refreshed)
+      await refreshEquipmentListForCurrentSelection()
+      clearReportDraft()
+      setReportForm(buildEmptyReportForm())
+      setShowCreateReportForm(false)
+      setReportUnsavedPrompt('')
+      setShowReportSubmissionConfirmModal(false)
+      setReportSubmissionConfirmChecks(REPORT_SUBMISSION_CONFIRMATION_ITEMS.map(() => false))
+    },
+    onError: (error) => {
+      setCreateReportError(String(error?.message || 'Unable to create report.'))
+    },
+    onSettled: () => {
+      setCreatingReport(false)
+    },
+  })
+  const saveCreateReportDraftMutation = useMutation({
+    mutationFn: ({ equipmentId, payload }) => createEquipmentReport(equipmentId, payload),
+    onMutate: async () => {
+      setCreatingReport(true)
+      setCreateReportError('')
+    },
+    onSuccess: async (_result, variables) => {
+      await invalidatePortalCaches([
+        portalQueryKeys.reportsRoot(),
+        portalQueryKeys.equipmentRoot(),
+        portalQueryKeys.equipmentActivityRoot(),
+      ])
+      const refreshed = await fetchEquipmentReportsList(variables.equipmentId)
+      setReports(refreshed)
+      await refreshEquipmentData()
+      showSuccessToast('Report draft saved.', 'Draft Saved')
+      setReportUnsavedPrompt('')
+      await closeCreateReportForm(true)
+    },
+    onError: (error) => {
+      setCreateReportError(String(error?.message || 'Unable to save report draft.'))
+    },
+    onSettled: () => {
+      setCreatingReport(false)
+    },
+  })
+  const equipmentActivityLoading = equipmentActivityQuery.isLoading || equipmentActivityQuery.isFetching
   const sortedEquipment = useMemo(() => {
     const sortDirection = equipmentSortDirection === 'desc' ? -1 : 1
     const compareEquipment = (left, right) => {
@@ -1678,21 +2388,12 @@ export default function PortalDashboardPage() {
   async function handleBulkApproveReports() {
     if (!isOwner || selectedPendingApprovalIds.length === 0 || bulkApprovingReports) return
 
-    setBulkApprovingReports(true)
-    setPendingApprovalsError('')
-
     try {
-      await Promise.all(
-        selectedPendingApprovalIds.map((reportId) => updateReport(reportId, { status: 'approved' })),
-      )
-
-      setSelectedPendingApprovalIds([])
-      await Promise.all([refreshPendingReportApprovals(true), refreshDashboardStats(true)])
-      showSuccessToast('Selected submitted reports have been approved.', 'Reports Approved')
-    } catch (error) {
-      setPendingApprovalsError(String(error?.message || 'Unable to bulk approve reports.'))
-    } finally {
-      setBulkApprovingReports(false)
+      await bulkApproveReportsMutation.mutateAsync({
+        reportIds: [...selectedPendingApprovalIds],
+      })
+    } catch {
+      // Errors are handled in mutation callbacks.
     }
   }
 
@@ -1711,21 +2412,12 @@ export default function PortalDashboardPage() {
   async function handleBulkDecommissionEquipment() {
     if (!isOwner || selectedEquipmentIds.length === 0 || bulkDecommissioningEquipment) return
 
-    setBulkDecommissioningEquipment(true)
-    setEquipmentStatusError('')
-
     try {
-      await Promise.all(
-        selectedEquipmentIds.map((equipmentId) => updatePortalEquipment(equipmentId, { status: 'decommissioned' })),
-      )
-
-      setSelectedEquipmentIds([])
-      await Promise.all([refreshEquipmentData(), refreshDashboardStats(true)])
-      showSuccessToast('Selected equipment has been decommissioned.', 'Equipment Updated')
-    } catch (error) {
-      setEquipmentStatusError(String(error?.message || 'Unable to decommission selected equipment.'))
-    } finally {
-      setBulkDecommissioningEquipment(false)
+      await bulkDecommissionEquipmentMutation.mutateAsync({
+        equipmentIds: [...selectedEquipmentIds],
+      })
+    } catch {
+      // Errors are handled in mutation callbacks.
     }
   }
 
@@ -1763,6 +2455,11 @@ export default function PortalDashboardPage() {
         ),
       )
 
+      await invalidatePortalCaches([
+        portalQueryKeys.companies(),
+        portalQueryKeys.dashboardStatsRoot(),
+      ])
+
       setSelectedCustomerIds([])
       await Promise.all([refreshCustomerCompanies(), refreshDashboardStats(true)])
       showSuccessToast('Selected customers have been deactivated.', 'Customers Updated')
@@ -1796,12 +2493,19 @@ export default function PortalDashboardPage() {
                 `<li><strong>${escapeHtml(item.label)}</strong><br/>Finding: ${escapeHtml(item.finding || '-')}<br/>Recommendation: ${escapeHtml(item.recommendation || '-')}</li>`,
             )
             .join('')}</ul>`
-    const notPresentedItemsHtml =
-      checklistSections.notPresented.length === 0
-        ? '<p class="muted">None reported.</p>'
-        : `<ul>${checklistSections.notPresented
+    const notPresentedSectionHtml =
+      checklistSections.notPresented.length > 0
+        ? `
+      <div class="section">
+        <h2>Not Presented</h2>
+        <div class="card">
+          <ul>${checklistSections.notPresented
             .map((item) => `<li><strong>${escapeHtml(item.label)}</strong>: Not presented for examination.</li>`)
-            .join('')}</ul>`
+            .join('')}</ul>
+        </div>
+      </div>
+      `
+        : ''
 
     const reportHtml = `
       <h1>${escapeHtml(viewedReport.title || 'Inspection Report')}</h1>
@@ -1832,10 +2536,7 @@ export default function PortalDashboardPage() {
         <h2>Attention Required</h2>
         <div class="card">${attentionItemsHtml}</div>
       </div>
-      <div class="section">
-        <h2>Not Presented</h2>
-        <div class="card">${notPresentedItemsHtml}</div>
-      </div>
+      ${notPresentedSectionHtml}
       `
       }
     `
@@ -2109,26 +2810,18 @@ export default function PortalDashboardPage() {
 
     const normalizedChecklistItems = normalizeReportChecklistItems(reportForm.checklist_items)
 
-    setCreatingReport(true)
-    setCreateReportError('')
     try {
-      await createEquipmentReport(activeSelectedEquipment.id, {
-        ...reportForm,
-        checklist_items: normalizedChecklistItems,
-        status: 'draft',
+      await saveCreateReportDraftMutation.mutateAsync({
+        equipmentId: activeSelectedEquipment.id,
+        payload: {
+          ...reportForm,
+          checklist_items: normalizedChecklistItems,
+          status: 'draft',
+        },
       })
-      const refreshed = await getEquipmentReports(activeSelectedEquipment.id)
-      setReports(refreshed)
-      await refreshEquipmentData()
-      showSuccessToast('Report draft saved.', 'Draft Saved')
-      setReportUnsavedPrompt('')
-      await closeCreateReportForm(true)
       return true
-    } catch (error) {
-      setCreateReportError(String(error?.message || 'Unable to save report draft.'))
+    } catch {
       return false
-    } finally {
-      setCreatingReport(false)
     }
   }
 
@@ -2520,6 +3213,12 @@ export default function PortalDashboardPage() {
     )
 
     if (!matchedEquipment) {
+      // During company/equipment transitions, the list can be temporarily empty.
+      // Avoid clearing here or another effect can immediately re-queue the same eqId from URL.
+      if (equipment.length === 0) {
+        return
+      }
+
       logEqIdSyncDebug('clear-pending-eqid', {
         reason: 'no-equipment-match',
         pendingEqId: pendingDeepLinkEquipmentId,
@@ -2609,6 +3308,10 @@ export default function PortalDashboardPage() {
 
   useEffect(() => {
     setExpandedReportCardId('')
+  }, [activeSelectedEquipment?.id])
+
+  useEffect(() => {
+    setShowReportHistory(false)
   }, [activeSelectedEquipment?.id])
 
   useEffect(() => {
@@ -2813,14 +3516,24 @@ export default function PortalDashboardPage() {
   ])
 
   async function refreshPendingReportApprovals(force = false) {
+    const shouldForce = force === true
     if (!isAuthenticated) return
-    if (!force && !['owner', 'office_staff'].includes(profile?.role)) return
+    if (!shouldForce && !['owner', 'office_staff'].includes(profile?.role)) return
 
     setPendingApprovalsLoading(true)
     setPendingApprovalsError('')
 
     try {
-      const nextReports = await getPendingReportApprovals()
+      const pendingApprovalsQueryKey = portalQueryKeys.pendingApprovals(profile?.role)
+      if (shouldForce) {
+        await queryClient.invalidateQueries({ queryKey: pendingApprovalsQueryKey, exact: true })
+      }
+
+      const nextReports = await queryClient.fetchQuery({
+        queryKey: pendingApprovalsQueryKey,
+        queryFn: () => getPendingReportApprovals(),
+        staleTime: 30 * 1000,
+      })
       setPendingReportApprovals(nextReports)
       setPendingApprovalsLastUpdatedAt(Date.now())
     } catch (error) {
@@ -2834,14 +3547,24 @@ export default function PortalDashboardPage() {
   }
 
   async function refreshDashboardStats(force = false) {
+    const shouldForce = force === true
     if (!isAuthenticated) return
-    if (!force && !['owner', 'office_staff'].includes(profile?.role)) return
+    if (!shouldForce && !['owner', 'office_staff'].includes(profile?.role)) return
 
     setDashboardStatsLoading(true)
     setDashboardStatsError('')
 
     try {
-      const nextStats = await getPortalDashboardStats()
+      const dashboardStatsQueryKey = portalQueryKeys.dashboardStats(profile?.role)
+      if (shouldForce) {
+        await queryClient.invalidateQueries({ queryKey: dashboardStatsQueryKey, exact: true })
+      }
+
+      const nextStats = await queryClient.fetchQuery({
+        queryKey: dashboardStatsQueryKey,
+        queryFn: () => getPortalDashboardStats(),
+        staleTime: 30 * 1000,
+      })
       setDashboardStats(nextStats)
     } catch (error) {
       if (Number(error?.status || 0) !== 403) {
@@ -2858,15 +3581,34 @@ export default function PortalDashboardPage() {
   }
 
   async function refreshStaffAssignments(force = false) {
+    const shouldForce = force === true
     if (!isAuthenticated) return
-    if (!force && !['owner', 'office_staff'].includes(profile?.role)) return
+    if (!shouldForce && !['owner', 'office_staff'].includes(profile?.role)) return
 
     setStaffAssignmentsLoading(true)
     setStaffAssignmentsError('')
     try {
+      const activeAssignmentsQueryKey = portalQueryKeys.staffAssignments('active')
+      const inactiveAssignmentsQueryKey = portalQueryKeys.staffAssignments('inactive')
+
+      if (shouldForce) {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: activeAssignmentsQueryKey, exact: true }),
+          queryClient.invalidateQueries({ queryKey: inactiveAssignmentsQueryKey, exact: true }),
+        ])
+      }
+
       const [activeAssignments, inactiveAssignments] = await Promise.all([
-        getStaffAssignments({ status: 'active' }),
-        getStaffAssignments({ status: 'inactive' }),
+        queryClient.fetchQuery({
+          queryKey: activeAssignmentsQueryKey,
+          queryFn: () => getStaffAssignments({ status: 'active' }),
+          staleTime: 30 * 1000,
+        }),
+        queryClient.fetchQuery({
+          queryKey: inactiveAssignmentsQueryKey,
+          queryFn: () => getStaffAssignments({ status: 'inactive' }),
+          staleTime: 30 * 1000,
+        }),
       ])
       setActiveStaffAssignments(activeAssignments)
       setInactiveStaffAssignments(inactiveAssignments)
@@ -2886,6 +3628,124 @@ export default function PortalDashboardPage() {
       title: title || 'Updated',
       message,
     })
+  }
+
+  async function invalidatePortalCaches(cacheKeys = []) {
+    if (!Array.isArray(cacheKeys) || cacheKeys.length === 0) return
+    await Promise.all(cacheKeys.map((queryKey) => queryClient.invalidateQueries({ queryKey })))
+  }
+
+  async function fetchPortalCompanies({ force = false } = {}) {
+    const companiesQueryKey = portalQueryKeys.companies()
+    if (force) {
+      await queryClient.invalidateQueries({ queryKey: companiesQueryKey, exact: true })
+    }
+
+    return queryClient.fetchQuery({
+      queryKey: companiesQueryKey,
+      queryFn: getPortalCompanies,
+      staleTime: 3 * 60 * 1000,
+    })
+  }
+
+  async function fetchPortalProfile({ force = false } = {}) {
+    const profileQueryKey = portalQueryKeys.profile()
+    if (force) {
+      await queryClient.invalidateQueries({ queryKey: profileQueryKey, exact: true })
+    }
+
+    return queryClient.fetchQuery({
+      queryKey: profileQueryKey,
+      queryFn: getPortalMe,
+      staleTime: 10 * 60 * 1000,
+    })
+  }
+
+  async function fetchPortalCompanyHeader(companyId, { force = false } = {}) {
+    const companyHeaderQueryKey = portalQueryKeys.companyHeader(companyId)
+    if (force) {
+      await queryClient.invalidateQueries({ queryKey: companyHeaderQueryKey, exact: true })
+    }
+
+    return queryClient.fetchQuery({
+      queryKey: companyHeaderQueryKey,
+      queryFn: () => getPortalCompanyHeader(companyId),
+      staleTime: 3 * 60 * 1000,
+    })
+  }
+
+  async function fetchPortalEquipmentList(
+    { companyId, siteId = '', search = '' },
+    { force = false } = {},
+  ) {
+    const equipmentQueryKey = portalQueryKeys.equipment({ companyId, siteId, search })
+    if (force) {
+      await queryClient.invalidateQueries({ queryKey: equipmentQueryKey, exact: true })
+    }
+
+    return queryClient.fetchQuery({
+      queryKey: equipmentQueryKey,
+      queryFn: () =>
+        getPortalEquipment({
+          companyId,
+          siteId,
+          search,
+        }),
+      staleTime: 30 * 1000,
+    })
+  }
+
+  async function fetchEquipmentReportsList(equipmentId, { force = false } = {}) {
+    const reportsQueryKey = portalQueryKeys.reports(equipmentId)
+    if (force) {
+      await queryClient.invalidateQueries({ queryKey: reportsQueryKey, exact: true })
+    }
+
+    return queryClient.fetchQuery({
+      queryKey: reportsQueryKey,
+      queryFn: () => getEquipmentReports(equipmentId),
+      staleTime: 30 * 1000,
+    })
+  }
+
+  async function fetchEquipmentActivityList(equipmentId, { force = false } = {}) {
+    const activityQueryKey = portalQueryKeys.equipmentActivity(equipmentId)
+    if (force) {
+      await queryClient.invalidateQueries({ queryKey: activityQueryKey, exact: true })
+    }
+
+    return queryClient.fetchQuery({
+      queryKey: activityQueryKey,
+      queryFn: () => getEquipmentActivity(equipmentId),
+      staleTime: 60 * 1000,
+    })
+  }
+
+  async function refreshEquipmentListForCurrentSelection() {
+    const companyIdForRefresh = activeSelectedEquipment?.company_id || selectedCompanyId
+    if (!companyIdForRefresh) return
+
+    const refreshedEquipment = await fetchPortalEquipmentList({
+      companyId: companyIdForRefresh,
+      siteId: selectedSiteId,
+      search: searchQuery,
+    })
+    setEquipment(refreshedEquipment)
+    if (selectedEquipment) {
+      const nextSelectedEquipment = refreshedEquipment.find(
+        (item) => String(item.id) === String(selectedEquipment.id),
+      )
+      setSelectedEquipment(nextSelectedEquipment || null)
+    }
+    setEquipmentPage(1)
+  }
+
+  async function refreshInitialOwnerBootstrap() {
+    await Promise.all([
+      refreshStaffAssignments(true),
+      refreshPendingReportApprovals(true),
+      refreshDashboardStats(true),
+    ])
   }
 
   async function handleStayLoggedIn() {
@@ -2921,7 +3781,10 @@ export default function PortalDashboardPage() {
     setErrorMessage('')
 
     try {
-      const nextCompanies = await getPortalCompanies()
+      // Artificial delay to show loading state
+      await new Promise((resolve) => setTimeout(resolve, 600))
+
+      const nextCompanies = await fetchPortalCompanies({ force: true })
       setCompanies(nextCompanies)
       setCustomersLastUpdatedAt(Date.now())
       if (['owner', 'office_staff'].includes(profile?.role)) {
@@ -2944,11 +3807,23 @@ export default function PortalDashboardPage() {
     setErrorMessage('')
 
     try {
-      const refreshedEquipment = await getPortalEquipment({
+      const equipmentQueryKey = portalQueryKeys.equipment({
         companyId: companyIdForRefresh,
         siteId: selectedSiteId,
         search: searchQuery,
       })
+
+      // User-triggered refresh should always bypass fresh-cache windows.
+      await queryClient.invalidateQueries({ queryKey: equipmentQueryKey, exact: true })
+
+      const refreshedEquipment = await fetchPortalEquipmentList(
+        {
+          companyId: companyIdForRefresh,
+          siteId: selectedSiteId,
+          search: searchQuery,
+        },
+        { force: true },
+      )
       setEquipment(refreshedEquipment)
       setEquipmentLastUpdatedAt(Date.now())
       if (selectedEquipment) {
@@ -2968,131 +3843,58 @@ export default function PortalDashboardPage() {
   async function handleApproveViewedReport() {
     if (!viewedReport?.id || !isOwner || approvingReport) return
 
-    setApprovingReport(true)
-    setViewedReportError('')
-
-    const previousReports = reports
-    const previousViewedReport = viewedReport
-    const previousPendingApprovals = pendingReportApprovals
-    const previousDashboardStats = dashboardStats
-    const wasSubmitted = String(viewedReport.status || '').toLowerCase() === 'submitted'
-
-    if (wasSubmitted) {
-      const optimisticReport = { ...viewedReport, status: 'approved' }
-      setReports((current) =>
-        current.map((report) => (String(report.id) === String(optimisticReport.id) ? optimisticReport : report)),
-      )
-      setViewedReport(optimisticReport)
-      setPendingReportApprovals((current) =>
-        current.filter((report) => String(report.id) !== String(optimisticReport.id)),
-      )
-      setDashboardStats((current) => ({
-        ...current,
-        pending_approvals_count: Math.max(0, Number(current.pending_approvals_count || 0) - 1),
-      }))
-    }
-
     try {
-      const updatedReport = await updateReport(viewedReport.id, { status: 'approved' })
-      const refreshedReports = reports.map((report) =>
-        String(report.id) === String(updatedReport.id) ? updatedReport : report,
-      )
-      setReports(refreshedReports)
-      setViewedReport(updatedReport)
-
-      if (!selectedCompanyId) {
-        await Promise.all([
-          refreshPendingReportApprovals().catch(() => {}),
-          refreshDashboardStats().catch(() => {}),
-        ])
-      }
-
-      try {
-        await getPortalEquipment({
-          companyId: activeSelectedEquipment?.company_id || selectedCompanyId,
-          siteId: selectedSiteId,
-          search: searchQuery,
-        }).then((refreshedEquipment) => {
-          setEquipment(refreshedEquipment)
-          if (selectedEquipment) {
-            const nextSelectedEquipment = refreshedEquipment.find(
-              (item) => String(item.id) === String(selectedEquipment.id),
-            )
-            setSelectedEquipment(nextSelectedEquipment || null)
-          }
-        })
-      } catch {
-        // Keep the optimistic/final report status update even if equipment refresh fails.
-      }
-    } catch (error) {
-      if (wasSubmitted) {
-        setReports(previousReports)
-        setViewedReport(previousViewedReport)
-        setPendingReportApprovals(previousPendingApprovals)
-        setDashboardStats(previousDashboardStats)
-      }
-      setViewedReportError(String(error?.message || 'Unable to approve report.'))
-    } finally {
-      setApprovingReport(false)
+      await approveReportMutation.mutateAsync({
+        reportId: viewedReport.id,
+        reportSnapshot: viewedReport,
+      })
+    } catch {
+      // Errors are handled in mutation callbacks.
     }
   }
 
   useEffect(() => {
-    let cancelled = false
-
-    async function loadReports() {
-      if (!activeSelectedEquipment?.id) return
-
-      setReportsLoading(true)
+    if (!activeSelectedEquipment?.id) {
+      setReports([])
       setReportError('')
-      try {
-        const nextReports = await getEquipmentReports(activeSelectedEquipment.id)
-        if (cancelled) return
-        setReports(nextReports)
-      } catch (error) {
-        if (cancelled) return
-        setReportError(String(error?.message || 'Unable to load reports for this equipment.'))
-      } finally {
-        if (!cancelled) setReportsLoading(false)
-      }
+      return
     }
 
-    loadReports()
-    return () => {
-      cancelled = true
+    if (Array.isArray(reportsQuery.data)) {
+      setReports(reportsQuery.data)
+      setReportError('')
+      return
     }
-  }, [activeSelectedEquipment?.id])
+
+    if (reportsQuery.error) {
+      setReportError(String(reportsQuery.error?.message || 'Unable to load reports for this equipment.'))
+    }
+  }, [activeSelectedEquipment?.id, reportsQuery.data, reportsQuery.error])
 
   useEffect(() => {
-    let cancelled = false
-
-    async function loadEquipmentActivity() {
-      if (!activeSelectedEquipment?.id || !canViewEquipmentActivity) {
-        setEquipmentActivity([])
-        setEquipmentActivityError('')
-        setEquipmentActivityLoading(false)
-        return
-      }
-
-      setEquipmentActivityLoading(true)
+    if (!activeSelectedEquipment?.id || !canViewEquipmentActivity) {
+      setEquipmentActivity([])
       setEquipmentActivityError('')
-      try {
-        const nextActivity = await getEquipmentActivity(activeSelectedEquipment.id)
-        if (cancelled) return
-        setEquipmentActivity(nextActivity)
-      } catch (error) {
-        if (cancelled) return
-        setEquipmentActivityError(String(error?.message || 'Unable to load equipment activity.'))
-      } finally {
-        if (!cancelled) setEquipmentActivityLoading(false)
-      }
+      return
     }
 
-    loadEquipmentActivity()
-    return () => {
-      cancelled = true
+    if (Array.isArray(equipmentActivityQuery.data)) {
+      setEquipmentActivity(equipmentActivityQuery.data)
+      setEquipmentActivityError('')
+      return
     }
-  }, [activeSelectedEquipment?.id, canViewEquipmentActivity])
+
+    if (equipmentActivityQuery.error) {
+      setEquipmentActivityError(
+        String(equipmentActivityQuery.error?.message || 'Unable to load equipment activity.'),
+      )
+    }
+  }, [
+    activeSelectedEquipment?.id,
+    canViewEquipmentActivity,
+    equipmentActivityQuery.data,
+    equipmentActivityQuery.error,
+  ])
 
   useEffect(() => {
     let cancelled = false
@@ -3103,11 +3905,14 @@ export default function PortalDashboardPage() {
         return
       }
 
-      setLoading(true)
+      // Keep existing content mounted on subsequent refreshes to avoid flash/flicker.
+      // Only set loading on initial profile load, not on company/site changes
+      const isInitialLoad = !profile
+      setLoading(isInitialLoad)
       setErrorMessage('')
 
       try {
-        const nextProfile = await getPortalMe()
+        const nextProfile = await fetchPortalProfile({ force: isInitialLoad })
         if (cancelled) return
 
         setProfile(nextProfile)
@@ -3117,7 +3922,7 @@ export default function PortalDashboardPage() {
         let activeCompanyId = nextProfile.allowedCompanyIds[0] || ''
 
         if (isStaffOrOwner) {
-          const nextCompanies = await getPortalCompanies()
+          const nextCompanies = await fetchPortalCompanies()
           if (cancelled) return
           setCompanies(nextCompanies)
           setCustomersLastUpdatedAt(Date.now())
@@ -3132,13 +3937,10 @@ export default function PortalDashboardPage() {
           setCompanies([])
         }
 
-        if (isOwnerUser) {
-          await Promise.all([
-            refreshStaffAssignments(true),
-            refreshPendingReportApprovals(true),
-            refreshDashboardStats(true),
-          ])
-        } else {
+        // Only load dashboard stats on initial profile load, not when company/site changes
+        if (isOwnerUser && isInitialLoad) {
+          await refreshInitialOwnerBootstrap()
+        } else if (isInitialLoad) {
           setActiveStaffAssignments([])
           setInactiveStaffAssignments([])
           setPendingReportApprovals([])
@@ -3156,14 +3958,14 @@ export default function PortalDashboardPage() {
           return
         }
 
-        const nextCompany = await getPortalCompanyHeader(activeCompanyId)
+        const nextCompany = await fetchPortalCompanyHeader(activeCompanyId)
         if (cancelled) return
 
         const nextSites = Array.isArray(nextCompany?.sites) ? nextCompany.sites : []
         const nextSiteId =
           nextSites.find((site) => String(site.id) === String(selectedSiteId))?.id || nextSites[0]?.id || ''
 
-        const nextEquipment = await getPortalEquipment({
+        const nextEquipment = await fetchPortalEquipmentList({
           companyId: activeCompanyId,
           siteId: nextSiteId,
           search: searchQuery,
@@ -3196,7 +3998,14 @@ export default function PortalDashboardPage() {
     return () => {
       cancelled = true
     }
-  }, [isAuthenticated, navigate, searchQuery, selectedCompanyId, selectedSiteId])
+  }, [
+    isAuthenticated,
+    navigate,
+    searchQuery,
+    selectedCompanyId,
+    selectedSiteId,
+    queryClient,
+  ])
 
   async function handleLogout() {
     if (loggingOut) return
@@ -3239,6 +4048,10 @@ export default function PortalDashboardPage() {
         new_password: nextPassword,
       })
 
+      await invalidatePortalCaches([
+        portalQueryKeys.profile(),
+      ])
+
       setPasswordChangeSuccess('Password updated successfully.')
       showSuccessToast('Password updated successfully.', 'Password Updated')
       setPasswordForm(buildEmptyPasswordForm())
@@ -3277,92 +4090,43 @@ export default function PortalDashboardPage() {
       }
     }
 
-    const refreshEquipmentList = async () => {
-      const companyIdForRefresh = activeSelectedEquipment?.company_id || selectedCompanyId
-      if (!companyIdForRefresh) return
-
-      const refreshedEquipment = await getPortalEquipment({
-        companyId: companyIdForRefresh,
-        siteId: selectedSiteId,
-        search: searchQuery,
-      })
-      setEquipment(refreshedEquipment)
-      if (selectedEquipment) {
-        const nextSelectedEquipment = refreshedEquipment.find(
-          (item) => String(item.id) === String(selectedEquipment.id),
-        )
-        setSelectedEquipment(nextSelectedEquipment || null)
-      }
-      setEquipmentPage(1)
-    }
-
     if (isEditingReport) {
-      setSavingReportEdit(true)
-      setEditReportError('')
       try {
-        const updatedReport = await updateReport(reportForm.reportId, {
-          title: reportForm.title,
-          summary: reportForm.summary,
-          checklist_items: normalizedChecklistItems,
-          checklist_images: checklistImageUploads.checklist_images,
-          checklist_image_labels: checklistImageUploads.checklist_image_labels,
-          report_date: reportForm.report_date,
-          status: reportForm.status,
-          images: reportForm.images,
-          removed_image_ids: reportForm.removedImageIds,
+        await editReportMutation.mutateAsync({
+          reportId: reportForm.reportId,
+          payload: {
+            title: reportForm.title,
+            summary: reportForm.summary,
+            checklist_items: normalizedChecklistItems,
+            checklist_images: checklistImageUploads.checklist_images,
+            checklist_image_labels: checklistImageUploads.checklist_image_labels,
+            report_date: reportForm.report_date,
+            status: reportForm.status,
+            images: reportForm.images,
+            removed_image_ids: reportForm.removedImageIds,
+          },
         })
-
-        if (activeSelectedEquipment?.id) {
-          const refreshed = await getEquipmentReports(activeSelectedEquipment.id)
-          setReports(refreshed)
-          setViewedReport(
-            refreshed.find((item) => String(item.id) === String(reportForm.reportId)) || updatedReport,
-          )
-        } else {
-          setViewedReport(updatedReport)
-        }
-
-        if (isOwner && !selectedCompanyId) {
-          await Promise.all([refreshPendingReportApprovals(), refreshDashboardStats()])
-        }
-        await refreshEquipmentList()
-        clearReportDraft()
-        setReportForm(buildEmptyReportForm())
-        setShowEditReportModal(false)
-        setReportUnsavedPrompt('')
-      } catch (error) {
-        setEditReportError(String(error?.message || 'Unable to save report changes.'))
-      } finally {
-        setSavingReportEdit(false)
+      } catch {
+        // Errors are handled in mutation callbacks.
       }
       return
     }
 
     if (!activeSelectedEquipment?.id) return
 
-    setCreatingReport(true)
-    setCreateReportError('')
     try {
-      await createEquipmentReport(activeSelectedEquipment.id, {
-        ...reportForm,
-        checklist_items: normalizedChecklistItems,
-        checklist_images: checklistImageUploads.checklist_images,
-        checklist_image_labels: checklistImageUploads.checklist_image_labels,
-        status: 'submitted',
+      await createReportMutation.mutateAsync({
+        equipmentId: activeSelectedEquipment.id,
+        payload: {
+          ...reportForm,
+          checklist_items: normalizedChecklistItems,
+          checklist_images: checklistImageUploads.checklist_images,
+          checklist_image_labels: checklistImageUploads.checklist_image_labels,
+          status: 'submitted',
+        },
       })
-      const refreshed = await getEquipmentReports(activeSelectedEquipment.id)
-      setReports(refreshed)
-      await refreshEquipmentList()
-      clearReportDraft()
-      setReportForm(buildEmptyReportForm())
-      setShowCreateReportForm(false)
-      setReportUnsavedPrompt('')
-      setShowReportSubmissionConfirmModal(false)
-      setReportSubmissionConfirmChecks(REPORT_SUBMISSION_CONFIRMATION_ITEMS.map(() => false))
-    } catch (error) {
-      setCreateReportError(String(error?.message || 'Unable to create report.'))
-    } finally {
-      setCreatingReport(false)
+    } catch {
+      // Errors are handled in mutation callbacks.
     }
   }
 
@@ -3386,8 +4150,10 @@ export default function PortalDashboardPage() {
     setCertificateError('')
     try {
       await generateSiteCertificates(siteId)
-      const nextCertificates = await getSiteCertificates(siteId)
-      setGeneratedCertificates(nextCertificates)
+      await invalidatePortalCaches([
+        portalQueryKeys.equipmentActivityRoot(),
+        portalQueryKeys.generatedCertificatesRoot(),
+      ])
       setConfirmDeleteGeneratedCertificateId('')
       showSuccessToast('Certificate generated and saved for this site.', 'Certificate Generated')
     } catch (error) {
@@ -3451,11 +4217,10 @@ export default function PortalDashboardPage() {
     setCertificateError('')
     try {
       await deleteEquipmentCertificate(numericCertificateId)
-      const siteId = Number(activeSite?.id || selectedSiteId || 0)
-      if (siteId) {
-        const nextCertificates = await getSiteCertificates(siteId)
-        setGeneratedCertificates(nextCertificates)
-      }
+      await invalidatePortalCaches([
+        portalQueryKeys.equipmentActivityRoot(),
+        portalQueryKeys.generatedCertificatesRoot(),
+      ])
       setConfirmDeleteGeneratedCertificateId('')
       showSuccessToast('Generated certificate deleted.', 'Certificate Deleted')
     } catch (error) {
@@ -3552,39 +4317,9 @@ export default function PortalDashboardPage() {
   }
 
   useEffect(() => {
-    let cancelled = false
-    const siteId = Number(activeSite?.id || selectedSiteId || 0)
-
-    async function loadGeneratedSiteCertificates() {
-      if (!siteId) {
-        setGeneratedCertificates([])
-        setGeneratedCertificatesLoading(false)
-        return
-      }
-
-      setGeneratedCertificatesLoading(true)
-      setCertificateError('')
-      try {
-        const nextCertificates = await getSiteCertificates(siteId)
-        if (cancelled) return
-        setGeneratedCertificates(nextCertificates)
-        setConfirmDeleteGeneratedCertificateId('')
-      } catch (error) {
-        if (cancelled) return
-        setCertificateError(String(error?.message || 'Unable to load site certificates.'))
-      } finally {
-        if (!cancelled) {
-          setGeneratedCertificatesLoading(false)
-        }
-      }
-    }
-
-    loadGeneratedSiteCertificates()
-
-    return () => {
-      cancelled = true
-    }
-  }, [activeSite?.id, selectedSiteId])
+    if (!generatedCertificatesQuery.isSuccess) return
+    setConfirmDeleteGeneratedCertificateId('')
+  }, [generatedCertificatesQuery.isSuccess])
 
   async function handleRecoverActivityFromEntry(entry) {
     if (!isOwner || deletingDraftReport || recoveringCertificateId || recoveringReportId) return
@@ -3610,10 +4345,19 @@ export default function PortalDashboardPage() {
         await recoverReport(recoveryState.targetId)
       }
 
+      await invalidatePortalCaches([
+        portalQueryKeys.reportsRoot(),
+        portalQueryKeys.equipmentRoot(),
+        portalQueryKeys.equipmentActivityRoot(),
+        portalQueryKeys.generatedCertificatesRoot(),
+      ])
+
       if (activeSelectedEquipment?.id) {
         const [nextReports, nextActivity] = await Promise.all([
-          getEquipmentReports(activeSelectedEquipment.id),
-          canViewEquipmentActivity ? getEquipmentActivity(activeSelectedEquipment.id) : Promise.resolve([]),
+          fetchEquipmentReportsList(activeSelectedEquipment.id),
+          canViewEquipmentActivity
+            ? fetchEquipmentActivityList(activeSelectedEquipment.id)
+            : Promise.resolve([]),
         ])
         setReports(nextReports)
         if (canViewEquipmentActivity) {
@@ -3640,27 +4384,10 @@ export default function PortalDashboardPage() {
     event.preventDefault()
     if (!isOwner || creatingCustomer) return
 
-    setCreatingCustomer(true)
-    setCustomerCreateError('')
-    setCustomerCreateSuccess('')
     try {
-      const created = await createPortalCustomer(customerForm)
-      const refreshedCompanies = await getPortalCompanies()
-      setCompanies(refreshedCompanies)
-      setCustomersLastUpdatedAt(Date.now())
-      setCustomerForm(buildEmptyCustomerForm())
-      setShowCreateCustomerForm(false)
-      setCustomerCreateSuccess(
-        `Created customer ${created.customer.username} for ${created.company.name}.`,
-      )
-      showSuccessToast(
-        `Created customer ${created.customer.username} for ${created.company.name}.`,
-        'Customer Created',
-      )
-    } catch (error) {
-      setCustomerCreateError(String(error?.message || 'Unable to create customer account.'))
-    } finally {
-      setCreatingCustomer(false)
+      await createCustomerMutation.mutateAsync({ formData: customerForm })
+    } catch {
+      // Errors are handled in mutation callbacks.
     }
   }
 
@@ -3690,41 +4417,24 @@ export default function PortalDashboardPage() {
       return
     }
 
-    setEditingCustomer(true)
-    setCustomerEditError('')
-    setCustomerEditSuccess('')
+    const payload = {
+      company_id: Number(customerEditForm.company_id || 0),
+      company_name: customerEditForm.company_name,
+      company_contact_email: customerEditForm.company_contact_email,
+      company_contact_phone: customerEditForm.company_contact_phone,
+      company_address: customerEditForm.company_address,
+    }
+    if (customerEditForm.deactivate_customer) {
+      payload.is_active = false
+    }
 
     try {
-      const payload = {
-        company_id: Number(customerEditForm.company_id || 0),
-        company_name: customerEditForm.company_name,
-        company_contact_email: customerEditForm.company_contact_email,
-        company_contact_phone: customerEditForm.company_contact_phone,
-        company_address: customerEditForm.company_address,
-      }
-      if (customerEditForm.deactivate_customer) {
-        payload.is_active = false
-      }
-
-      const updated = await updatePortalCustomer(payload)
-      const refreshedCompanies = await getPortalCompanies()
-      setCompanies(refreshedCompanies)
-      setCustomersLastUpdatedAt(Date.now())
-      setShowEditCustomerForm(false)
-      setConfirmCustomerDeactivate(false)
-      setCustomerEditForm(buildEmptyCustomerEditForm())
-      const nextCustomerMessage = customerEditForm.deactivate_customer
-        ? `Deactivated customer ${updated.name}.`
-        : `Updated customer ${updated.name}.`
-      setCustomerEditSuccess(nextCustomerMessage)
-      showSuccessToast(
-        nextCustomerMessage,
-        customerEditForm.deactivate_customer ? 'Customer Deactivated' : 'Customer Updated',
-      )
-    } catch (error) {
-      setCustomerEditError(String(error?.message || 'Unable to update customer.'))
-    } finally {
-      setEditingCustomer(false)
+      await editCustomerMutation.mutateAsync({
+        payload,
+        deactivateCustomer: Boolean(customerEditForm.deactivate_customer),
+      })
+    } catch {
+      // Errors are handled in mutation callbacks.
     }
   }
 
@@ -3744,124 +4454,53 @@ export default function PortalDashboardPage() {
       return
     }
 
-    setCreatingStaffAssignment(true)
-    setStaffAssignmentsError('')
-    setStaffAssignmentsSuccess('')
     try {
-      const created = await createStaffAssignment({
-        ...employeeForm,
-        username: nextUsername,
+      await createEmployeeAssignmentMutation.mutateAsync({
+        payload: {
+          ...employeeForm,
+          username: nextUsername,
+        },
       })
-      await refreshStaffAssignments(true)
-      setEmployeeForm(buildEmptyEmployeeForm())
-      setShowCreateEmployeeForm(false)
-      setStaffAssignmentsSuccess(`Created employee ${created.username}.`)
-      showSuccessToast(`Created employee ${created.username}.`, 'Employee Created')
-    } catch (error) {
-      setStaffAssignmentsError(String(error?.message || 'Unable to create employee account.'))
-    } finally {
-      setCreatingStaffAssignment(false)
+    } catch {
+      // Errors are handled in mutation callbacks.
     }
   }
 
   async function handleSaveEmployeeAssignment(assignment) {
     if (!assignment?.user_id || savingStaffUserId) return
-    setSavingStaffUserId(Number(assignment.user_id))
-    setStaffAssignmentsError('')
-    setStaffAssignmentsSuccess('')
     try {
-      await updateStaffAssignment({
-        user_id: assignment.user_id,
-        role: assignment.role,
-        allowed_company_ids: assignment.allowed_company_ids || [],
-      })
-      setStaffAssignmentsSuccess(`Updated permissions for ${assignment.username}.`)
-      showSuccessToast(`Updated permissions for ${assignment.username}.`, 'Permissions Updated')
-      await refreshStaffAssignments(true)
-      if (String(companyPickerUserId) === String(assignment.user_id)) {
-        setCompanyPickerUserId('')
-        setCompanyPickerSearchInput('')
-      }
-      window.requestAnimationFrame(() => {
-        employeeControlsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      })
-    } catch (error) {
-      setStaffAssignmentsError(String(error?.message || 'Unable to update employee permissions.'))
-    } finally {
-      setSavingStaffUserId(0)
+      await saveEmployeeAssignmentMutation.mutateAsync({ assignment })
+    } catch {
+      // Errors are handled in mutation callbacks.
     }
   }
 
   async function handleEmployeeRoleChange(assignment, nextRole) {
     if (!assignment?.user_id || savingStaffUserId || removingStaffUserId) return
 
-    const previousRole = assignment.role
-    setActiveStaffAssignments((current) =>
-      current.map((item) =>
-        item.user_id === assignment.user_id
-          ? { ...item, role: nextRole }
-          : item,
-      ),
-    )
-
-    setSavingStaffUserId(Number(assignment.user_id))
-    setStaffAssignmentsError('')
-    setStaffAssignmentsSuccess('')
     try {
-      await updateStaffAssignment({
-        user_id: assignment.user_id,
-        role: nextRole,
-        allowed_company_ids: assignment.allowed_company_ids || [],
-      })
-      setStaffAssignmentsSuccess(`Updated employee type for ${assignment.username}.`)
-      showSuccessToast(`Updated employee type for ${assignment.username}.`, 'Employee Updated')
-      await refreshStaffAssignments(true)
-    } catch (error) {
-      setActiveStaffAssignments((current) =>
-        current.map((item) =>
-          item.user_id === assignment.user_id
-            ? { ...item, role: previousRole }
-            : item,
-        ),
-      )
-      setStaffAssignmentsError(String(error?.message || 'Unable to update employee type.'))
-    } finally {
-      setSavingStaffUserId(0)
+      await employeeRoleChangeMutation.mutateAsync({ assignment, nextRole })
+    } catch {
+      // Errors are handled in mutation callbacks.
     }
   }
 
   async function handleRemoveEmployeeAssignment(assignment) {
     if (!assignment?.user_id || removingStaffUserId) return
-    setRemovingStaffUserId(Number(assignment.user_id))
-    setStaffAssignmentsError('')
-    setStaffAssignmentsSuccess('')
     try {
-      await deleteStaffAssignment(assignment.user_id)
-      setStaffAssignmentsSuccess(`Deactivated employee ${assignment.username}.`)
-      showSuccessToast(`Deactivated employee ${assignment.username}.`, 'Employee Deactivated')
-      await refreshStaffAssignments(true)
-    } catch (error) {
-      setStaffAssignmentsError(String(error?.message || 'Unable to remove employee account.'))
-    } finally {
-      setRemovingStaffUserId(0)
+      await removeEmployeeAssignmentMutation.mutateAsync({ assignment })
+    } catch {
+      // Errors are handled in mutation callbacks.
     }
   }
 
   async function handleReactivateEmployeeAssignment(assignment) {
     if (!assignment?.user_id || reactivatingStaffUserId) return
 
-    setReactivatingStaffUserId(Number(assignment.user_id))
-    setStaffAssignmentsError('')
-    setStaffAssignmentsSuccess('')
     try {
-      await reactivateStaffAssignment(assignment.user_id)
-      setStaffAssignmentsSuccess(`Reactivated employee ${assignment.username}.`)
-      showSuccessToast(`Reactivated employee ${assignment.username}.`, 'Employee Reactivated')
-      await refreshStaffAssignments(true)
-    } catch (error) {
-      setStaffAssignmentsError(String(error?.message || 'Unable to reactivate employee account.'))
-    } finally {
-      setReactivatingStaffUserId(0)
+      await reactivateEmployeeAssignmentMutation.mutateAsync({ assignment })
+    } catch {
+      // Errors are handled in mutation callbacks.
     }
   }
 
@@ -3869,26 +4508,14 @@ export default function PortalDashboardPage() {
     event.preventDefault()
     if (!selectedCompanyId || creatingSite) return
 
-    setCreatingSite(true)
-    setSiteCreateError('')
     try {
-      const createdSite = await createPortalSite({
-        company_id: Number(selectedCompanyId),
-        name: String(siteForm.name || '').trim(),
-        address: String(siteForm.address || '').trim(),
+      await createSiteMutation.mutateAsync({
+        companyId: selectedCompanyId,
+        name: siteForm.name,
+        address: siteForm.address,
       })
-      const nextCompany = await getPortalCompanyHeader(selectedCompanyId)
-      setCompany(nextCompany)
-      setSelectedSiteId(String(createdSite.id))
-      setEquipment([])
-      setEquipmentPage(1)
-      setSiteForm(buildEmptySiteForm())
-      setShowCreateSiteForm(false)
-      showSuccessToast(`Created site ${createdSite.name}.`, 'Site Created')
-    } catch (error) {
-      setSiteCreateError(String(error?.message || 'Unable to create site.'))
-    } finally {
-      setCreatingSite(false)
+    } catch {
+      // Errors are handled in mutation callbacks.
     }
   }
 
@@ -3896,22 +4523,15 @@ export default function PortalDashboardPage() {
     event.preventDefault()
     if (!selectedCompanyId || !activeSite?.id || updatingSite) return
 
-    setUpdatingSite(true)
-    setSiteEditError('')
     try {
-      const updatedSite = await updatePortalSite(activeSite.id, {
-        name: String(siteEditForm.name || '').trim(),
-        address: String(siteEditForm.address || '').trim(),
+      await updateSiteMutation.mutateAsync({
+        companyId: selectedCompanyId,
+        siteId: activeSite.id,
+        name: siteEditForm.name,
+        address: siteEditForm.address,
       })
-      const nextCompany = await getPortalCompanyHeader(selectedCompanyId)
-      setCompany(nextCompany)
-      setSelectedSiteId(String(updatedSite.id))
-      setShowEditSiteForm(false)
-      showSuccessToast(`Updated site ${updatedSite.name}.`, 'Site Updated')
-    } catch (error) {
-      setSiteEditError(String(error?.message || 'Unable to update site.'))
-    } finally {
-      setUpdatingSite(false)
+    } catch {
+      // Errors are handled in mutation callbacks.
     }
   }
 
@@ -3919,23 +4539,14 @@ export default function PortalDashboardPage() {
     if (!selectedCompanyId || !activeSite?.id || deletingSite) return
     if (!window.confirm(`Delete site '${activeSite.name}'?`)) return
 
-    setDeletingSite(true)
-    setSiteEditError('')
     try {
-      await deletePortalSite(activeSite.id)
-      const nextCompany = await getPortalCompanyHeader(selectedCompanyId)
-      const nextSites = Array.isArray(nextCompany?.sites) ? nextCompany.sites : []
-      const nextSiteId = nextSites[0]?.id || ''
-      setCompany(nextCompany)
-      setSelectedSiteId(nextSiteId ? String(nextSiteId) : '')
-      setSelectedEquipment(null)
-      setEquipment([])
-      setEquipmentPage(1)
-      showSuccessToast(`Deleted site ${activeSite.name}.`, 'Site Deleted')
-    } catch (error) {
-      setSiteEditError(String(error?.message || 'Unable to delete site.'))
-    } finally {
-      setDeletingSite(false)
+      await deleteSiteMutation.mutateAsync({
+        companyId: selectedCompanyId,
+        siteId: activeSite.id,
+        siteName: activeSite.name,
+      })
+    } catch {
+      // Errors are handled in mutation callbacks.
     }
   }
 
@@ -3943,9 +4554,6 @@ export default function PortalDashboardPage() {
     event.preventDefault()
     if (!canEditReports || !selectedCompanyId || !selectedSiteId || creatingEquipment) return
 
-    setCreatingEquipment(true)
-    setEquipmentCreateError('')
-    setEquipmentCreateSuccess('')
     try {
       const payload = {
         ...equipmentForm,
@@ -3955,23 +4563,14 @@ export default function PortalDashboardPage() {
         inspection_interval_days: Number(equipmentForm.inspection_interval_days || 365),
         last_inspected_at: equipmentForm.last_inspected_at || null,
       }
-      const created = await createPortalEquipment(payload)
-      const refreshedEquipment = await getPortalEquipment({
+      await createEquipmentMutation.mutateAsync({
+        payload,
         companyId: selectedCompanyId,
         siteId: selectedSiteId,
         search: searchQuery,
       })
-      setEquipment(refreshedEquipment)
-      setEquipmentLastUpdatedAt(Date.now())
-      setEquipmentPage(1)
-      setEquipmentForm(buildEmptyEquipmentForm())
-      setShowCreateEquipmentForm(false)
-      setEquipmentCreateSuccess(`Created equipment ${created.name}.`)
-      showSuccessToast(`Created equipment ${created.name}.`, 'Equipment Created')
-    } catch (error) {
-      setEquipmentCreateError(String(error?.message || 'Unable to create equipment.'))
-    } finally {
-      setCreatingEquipment(false)
+    } catch {
+      // Errors are handled in mutation callbacks.
     }
   }
 
@@ -3979,60 +4578,19 @@ export default function PortalDashboardPage() {
     const targetEquipmentId = equipmentId || activeSelectedEquipment?.id
     if (!targetEquipmentId || updatingEquipmentStatus) return
     const companyIdForRefresh = activeSelectedEquipment?.company_id || selectedCompanyId
-    const selectedEquipmentIdToMaintain = selectedEquipment?.id || null
-    const previousEquipment = equipment
-    const previousSelectedEquipment = selectedEquipment
-
-    const optimisticEquipment = equipment.map((item) =>
-      String(item.id) === String(targetEquipmentId)
-        ? {
-            ...item,
-            status: newStatus,
-          }
-        : item,
-    )
-
-    setUpdatingEquipmentStatus(true)
-    setEquipmentStatusError('')
-    setEquipment(optimisticEquipment)
-    setEquipmentLastUpdatedAt(Date.now())
-    if (selectedEquipmentIdToMaintain && String(selectedEquipmentIdToMaintain) === String(targetEquipmentId)) {
-      setSelectedEquipment((current) =>
-        current
-          ? {
-              ...current,
-              status: newStatus,
-            }
-          : current,
-      )
-    }
+    if (!companyIdForRefresh) return false
 
     try {
-      await updatePortalEquipment(targetEquipmentId, { status: newStatus })
-      const refreshedEquipment = await getPortalEquipment({
+      await updateEquipmentStatusMutation.mutateAsync({
+        equipmentId: targetEquipmentId,
+        status: newStatus,
         companyId: companyIdForRefresh,
         siteId: selectedSiteId,
         search: searchQuery,
       })
-      setEquipment(refreshedEquipment)
-      setEquipmentLastUpdatedAt(Date.now())
-      if (selectedEquipmentIdToMaintain) {
-        const nextSelectedEquipment = refreshedEquipment.find(
-          (item) => String(item.id) === String(selectedEquipmentIdToMaintain),
-        )
-        setSelectedEquipment(nextSelectedEquipment || null)
-      }
-      setEquipmentPage(1)
       return true
-    } catch (error) {
-      setEquipment(previousEquipment)
-      if (selectedEquipmentIdToMaintain) {
-        setSelectedEquipment(previousSelectedEquipment)
-      }
-      setEquipmentStatusError(String(error?.message || 'Unable to update equipment status.'))
+    } catch {
       return false
-    } finally {
-      setUpdatingEquipmentStatus(false)
     }
   }
 
@@ -4270,10 +4828,19 @@ export default function PortalDashboardPage() {
     setViewedReportError('')
     try {
       await deleteReport(viewedReport.id)
+      await invalidatePortalCaches([
+        portalQueryKeys.reportsRoot(),
+        portalQueryKeys.equipmentRoot(),
+        portalQueryKeys.equipmentActivityRoot(),
+        portalQueryKeys.pendingApprovalsRoot(),
+        portalQueryKeys.dashboardStatsRoot(),
+      ])
       if (activeSelectedEquipment?.id) {
         const [refreshed, nextActivity] = await Promise.all([
-          getEquipmentReports(activeSelectedEquipment.id),
-          canViewEquipmentActivity ? getEquipmentActivity(activeSelectedEquipment.id) : Promise.resolve([]),
+          fetchEquipmentReportsList(activeSelectedEquipment.id),
+          canViewEquipmentActivity
+            ? fetchEquipmentActivityList(activeSelectedEquipment.id)
+            : Promise.resolve([]),
         ])
         setReports(refreshed)
         if (canViewEquipmentActivity) {
@@ -4632,7 +5199,13 @@ export default function PortalDashboardPage() {
               setCustomerCreateError('')
               setCustomerCreateSuccess('')
             }}
-            onOpenCustomer={(companyId) => setSearchParams({ companyId: String(companyId) })}
+            onOpenCustomer={(companyId) => {
+              // Clear old data before loading new company
+              setCompany(null)
+              setEquipment([])
+              window.scrollTo(0, 0)
+              setSearchParams({ companyId: String(companyId) })
+            }}
             onEditCustomer={handleStartEditCustomer}
             />
           </div>
@@ -4686,7 +5259,9 @@ export default function PortalDashboardPage() {
             pendingApprovalsLoading={pendingApprovalsLoading}
             pendingApprovalsError={pendingApprovalsError}
             lastUpdatedLabel={pendingApprovalsLastUpdatedLabel}
-            onRefresh={refreshPendingReportApprovals}
+            onRefresh={() => {
+              void refreshPendingReportApprovals(true)
+            }}
             onBulkApprove={handleBulkApproveReports}
             selectedReportIds={selectedPendingApprovalIds}
             onToggleReportSelection={togglePendingApprovalSelection}
@@ -4727,6 +5302,10 @@ export default function PortalDashboardPage() {
               Back to Customer List
             </button>
           </div>
+        )}
+
+        {!showsCustomerPicker && selectedCompanyId && !company && (
+          <CompanyProfileSkeleton />
         )}
 
         {!showsCustomerPicker && company && (
@@ -4865,6 +5444,10 @@ export default function PortalDashboardPage() {
           </article>
         )}
 
+        {!showsCustomerPicker && selectedCompanyId && !company && (
+          <CertificatesSkeleton />
+        )}
+
         {!showsCustomerPicker && (
           <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -4987,6 +5570,10 @@ export default function PortalDashboardPage() {
               </div>
             </div>
           </section>
+        )}
+
+        {!showsCustomerPicker && selectedCompanyId && !company && (
+          <EquipmentActivitySkeleton />
         )}
 
         {!showsCustomerPicker && (
@@ -5256,11 +5843,17 @@ export default function PortalDashboardPage() {
                     </thead>
                     <tbody>
                       {equipmentActivityLoading ? (
-                        <tr>
-                          <td className="px-4 py-4 text-slate-500" colSpan={5}>
-                            Loading activity log...
-                          </td>
-                        </tr>
+                        <>
+                          {Array.from({ length: 4 }).map((_, i) => (
+                            <tr key={i} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
+                              <td className="px-4 py-3"><div className="h-4 w-32 animate-pulse rounded bg-slate-200" /></td>
+                              <td className="px-4 py-3"><div className="h-4 w-24 animate-pulse rounded bg-slate-200" /></td>
+                              <td className="px-4 py-3"><div className="h-6 w-20 animate-pulse rounded-full bg-slate-200" /></td>
+                              <td className="px-4 py-3"><div className="h-4 w-40 animate-pulse rounded bg-slate-200" /></td>
+                              <td className="px-4 py-3"><div className="h-8 w-24 animate-pulse rounded bg-slate-200" /></td>
+                            </tr>
+                          ))}
+                        </>
                       ) : equipmentActivity.length === 0 ? (
                         <tr>
                           <td className="px-4 py-4 text-slate-500" colSpan={5}>
@@ -5328,8 +5921,15 @@ export default function PortalDashboardPage() {
                 {/* Mobile Card View */}
                 <div className="space-y-2 bg-white p-4 md:hidden">
                   {equipmentActivityLoading ? (
-                    <div className="rounded-lg bg-slate-100 px-4 py-6 text-center text-sm text-slate-500">
-                      Loading activity log...
+                    <div className="space-y-3">
+                      {Array.from({ length: 4 }).map((_, i) => (
+                        <article key={i} className="rounded-lg border border-slate-200 bg-white p-3">
+                          <div className="h-4 w-32 animate-pulse rounded bg-slate-200" />
+                          <div className="mt-2 h-3 w-40 animate-pulse rounded bg-slate-200" />
+                          <div className="mt-2 h-3 w-36 animate-pulse rounded bg-slate-200" />
+                          <div className="mt-3 h-8 w-20 animate-pulse rounded bg-slate-200" />
+                        </article>
+                      ))}
                     </div>
                   ) : equipmentActivity.length === 0 ? (
                     <div className="rounded-lg bg-slate-100 px-4 py-6 text-center text-sm text-slate-500">
@@ -5410,6 +6010,175 @@ export default function PortalDashboardPage() {
             )}
 
             <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
+                <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-700">Latest Report</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowReportHistory((current) => !current)}
+                  className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                >
+                  {showReportHistory ? 'Hide History' : 'View History'}
+                </button>
+              </div>
+
+              <div className="p-4">
+                {reportsLoading ? (
+                  <p className="text-sm text-slate-500">Loading reports...</p>
+                ) : !latestReport ? (
+                  <p className="text-sm text-slate-500">No reports have been submitted for this equipment.</p>
+                ) : (
+                  (() => {
+                    const latestStatusBadge = getReportStatusBadge(latestReport.status)
+                    const latestChecklistSections = getChecklistSections(latestReport.checklist_items)
+                    const isLatestNotPresentedReport = isChecklistMarkedNotPresented(latestChecklistSections)
+                    const latestChecklistImagesByLabel = getChecklistImagesByLabel(latestReport.images)
+                    return (
+                      <article className="rounded-lg border border-slate-200 bg-white p-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <h3 className="text-sm font-bold text-slate-800">{latestReport.title || 'Untitled report'}</h3>
+                          <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${latestStatusBadge.color}`}>
+                            {latestStatusBadge.label}
+                          </span>
+                        </div>
+                        <div className="mt-2 grid gap-1 text-xs text-slate-600 md:grid-cols-2">
+                          <p><span className="font-semibold text-slate-700">Date:</span> {latestReport.report_date || '-'}</p>
+                          <p><span className="font-semibold text-slate-700">Inspector:</span> {latestReport.submitted_by_name || '-'}</p>
+                          <p className="md:col-span-2"><span className="font-semibold text-slate-700">Summary:</span> {latestReport.summary || '-'}</p>
+                        </div>
+
+                        {isLatestNotPresentedReport ? (
+                          <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3">
+                            <p className="text-sm font-semibold uppercase tracking-wide text-rose-800">Not Presented</p>
+                          </div>
+                        ) : (
+                          <div className="mt-3 grid gap-3 md:grid-cols-2">
+                            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                              <p className="text-xs font-semibold text-amber-800">Worn but Servicable</p>
+                              {latestChecklistSections.worn.length === 0 ? (
+                                <p className="mt-1 text-xs text-amber-700">None reported.</p>
+                              ) : (
+                                <ul className="mt-1 space-y-1 text-xs text-amber-900">
+                                  {latestChecklistSections.worn.map((item) => (
+                                    <li key={`latest-worn-${item.label}`}>
+                                      <p className="font-semibold">{item.label}</p>
+                                      <p>Finding: {item.finding || '-'}</p>
+                                      <p>Recommendation: {item.recommendation || '-'}</p>
+                                      {(latestChecklistImagesByLabel[item.label] || []).length > 0 && (
+                                        <div className="mt-2 flex flex-wrap gap-2">
+                                          {(latestChecklistImagesByLabel[item.label] || []).map((image) => (
+                                            <button
+                                              key={`latest-worn-image-${image.id}`}
+                                              type="button"
+                                              onClick={() => handleOpenReportImage(image, latestChecklistImagesByLabel[item.label])}
+                                              className="overflow-hidden rounded border border-slate-200 bg-white"
+                                            >
+                                              <img
+                                                src={image.image_url}
+                                                alt={`${item.label} checklist`}
+                                                className="h-12 w-12 object-cover"
+                                              />
+                                            </button>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                            <div className="rounded-lg border border-rose-200 bg-rose-50 p-3">
+                              <p className="text-xs font-semibold text-rose-800">Attention Required</p>
+                              {latestChecklistSections.attention.length === 0 ? (
+                                <p className="mt-1 text-xs text-rose-700">None reported.</p>
+                              ) : (
+                                <ul className="mt-1 space-y-1 text-xs text-rose-900">
+                                  {latestChecklistSections.attention.map((item) => (
+                                    <li key={`latest-attention-${item.label}`}>
+                                      <p className="font-semibold">{item.label}</p>
+                                      <p>Finding: {item.finding || '-'}</p>
+                                      <p>Recommendation: {item.recommendation || '-'}</p>
+                                      {(latestChecklistImagesByLabel[item.label] || []).length > 0 && (
+                                        <div className="mt-2 flex flex-wrap gap-2">
+                                          {(latestChecklistImagesByLabel[item.label] || []).map((image) => (
+                                            <button
+                                              key={`latest-attention-image-${image.id}`}
+                                              type="button"
+                                              onClick={() => handleOpenReportImage(image, latestChecklistImagesByLabel[item.label])}
+                                              className="overflow-hidden rounded border border-slate-200 bg-white"
+                                            >
+                                              <img
+                                                src={image.image_url}
+                                                alt={`${item.label} checklist`}
+                                                className="h-12 w-12 object-cover"
+                                              />
+                                            </button>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                            {latestChecklistSections.notPresented.length > 0 && (
+                              <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 md:col-span-2">
+                                <p className="text-xs font-semibold text-blue-800">Not Presented</p>
+                                <ul className="mt-1 space-y-1 text-xs text-blue-900">
+                                  {latestChecklistSections.notPresented.map((item) => (
+                                    <li key={`latest-not-presented-${item.label}`}>
+                                      <p className="font-semibold">{item.label}</p>
+                                      <p>Not presented for examination.</p>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {Array.isArray(latestReport.images) && latestReport.images.length > 0 && (
+                          <div className="mt-3">
+                            <p className="text-xs font-semibold text-slate-700">Images</p>
+                            <div className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
+                              {latestReport.images.map((image) => (
+                                <button
+                                  key={`latest-report-image-${image.id}`}
+                                  type="button"
+                                  onClick={() => handleOpenReportImage(image, latestReport.images)}
+                                  className="overflow-hidden rounded border border-slate-200 bg-white"
+                                >
+                                  <img
+                                    src={image.image_url}
+                                    alt="Report attachment"
+                                    className="h-16 w-full object-cover"
+                                    loading="lazy"
+                                  />
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="mt-3 flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setViewedReportError('')
+                              setViewedReport(latestReport)
+                            }}
+                            className="rounded border border-[#123A7A] px-2 py-1 text-xs font-semibold text-[#123A7A]"
+                          >
+                            View
+                          </button>
+                        </div>
+                      </article>
+                    )
+                  })()
+                )}
+              </div>
+
+              {showReportHistory && (
+                <>
               <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-50 px-4 py-3">
                 <label className="flex items-center gap-3 text-sm font-semibold text-slate-700">
                   Filter by Year:
@@ -5437,7 +6206,7 @@ export default function PortalDashboardPage() {
               {isMobileViewport && (
                 <div className="space-y-3 p-3">
                 {reportsLoading ? (
-                  <p className="text-sm text-slate-500">Loading reports...</p>
+                  <ReportsSkeleton count={3} />
                 ) : filteredReports.length === 0 ? (
                   <p className="text-sm text-slate-500">No reports have been submitted for this equipment.</p>
                 ) : (
@@ -5524,11 +6293,18 @@ export default function PortalDashboardPage() {
                   </thead>
                   <tbody>
                     {reportsLoading ? (
-                      <tr>
-                        <td className="px-4 py-4 text-slate-500" colSpan={6}>
-                          Loading reports...
-                        </td>
-                      </tr>
+                      <>
+                        {Array.from({ length: 4 }).map((_, i) => (
+                          <tr key={i} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
+                            <td className="px-4 py-3"><div className="h-4 w-32 animate-pulse rounded bg-slate-200" /></td>
+                            <td className="px-4 py-3"><div className="h-4 w-24 animate-pulse rounded bg-slate-200" /></td>
+                            <td className="px-4 py-3"><div className="h-6 w-20 animate-pulse rounded-full bg-slate-200" /></td>
+                            <td className="px-4 py-3"><div className="h-4 w-28 animate-pulse rounded bg-slate-200" /></td>
+                            <td className="px-4 py-3"><div className="h-4 w-32 animate-pulse rounded bg-slate-200" /></td>
+                            <td className="px-4 py-3"><div className="h-8 w-16 animate-pulse rounded bg-slate-200" /></td>
+                          </tr>
+                        ))}
+                      </>
                     ) : filteredReports.length === 0 ? (
                       <tr>
                         <td className="px-4 py-4 text-slate-500" colSpan={6}>
@@ -5568,6 +6344,8 @@ export default function PortalDashboardPage() {
                   </tbody>
                 </table>
                 </div>
+              )}
+                </>
               )}
             </div>
           </section>
@@ -6609,8 +7387,6 @@ export default function PortalDashboardPage() {
                 <p><span className="font-semibold">Inspector:</span> {viewedReport.submitted_by_name || '-'}</p>
                 <p><span className="font-semibold">Report ID:</span> {viewedReport.id}</p>
                 <p className="md:col-span-2"><span className="font-semibold">Summary:</span> {viewedReport.summary || '-'}</p>
-                <p className="md:col-span-2"><span className="font-semibold">Findings:</span> {viewedReport.findings || '-'}</p>
-                <p className="md:col-span-2"><span className="font-semibold">Recommendations:</span> {viewedReport.recommendations || '-'}</p>
               </div>
 
               {(() => {
@@ -6696,11 +7472,9 @@ export default function PortalDashboardPage() {
                         </ul>
                       )}
                     </div>
-                    <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 md:col-span-2">
-                      <p className="text-sm font-semibold text-blue-800">Not Presented</p>
-                      {checklistSections.notPresented.length === 0 ? (
-                        <p className="mt-2 text-xs text-blue-700">None reported.</p>
-                      ) : (
+                    {checklistSections.notPresented.length > 0 && (
+                      <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 md:col-span-2">
+                        <p className="text-sm font-semibold text-blue-800">Not Presented</p>
                         <ul className="mt-2 space-y-2 text-xs text-blue-900">
                           {checklistSections.notPresented.map((item) => (
                             <li key={`not-presented-${item.label}`}>
@@ -6709,8 +7483,8 @@ export default function PortalDashboardPage() {
                             </li>
                           ))}
                         </ul>
-                      )}
-                    </div>
+                      </div>
+                    )}
                   </div>
                 )
               })()}
@@ -7379,8 +8153,6 @@ export default function PortalDashboardPage() {
                       <p><span className="font-semibold">Status:</span> {selectedRevisionPreview.afterSnapshot.status || '-'}</p>
                       <p><span className="font-semibold">Report Date:</span> {selectedRevisionPreview.afterSnapshot.report_date || '-'}</p>
                       <p className="md:col-span-2"><span className="font-semibold">Summary:</span> {selectedRevisionPreview.afterSnapshot.summary || '-'}</p>
-                      <p className="md:col-span-2"><span className="font-semibold">Findings:</span> {selectedRevisionPreview.afterSnapshot.findings || '-'}</p>
-                      <p className="md:col-span-2"><span className="font-semibold">Recommendations:</span> {selectedRevisionPreview.afterSnapshot.recommendations || '-'}</p>
                     </div>
 
                     {(() => {
@@ -7429,11 +8201,9 @@ export default function PortalDashboardPage() {
                               </ul>
                             )}
                           </div>
-                          <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 md:col-span-2">
-                            <p className="text-sm font-semibold text-blue-800">Not Presented</p>
-                            {checklistSections.notPresented.length === 0 ? (
-                              <p className="mt-2 text-xs text-blue-700">None reported.</p>
-                            ) : (
+                          {checklistSections.notPresented.length > 0 && (
+                            <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 md:col-span-2">
+                              <p className="text-sm font-semibold text-blue-800">Not Presented</p>
                               <ul className="mt-2 space-y-2 text-xs text-blue-900">
                                 {checklistSections.notPresented.map((item) => (
                                   <li key={`rev-not-presented-${item.label}`}>
@@ -7442,8 +8212,8 @@ export default function PortalDashboardPage() {
                                   </li>
                                 ))}
                               </ul>
-                            )}
-                          </div>
+                            </div>
+                          )}
                         </div>
                       )
                     })()}

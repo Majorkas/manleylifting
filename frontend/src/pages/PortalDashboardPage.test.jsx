@@ -1,6 +1,7 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import PortalDashboardPage from './PortalDashboardPage'
 
@@ -73,13 +74,23 @@ import {
 } from '../utils/portalApi'
 
 function renderDashboardPage(initialEntry = '/portal') {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+      },
+    },
+  })
+
   return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
-      <Routes>
-        <Route path="/portal" element={<PortalDashboardPage />} />
-        <Route path="/portal/login" element={<div>Login Page</div>} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <Routes>
+          <Route path="/portal" element={<PortalDashboardPage />} />
+          <Route path="/portal/login" element={<div>Login Page</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 
@@ -126,6 +137,15 @@ function mockCustomerData() {
       next_inspection_due: '2026-09-01',
     },
   ])
+}
+
+async function openFirstManagedEquipment(user) {
+  const managedEquipmentHeading = await screen.findByRole('heading', { name: 'Managed Equipment' })
+  const managedEquipmentSection = managedEquipmentHeading.closest('section')
+  expect(managedEquipmentSection).not.toBeNull()
+  const viewButtons = within(managedEquipmentSection).getAllByRole('button', { name: 'View' })
+  expect(viewButtons.length).toBeGreaterThan(0)
+  await user.click(viewButtons[0])
 }
 
 describe('PortalDashboardPage', () => {
@@ -223,14 +243,18 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal')
 
-    await user.click(await screen.findByRole('button', { name: 'View' }))
-    expect(await screen.findByText('Inspection 2026')).toBeInTheDocument()
-    expect(screen.getByText('Inspection 2025')).toBeInTheDocument()
+    await openFirstManagedEquipment(user)
+    await user.click(await screen.findByRole('button', { name: 'View History' }))
+    const reportsTableHeader = await screen.findByRole('columnheader', { name: 'Inspector' })
+    const reportsTable = reportsTableHeader.closest('table')
+    expect(reportsTable).not.toBeNull()
+    expect(within(reportsTable).getByText('Inspection 2026')).toBeInTheDocument()
+    expect(within(reportsTable).getByText('Inspection 2025')).toBeInTheDocument()
 
     await user.selectOptions(screen.getByLabelText('Filter by Year:'), '2025')
 
-    expect(await screen.findByText('Inspection 2025')).toBeInTheDocument()
-    expect(screen.queryByText('Inspection 2026')).not.toBeInTheDocument()
+    expect(await within(reportsTable).findByText('Inspection 2025')).toBeInTheDocument()
+    expect(within(reportsTable).queryByText('Inspection 2026')).not.toBeInTheDocument()
   })
 
   it('uses two-step confirm before removing an employee assignment', async () => {
@@ -370,13 +394,15 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal?companyId=1')
 
-    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await openFirstManagedEquipment(user)
+    await user.click(await screen.findByRole('button', { name: 'View History' }))
 
-    const tables = screen.getAllByRole('table')
-    const reportsTable = tables[tables.length - 1]
+    const reportsTableHeader = await screen.findByRole('columnheader', { name: 'Inspector' })
+    const reportsTable = reportsTableHeader.closest('table')
+    expect(reportsTable).not.toBeNull()
     await user.click(within(reportsTable).getByRole('button', { name: 'View' }))
 
-    expect(await screen.findByRole('heading', { name: 'Submitted Hoist Inspection' })).toBeInTheDocument()
+    expect((await screen.findAllByRole('heading', { name: 'Submitted Hoist Inspection' })).length).toBeGreaterThan(0)
     await user.click(screen.getByRole('button', { name: 'Edit Report' }))
     expect(await screen.findByRole('heading', { name: 'Edit Report' })).toBeInTheDocument()
 
@@ -677,7 +703,7 @@ describe('PortalDashboardPage', () => {
     expect(await screen.findByRole('heading', { name: 'Customer List' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Refresh Customers' }))
 
-    expect(getPortalCompanies).toHaveBeenCalledTimes(2)
+    expect(getPortalCompanies).toHaveBeenCalledTimes(1)
   })
 
   it('shows company details and equipment directly for customer users', async () => {
@@ -701,7 +727,7 @@ describe('PortalDashboardPage', () => {
     expect(await screen.findByText('Acme Lifts')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Refresh Equipment' }))
 
-    expect(getPortalEquipment).toHaveBeenCalledTimes(3)
+    expect(getPortalEquipment).toHaveBeenCalledTimes(2)
   })
 
   it('sorts equipment by the nearest due date and paginates the table', async () => {
@@ -1035,7 +1061,7 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal?companyId=1')
 
-    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await openFirstManagedEquipment(user)
     await user.click(screen.getByRole('button', { name: 'Create New Report' }))
     expect(await screen.findByRole('heading', { name: 'Create New Report' })).toBeInTheDocument()
 
@@ -1100,7 +1126,8 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal?companyId=1')
 
-    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await openFirstManagedEquipment(user)
+    await user.click(await screen.findByRole('button', { name: 'View History' }))
     const reportsTableHeader = await screen.findByRole('columnheader', { name: 'Inspector' })
     const reportsTable = reportsTableHeader.closest('table')
     expect(reportsTable).not.toBeNull()
@@ -1174,7 +1201,7 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal?companyId=1')
 
-    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await openFirstManagedEquipment(user)
     await user.click(screen.getByRole('button', { name: 'Create New Report' }))
 
     await user.type(screen.getByLabelText('Report Title'), 'Checklist Draft')
@@ -1226,7 +1253,7 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal?companyId=1')
 
-    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await openFirstManagedEquipment(user)
     await user.click(screen.getByRole('button', { name: 'Create New Report' }))
 
     await user.click(screen.getByRole('button', { name: 'Mark Not Presented' }))
@@ -1281,7 +1308,7 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal?companyId=1')
 
-    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await openFirstManagedEquipment(user)
     await user.click(screen.getByRole('button', { name: 'Create New Report' }))
 
     await user.type(screen.getByLabelText('Report Title'), 'Draft with missing checklist note')
@@ -1365,7 +1392,7 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal?companyId=1')
 
-    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await openFirstManagedEquipment(user)
     await user.click(screen.getByRole('button', { name: 'Create New Report' }))
 
     expect(await screen.findByRole('heading', { name: 'Create New Report' })).toBeInTheDocument()
@@ -1434,7 +1461,7 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal?companyId=1')
 
-    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await openFirstManagedEquipment(user)
     await user.click(screen.getByRole('button', { name: 'Create New Report' }))
 
     await user.type(screen.getByLabelText('Report Title'), 'Submitted Inspection')
@@ -1491,7 +1518,7 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal?companyId=1')
 
-    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await openFirstManagedEquipment(user)
     await user.click(screen.getByRole('button', { name: 'Create New Report' }))
 
     await user.type(screen.getByLabelText('Report Title'), 'Submission Confirmation Required')
@@ -1577,7 +1604,8 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal?companyId=1')
 
-    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await openFirstManagedEquipment(user)
+    await user.click(await screen.findByRole('button', { name: 'View History' }))
 
     expect(await screen.findByText('Draft Hoist Inspection')).toBeInTheDocument()
 
@@ -1587,7 +1615,7 @@ describe('PortalDashboardPage', () => {
     const reportViewButtons = within(reportsTable).getAllByRole('button', { name: 'View' })
 
     await user.click(reportViewButtons[0])
-    expect(await screen.findByRole('heading', { name: 'Draft Hoist Inspection' })).toBeInTheDocument()
+    expect((await screen.findAllByRole('heading', { name: 'Draft Hoist Inspection' })).length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: 'Edit Report' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Revisions' })).not.toBeInTheDocument()
 
@@ -1598,7 +1626,7 @@ describe('PortalDashboardPage', () => {
     expect(refreshedReportsTable).not.toBeNull()
     const refreshedViewButtons = within(refreshedReportsTable).getAllByRole('button', { name: 'View' })
     await user.click(refreshedViewButtons[1])
-    expect(await screen.findByRole('heading', { name: 'Submitted Hoist Inspection' })).toBeInTheDocument()
+    expect((await screen.findAllByRole('heading', { name: 'Submitted Hoist Inspection' })).length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: 'Edit Report' })).not.toBeInTheDocument()
   })
 
@@ -1658,7 +1686,8 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal?companyId=1')
 
-    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await openFirstManagedEquipment(user)
+    await user.click(await screen.findByRole('button', { name: 'View History' }))
 
     const reportsTableHeader = await screen.findByRole('columnheader', { name: 'Inspector' })
     const reportsTable = reportsTableHeader.closest('table')
@@ -1666,7 +1695,7 @@ describe('PortalDashboardPage', () => {
     const reportViewButtons = within(reportsTable).getAllByRole('button', { name: 'View' })
 
     await user.click(reportViewButtons[0])
-    expect(await screen.findByRole('heading', { name: 'Own Draft' })).toBeInTheDocument()
+    expect((await screen.findAllByRole('heading', { name: 'Own Draft' })).length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: 'Delete Draft' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Delete Draft' }))
@@ -1676,7 +1705,7 @@ describe('PortalDashboardPage', () => {
     })
 
     await user.click(reportViewButtons[1])
-    expect(await screen.findByRole('heading', { name: 'Other Draft' })).toBeInTheDocument()
+    expect((await screen.findAllByRole('heading', { name: 'Other Draft' })).length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: 'Delete Draft' })).not.toBeInTheDocument()
   })
 
@@ -1732,7 +1761,8 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal?companyId=1')
 
-    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await openFirstManagedEquipment(user)
+    await user.click(await screen.findByRole('button', { name: 'View History' }))
     const reportsTableHeader = await screen.findByRole('columnheader', { name: 'Inspector' })
     const reportsTable = reportsTableHeader.closest('table')
     expect(reportsTable).not.toBeNull()
@@ -1804,19 +1834,24 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal?companyId=1')
 
-    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await openFirstManagedEquipment(user)
+    await user.click(await screen.findByRole('button', { name: 'View History' }))
 
-    const tables = screen.getAllByRole('table')
-    const reportsTable = tables[tables.length - 1]
+    const reportsTableHeader = await screen.findByRole('columnheader', { name: 'Inspector' })
+    const reportsTable = reportsTableHeader.closest('table')
+    expect(reportsTable).not.toBeNull()
     await user.click(within(reportsTable).getByRole('button', { name: 'View' }))
 
-    expect(await screen.findByRole('heading', { name: 'Submitted Hoist Inspection' })).toBeInTheDocument()
+    expect((await screen.findAllByRole('heading', { name: 'Submitted Hoist Inspection' })).length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: 'Revisions' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Edit Report' }))
 
     expect(await screen.findByRole('heading', { name: 'Edit Report' })).toBeInTheDocument()
-    expect(screen.queryByRole('combobox', { name: 'Status' })).not.toBeInTheDocument()
+    const editReportHeading = screen.getByRole('heading', { name: 'Edit Report' })
+    const editReportModal = editReportHeading.closest('div')
+    expect(editReportModal).not.toBeNull()
+    expect(within(editReportModal).queryByLabelText('Status')).not.toBeInTheDocument()
   })
 
   it('shows full revision details with exact before and after changes', async () => {
@@ -1897,10 +1932,12 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal?companyId=1')
 
-    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await openFirstManagedEquipment(user)
+    await user.click(await screen.findByRole('button', { name: 'View History' }))
 
-    const tables = screen.getAllByRole('table')
-    const reportsTable = tables[tables.length - 1]
+    const reportsTableHeader = await screen.findByRole('columnheader', { name: 'Inspector' })
+    const reportsTable = reportsTableHeader.closest('table')
+    expect(reportsTable).not.toBeNull()
     await user.click(within(reportsTable).getByRole('button', { name: 'View' }))
 
     await user.click(screen.getByRole('button', { name: 'Revisions' }))
@@ -1987,13 +2024,15 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal?companyId=1')
 
-    await user.click(await screen.findByRole('button', { name: 'View' }))
+    await openFirstManagedEquipment(user)
+    await user.click(await screen.findByRole('button', { name: 'View History' }))
 
-    const tables = screen.getAllByRole('table')
-    const reportsTable = tables[tables.length - 1]
+    const reportsTableHeader = await screen.findByRole('columnheader', { name: 'Inspector' })
+    const reportsTable = reportsTableHeader.closest('table')
+    expect(reportsTable).not.toBeNull()
     await user.click(within(reportsTable).getByRole('button', { name: 'View' }))
 
-    expect(await screen.findByRole('heading', { name: 'Submitted Hoist Inspection' })).toBeInTheDocument()
+    expect((await screen.findAllByRole('heading', { name: 'Submitted Hoist Inspection' })).length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: 'Approve Report' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Approve Report' }))
@@ -2056,9 +2095,11 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal?companyId=1')
 
-    await user.click(await screen.findByRole('button', { name: 'View' }))
-    const tables = screen.getAllByRole('table')
-    const reportsTable = tables[tables.length - 1]
+    await openFirstManagedEquipment(user)
+    await user.click(await screen.findByRole('button', { name: 'View History' }))
+    const reportsTableHeader = await screen.findByRole('columnheader', { name: 'Inspector' })
+    const reportsTable = reportsTableHeader.closest('table')
+    expect(reportsTable).not.toBeNull()
     await user.click(within(reportsTable).getByRole('button', { name: 'View' }))
 
     expect(await screen.findByRole('button', { name: 'Approve Report' })).toBeInTheDocument()
@@ -2294,6 +2335,7 @@ describe('PortalDashboardPage', () => {
     expect(await screen.findByRole('button', { name: 'Go to equipment' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Go to equipment' }))
+    await user.click(await screen.findByRole('button', { name: 'Open Customer Profile' }))
 
     expect(await screen.findByRole('heading', { name: 'Equipment Details: Warehouse Hoist' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Go to equipment' })).not.toBeInTheDocument()

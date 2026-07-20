@@ -83,6 +83,27 @@ export default function EquipmentTableSection({
   const allSelected =
     canBulkDecommission && activeEquipment.length > 0 && selectedCount === activeEquipment.length
 
+  function getMostRecentReport(items) {
+    if (!Array.isArray(items) || items.length === 0) return null
+
+    return items.reduce((latest, candidate) => {
+      if (!latest) return candidate
+
+      const latestDateMs = Date.parse(latest.report_date || '')
+      const candidateDateMs = Date.parse(candidate.report_date || '')
+      const latestIsValid = Number.isFinite(latestDateMs)
+      const candidateIsValid = Number.isFinite(candidateDateMs)
+
+      if (candidateIsValid && !latestIsValid) return candidate
+      if (candidateIsValid && latestIsValid && candidateDateMs > latestDateMs) return candidate
+      if (candidateIsValid && latestIsValid && candidateDateMs === latestDateMs) {
+        return Number(candidate.id || 0) > Number(latest.id || 0) ? candidate : latest
+      }
+
+      return latest
+    }, null)
+  }
+
   function getManagedEquipmentInspectionBadge(item) {
     if (String(item.status || '').toLowerCase() === 'decommissioned') {
       return { label: 'Decommissioned', color: 'bg-slate-100 text-slate-700 border-slate-300' }
@@ -547,31 +568,96 @@ export default function EquipmentTableSection({
                             ) : reports.length === 0 ? (
                               <p className="text-xs text-slate-500">No reports have been submitted for this equipment.</p>
                             ) : (
-                              reports.map((report) => {
-                                const statusBadge = getReportStatusBadge(report.status)
+                              (() => {
+                                const latestReport = getMostRecentReport(reports)
+                                const latestStatusBadge = getReportStatusBadge(latestReport?.status)
+
                                 return (
-                                  <article key={report.id} className="rounded border border-slate-200 bg-white p-2.5">
-                                    <div className="flex items-start justify-between gap-2">
-                                      <p className="text-xs font-semibold text-slate-800">{report.title || 'Untitled report'}</p>
-                                      <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusBadge.color}`}>
-                                        {statusBadge.label}
-                                      </span>
-                                    </div>
-                                    <p className="mt-1 text-[11px] text-slate-600">
-                                      <span className="font-semibold text-slate-700">Date:</span> {report.report_date || '-'}
-                                    </p>
-                                    <div className="mt-2 flex justify-end">
-                                      <button
-                                        type="button"
-                                        onClick={() => onViewReport(report)}
-                                        className="rounded border border-[#123A7A] px-2 py-1 text-[10px] font-semibold text-[#123A7A]"
-                                      >
-                                        View
-                                      </button>
-                                    </div>
-                                  </article>
+                                  <>
+                                    {latestReport && (
+                                      <article className="rounded border border-slate-200 bg-slate-50 p-2.5">
+                                        <div className="flex items-start justify-between gap-2">
+                                          <p className="text-xs font-semibold text-slate-800">{latestReport.title || 'Untitled report'}</p>
+                                          <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${latestStatusBadge.color}`}>
+                                            {latestStatusBadge.label}
+                                          </span>
+                                        </div>
+                                        <p className="mt-1 text-[11px] text-slate-600">
+                                          <span className="font-semibold text-slate-700">Most Recent:</span> {latestReport.report_date || '-'}
+                                        </p>
+                                        <p className="mt-1 text-[11px] text-slate-600">
+                                          <span className="font-semibold text-slate-700">Summary:</span> {latestReport.summary || '-'}
+                                        </p>
+                                        {Array.isArray(latestReport.images) && latestReport.images.length > 0 && (
+                                          <div className="mt-2">
+                                            <p className="text-[11px] font-semibold text-slate-700">Images</p>
+                                            <div className="mt-1 flex flex-wrap gap-2">
+                                              {latestReport.images.map((image) => (
+                                                <a
+                                                  key={`latest-inline-image-${image.id}`}
+                                                  href={image.image_url}
+                                                  target="_blank"
+                                                  rel="noreferrer"
+                                                  className="overflow-hidden rounded border border-slate-200 bg-white"
+                                                >
+                                                  <img
+                                                    src={image.image_url}
+                                                    alt="Report attachment"
+                                                    className="h-12 w-12 object-cover"
+                                                    loading="lazy"
+                                                  />
+                                                </a>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        )}
+                                        <div className="mt-2 flex justify-end">
+                                          <button
+                                            type="button"
+                                            onClick={() => onViewReport(latestReport)}
+                                            className="rounded border border-[#123A7A] px-2 py-1 text-[10px] font-semibold text-[#123A7A]"
+                                          >
+                                            View
+                                          </button>
+                                        </div>
+                                      </article>
+                                    )}
+
+                                    <details className="rounded border border-slate-200 bg-white">
+                                      <summary className="flex cursor-pointer justify-end px-2 py-2 text-[11px] font-semibold uppercase tracking-wide text-[#123A7A]">
+                                        View history
+                                      </summary>
+                                      <div className="space-y-2 border-t border-slate-200 p-2.5">
+                                        {reports.map((report) => {
+                                          const statusBadge = getReportStatusBadge(report.status)
+                                          return (
+                                            <article key={report.id} className="rounded border border-slate-200 bg-white p-2.5">
+                                              <div className="flex items-start justify-between gap-2">
+                                                <p className="text-xs font-semibold text-slate-800">{report.title || 'Untitled report'}</p>
+                                                <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusBadge.color}`}>
+                                                  {statusBadge.label}
+                                                </span>
+                                              </div>
+                                              <p className="mt-1 text-[11px] text-slate-600">
+                                                <span className="font-semibold text-slate-700">Date:</span> {report.report_date || '-'}
+                                              </p>
+                                              <div className="mt-2 flex justify-end">
+                                                <button
+                                                  type="button"
+                                                  onClick={() => onViewReport(report)}
+                                                  className="rounded border border-[#123A7A] px-2 py-1 text-[10px] font-semibold text-[#123A7A]"
+                                                >
+                                                  View
+                                                </button>
+                                              </div>
+                                            </article>
+                                          )
+                                        })}
+                                      </div>
+                                    </details>
+                                  </>
                                 )
-                              })
+                              })()
                             )}
                           </div>
                         </details>
@@ -613,7 +699,7 @@ export default function EquipmentTableSection({
                     <th className="px-4 py-3 font-semibold whitespace-nowrap">Status</th>
                     {equipmentTableTab === 'active' && (
                       <>
-                        <th className="px-4 py-3 font-semibold">Inspection Status</th>
+                        <th className="px-4 py-3 font-semibold whitespace-nowrap">Inspection Status</th>
                         <th className="px-4 py-3 font-semibold">
                           <button
                             type="button"
@@ -660,8 +746,8 @@ export default function EquipmentTableSection({
                         </td>
                         {equipmentTableTab === 'active' && (
                           <>
-                            <td className="px-4 py-3">
-                              <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold uppercase tracking-wide ${inspectionStatus.color}`}>
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <span className={`inline-flex max-w-full items-center justify-center whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-semibold uppercase tracking-wide ${inspectionStatus.color}`}>
                                 {inspectionStatus.label}
                               </span>
                             </td>

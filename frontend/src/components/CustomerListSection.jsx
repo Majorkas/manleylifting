@@ -1,5 +1,5 @@
 import PaginationControls from './PaginationControls'
-import { CustomerCardGridSkeleton, CustomerStatsSkeleton } from './PortalLoadingSkeletons'
+import { CustomerCardGridSkeleton } from './PortalLoadingSkeletons'
 
 export default function CustomerListSection({
   isOwner,
@@ -122,10 +122,10 @@ export default function CustomerListSection({
             </div>
           )}
 
-          {dashboardStatsLoading ? (
-            <CustomerStatsSkeleton />
-          ) : (
-            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div
+            className={`mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 ${dashboardStatsLoading ? 'opacity-90' : ''}`}
+            aria-busy={dashboardStatsLoading}
+          >
               <button
                 type="button"
                 onClick={() => onToggleCustomerStatsFilter('overdue')}
@@ -138,7 +138,18 @@ export default function CustomerListSection({
                 }
               >
                 <p className="text-xs font-semibold uppercase tracking-wide text-red-700">Overdue Inspections</p>
-                <p className="mt-2 text-3xl font-extrabold text-red-800">{dashboardStats.overdue_count}</p>
+                {dashboardStatsLoading ? (
+                  <div className="mt-2 flex justify-center">
+                    <svg className="h-8 w-8 animate-spin text-red-800" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-3xl font-extrabold text-red-800">
+                    {dashboardStats.overdue_count}
+                  </p>
+                )}
                 <p className="mt-1 text-xs text-red-700">
                   Equipment already past due date {customerStatsFilter === 'overdue' ? '(filtered)' : ''}
                 </p>
@@ -156,7 +167,18 @@ export default function CustomerListSection({
                 }
               >
                 <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Due In 14 Days</p>
-                <p className="mt-2 text-3xl font-extrabold text-amber-800">{dashboardStats.due_soon_count}</p>
+                {dashboardStatsLoading ? (
+                  <div className="mt-2 flex justify-center">
+                    <svg className="h-8 w-8 animate-spin text-amber-800" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-3xl font-extrabold text-amber-800">
+                    {dashboardStats.due_soon_count}
+                  </p>
+                )}
                 <p className="mt-1 text-xs text-amber-700">
                   Upcoming inspections to schedule {customerStatsFilter === 'due_soon' ? '(filtered)' : ''}
                 </p>
@@ -164,11 +186,21 @@ export default function CustomerListSection({
 
               <article className="rounded-xl border border-blue-200 bg-blue-50 p-4">
                 <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">Pending Approvals</p>
-                <p className="mt-2 text-3xl font-extrabold text-blue-800">{dashboardStats.pending_approvals_count}</p>
+                {dashboardStatsLoading ? (
+                  <div className="mt-2 flex justify-center">
+                    <svg className="h-8 w-8 animate-spin text-blue-800" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-3xl font-extrabold text-blue-800">
+                    {dashboardStats.pending_approvals_count}
+                  </p>
+                )}
                 <p className="mt-1 text-xs text-blue-700">Submitted reports waiting review</p>
               </article>
             </div>
-          )}
         </>
       )}
 
