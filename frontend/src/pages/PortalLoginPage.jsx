@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, Navigate, useNavigate, useLocation } from 'react-router-dom'
 import PortalLayout from '../components/PortalLayout'
-import { hasPortalSession, portalLogin } from '../utils/portalApi'
+import { clearPortalSession, hasPortalSession, portalLogin } from '../utils/portalApi'
 import usePageMeta from '../utils/usePageMeta'
 
 export default function PortalLoginPage() {
@@ -22,7 +22,17 @@ export default function PortalLoginPage() {
   )
   const [submitting, setSubmitting] = useState(false)
 
-  if (hasPortalSession()) {
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [])
+
+  useEffect(() => {
+    if (!sessionExpired) return
+    // Force explicit credentials after expiry instead of silently restoring via stale session markers.
+    clearPortalSession()
+  }, [sessionExpired])
+
+  if (!sessionExpired && hasPortalSession()) {
     return <Navigate to="/portal" replace />
   }
 
@@ -58,10 +68,10 @@ export default function PortalLoginPage() {
             </p>
             <div className="mt-8 rounded-xl border border-slate-200 bg-[#f8fafc] p-5 text-sm text-slate-600">
               Need help with login details? Contact our team on{' '}
-              <a className="font-semibold text-[#123A7A]" href="tel:+353879962794">
-                +353 87 996 2794
+              <a className="font-semibold text-[#123A7A]" href="tel:+35391363373">
+                053 9136337
               </a>{' '}
-              or use the <Link className="font-semibold text-[#123A7A]" to="/contact">contact form</Link>.
+              (Mon–Fri, 9am–5pm) or use the <Link className="font-semibold text-[#123A7A]" to="/contact">contact form</Link>.
             </div>
           </div>
 

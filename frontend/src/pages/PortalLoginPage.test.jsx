@@ -9,15 +9,16 @@ vi.mock('../components/PortalLayout', () => ({
 }))
 
 vi.mock('../utils/portalApi', () => ({
+  clearPortalSession: vi.fn(),
   hasPortalSession: vi.fn(),
   portalLogin: vi.fn(),
 }))
 
-import { hasPortalSession, portalLogin } from '../utils/portalApi'
+import { clearPortalSession, hasPortalSession, portalLogin } from '../utils/portalApi'
 
-function renderLoginPage() {
+function renderLoginPage(initialEntries = ['/portal/login']) {
   return render(
-    <MemoryRouter initialEntries={['/portal/login']}>
+    <MemoryRouter initialEntries={initialEntries}>
       <Routes>
         <Route path="/portal/login" element={<PortalLoginPage />} />
         <Route path="/portal" element={<div>Portal Home</div>} />
@@ -46,6 +47,16 @@ describe('PortalLoginPage', () => {
 
     expect(screen.getByRole('heading', { name: 'Portal Login' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sign In' })).toBeInTheDocument()
+  })
+
+  it('requires full login after session expiry even when a stale session is present', () => {
+    hasPortalSession.mockReturnValue(true)
+
+    renderLoginPage([{ pathname: '/portal/login', state: { sessionExpired: true } }])
+
+    expect(screen.getByRole('heading', { name: 'Portal Login' })).toBeInTheDocument()
+    expect(screen.queryByText('Portal Home')).not.toBeInTheDocument()
+    expect(clearPortalSession).toHaveBeenCalledTimes(1)
   })
 
   it('trims whitespace from the username before submitting', async () => {
