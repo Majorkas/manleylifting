@@ -73,6 +73,21 @@ EQUIPMENT_TEMPLATES = [
     ("1T Endless Chain Sling",      "SLING",  "ECS"),
 ]
 
+SITE_TEMPLATES = [
+    ("Main Site", "Primary operations yard"),
+    ("Fabrication Hall", "Indoor production and assembly area"),
+    ("Dispatch Yard", "Outbound logistics and storage"),
+]
+
+SAFE_WORKING_LOAD_BY_TYPE = {
+    "CRANE": ["750 kg", "1 t", "2 t", "3.2 t", "5 t", "10 t", "15 t", "20 t", "30 t"],
+    "HOIST": ["500 kg", "750 kg", "1 t", "2 t", "3.2 t", "5 t"],
+    "CHAIN": ["500 kg", "1 t", "2 t", "3 t", "4 t"],
+    "PRESS": ["100 t", "150 t", "200 t", "250 t"],
+    "ATTACH": ["1 t", "2 t", "3 t", "5 t", "6 t", "10 t"],
+    "SLING": ["500 kg", "1 t", "2 t", "3 t", "5 t"],
+}
+
 EMPLOYEES = [
     # (first, last, role)
     ("Liam",     "Burke",      "engineer"),
@@ -216,28 +231,98 @@ def _build_checklist(scenario="good"):
     items = []
     for label in CHECKLIST_LABELS:
         if scenario == "good":
-            items.append({"label": label, "status": "good_order", "note": ""})
+            items.append(
+                {
+                    "label": label,
+                    "status": "good_order",
+                    "finding": "",
+                    "recommendation": "",
+                    "days_before_reinspection": "",
+                }
+            )
         elif scenario == "worn":
             if label in ("Hoist Ropes", "Travel Wheels", "Hoist Brake"):
-                items.append({"label": label, "status": "worn_serviceable",
-                               "note": random.choice(WORN_NOTES)})
+                items.append(
+                    {
+                        "label": label,
+                        "status": "worn_serviceable",
+                        "finding": random.choice(WORN_NOTES),
+                        "recommendation": random.choice(RECOMMENDATIONS_ISSUES),
+                        "days_before_reinspection": "",
+                    }
+                )
             else:
-                items.append({"label": label, "status": "good_order", "note": ""})
+                items.append(
+                    {
+                        "label": label,
+                        "status": "good_order",
+                        "finding": "",
+                        "recommendation": "",
+                        "days_before_reinspection": "",
+                    }
+                )
         elif scenario == "attention":
             if label in ("Bottom Block & Hook", "Travel Brakes", "General Structure"):
-                items.append({"label": label, "status": "attention_required",
-                               "note": random.choice(ATTENTION_NOTES)})
+                items.append(
+                    {
+                        "label": label,
+                        "status": "attention_required",
+                        "finding": random.choice(ATTENTION_NOTES),
+                        "recommendation": random.choice(RECOMMENDATIONS_ISSUES),
+                        "days_before_reinspection": random.choice(["14", "21", "30"]),
+                    }
+                )
             else:
-                items.append({"label": label, "status": "good_order", "note": ""})
+                items.append(
+                    {
+                        "label": label,
+                        "status": "good_order",
+                        "finding": "",
+                        "recommendation": "",
+                        "days_before_reinspection": "",
+                    }
+                )
+        elif scenario == "not_presented":
+            items.append(
+                {
+                    "label": label,
+                    "status": "not_presented",
+                    "finding": "",
+                    "recommendation": "",
+                    "days_before_reinspection": "",
+                }
+            )
         else:  # mixed
             if label in ("Hoist Ropes", "Travel Wheels"):
-                items.append({"label": label, "status": "worn_serviceable",
-                               "note": random.choice(WORN_NOTES)})
+                items.append(
+                    {
+                        "label": label,
+                        "status": "worn_serviceable",
+                        "finding": random.choice(WORN_NOTES),
+                        "recommendation": random.choice(RECOMMENDATIONS_ISSUES),
+                        "days_before_reinspection": random.choice(["", "45"]),
+                    }
+                )
             elif label in ("Travel Brakes",):
-                items.append({"label": label, "status": "attention_required",
-                               "note": random.choice(ATTENTION_NOTES)})
+                items.append(
+                    {
+                        "label": label,
+                        "status": "attention_required",
+                        "finding": random.choice(ATTENTION_NOTES),
+                        "recommendation": random.choice(RECOMMENDATIONS_ISSUES),
+                        "days_before_reinspection": random.choice(["21", "30"]),
+                    }
+                )
             else:
-                items.append({"label": label, "status": "good_order", "note": ""})
+                items.append(
+                    {
+                        "label": label,
+                        "status": "good_order",
+                        "finding": "",
+                        "recommendation": "",
+                        "days_before_reinspection": "",
+                    }
+                )
     return items
 
 
@@ -247,13 +332,16 @@ def _build_report_data(equipment_name, report_num, report_status):
         2: "worn",
         3: "attention",
         4: "mixed",
-        5: "good",
+        5: "not_presented",
     }
     scenario = scenario_map.get(report_num, "good")
 
     if scenario == "good":
         findings = random.choice(FINDINGS_GOOD)
         recommendations = random.choice(RECOMMENDATIONS_GOOD)
+    elif scenario == "not_presented":
+        findings = "Equipment was not presented for examination during this visit."
+        recommendations = "Arrange access and rebook inspection at the earliest opportunity."
     else:
         issue_item = random.choice(["hoist rope", "travel brake", "bottom block", "pendant cable"])
         findings = random.choice(FINDINGS_ISSUES).format(item=issue_item)
@@ -297,11 +385,11 @@ class Command(BaseCommand):
         # ── 1. Companies + customers + equipment + reports ──────────────────
         all_company_ids = []
         for idx, (company_name, county, _slug) in enumerate(COMPANIES, start=1):
-            company, customer_user, site = self._create_company_and_customer(
+            company, customer_user, sites = self._create_company_and_customer(
                 company_name, county, idx, password
             )
             all_company_ids.append(company.id)
-            self._create_equipment_and_reports(company, site, customer_user, idx)
+            self._create_equipment_and_reports(company, sites, customer_user, idx)
             self.stdout.write(f"  ✓ Company {idx:02d}/20: {company_name}")
 
         # ── 2. Employees ─────────────────────────────────────────────────────
@@ -383,34 +471,50 @@ class Command(BaseCommand):
         profile.allowed_companies.add(company)
         profile.save(update_fields=["role", "updated_at"])
 
-        site, _ = Site.objects.get_or_create(
-            company=company,
-            name="Main Site",
-            defaults={
-                "address": company.address or f"{county} Industrial Estate, {county}, Ireland",
-            },
-        )
+        sites = []
+        base_address = company.address or f"{county} Industrial Estate, {county}, Ireland"
+        for site_idx, (site_name, suffix) in enumerate(SITE_TEMPLATES, start=1):
+            site, _ = Site.objects.get_or_create(
+                company=company,
+                name=site_name,
+                defaults={
+                    "address": f"{base_address} - {suffix}",
+                },
+            )
+            sites.append(site)
 
-        return company, user, site
+        return company, user, sites
 
-    def _create_equipment_and_reports(self, company, site, customer_user, company_idx):
-        # 5 report patterns to cycle across equipment: approved, approved, submitted, draft, approved+worn
+    def _create_equipment_and_reports(self, company, sites, customer_user, company_idx):
+        # Patterns cover approved/submitted/draft plus mixed and not-presented checklist scenarios.
         report_plan = [
             # (status, count)
             [("approved", 1), ("approved", 2)],
             [("approved", 1), ("submitted", 2)],
             [("approved", 1), ("approved", 2), ("draft", 3)],
-            [("approved", 1), ("approved", 2), ("approved", 3)],
-            [("approved", 1), ("submitted", 2)],
+            [("approved", 1), ("approved", 4), ("approved", 2)],
+            [("approved", 5), ("submitted", 2)],
+            [("approved", 1), ("approved", 3), ("approved", 2)],
         ]
 
         for eq_idx, (eq_name, eq_type, eq_prefix) in enumerate(EQUIPMENT_TEMPLATES, start=1):
             asset_tag = f"{eq_prefix}-{company_idx:02d}{eq_idx:02d}"
             serial = f"SN{company_idx:02d}{eq_idx:04d}"
+            site = sites[(eq_idx - 1) % len(sites)]
 
             last_inspected = _random_date_past(18)
             interval = random.choice([180, 365, 730])
             next_due = last_inspected + timedelta(days=interval)
+
+            if eq_idx % 12 == 0:
+                equipment_status = Equipment.STATUS_DECOMMISSIONED
+                decommissioned_at = date.today() - timedelta(days=random.randint(15, 180))
+            elif eq_idx % 7 == 0:
+                equipment_status = Equipment.STATUS_INACTIVE
+                decommissioned_at = None
+            else:
+                equipment_status = Equipment.STATUS_ACTIVE
+                decommissioned_at = None
 
             eq, _ = Equipment.objects.get_or_create(
                 company=company,
@@ -419,19 +523,22 @@ class Command(BaseCommand):
                     "site": site,
                     "name": eq_name,
                     "serial_number": serial,
-                    "safe_working_load": random.choice(["500 kg", "1000 kg", "2000 kg", "3.2 t"]),
-                    "location": f"Bay {eq_idx}, {company.address.split(',')[0]}",
-                    "status": Equipment.STATUS_ACTIVE,
+                    "safe_working_load": random.choice(SAFE_WORKING_LOAD_BY_TYPE.get(eq_type, ["1 t", "2 t"])),
+                    "location": f"{site.name} - Bay {eq_idx}",
+                    "status": equipment_status,
                     "inspection_interval_days": interval,
                     "last_inspected_at": last_inspected,
                     "next_inspection_due": next_due,
+                    "decommissioned_at": decommissioned_at,
                     "notes": f"Demo equipment — {eq_type} class asset.",
                 },
             )
 
-            if eq.site_id != site.id:
+            if eq.site_id != site.id or eq.safe_working_load == "Not Recorded":
                 eq.site = site
-                eq.save(update_fields=["site", "updated_at"])
+                if eq.safe_working_load == "Not Recorded":
+                    eq.safe_working_load = random.choice(SAFE_WORKING_LOAD_BY_TYPE.get(eq_type, ["1 t", "2 t"]))
+                eq.save(update_fields=["site", "safe_working_load", "updated_at"])
 
             plan = report_plan[eq_idx % len(report_plan)]
             for report_status, report_num in plan:
