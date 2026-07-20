@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { Navigate, useNavigate, useSearchParams } from 'react-router-dom'
+import { Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import CustomerListSection from '../components/CustomerListSection'
 import EmployeeControlsSection from '../components/EmployeeControlsSection'
@@ -1215,7 +1215,10 @@ export default function PortalDashboardPage() {
   })
 
   const navigate = useNavigate()
+  const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
+  const loginRedirectPath = `/portal${String(location.search || '')}`
+  const loginRedirectState = { redirectTo: loginRedirectPath }
   const queryClient = useQueryClient()
   const initialSearchQuery = String(searchParams.get('q') || '').trim()
   const initialReportYearFilter = String(searchParams.get('reportYear') || '').trim()
@@ -3982,7 +3985,7 @@ export default function PortalDashboardPage() {
 
         if (Number(error?.status || 0) === 401) {
           clearPortalSession()
-          navigate('/portal/login', { replace: true })
+          navigate('/portal/login', { replace: true, state: loginRedirectState })
           return
         }
 
@@ -5064,7 +5067,7 @@ export default function PortalDashboardPage() {
   }
 
   if (!isAuthenticated) {
-    return <Navigate to="/portal/login" replace />
+    return <Navigate to="/portal/login" state={loginRedirectState} replace />
   }
 
   return (

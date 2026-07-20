@@ -4,6 +4,16 @@ import PortalLayout from '../components/PortalLayout'
 import { clearPortalSession, hasPortalSession, portalLogin } from '../utils/portalApi'
 import usePageMeta from '../utils/usePageMeta'
 
+function resolvePortalRedirectPath(location) {
+  const stateRedirect = String(location?.state?.redirectTo || '').trim()
+  if (stateRedirect.startsWith('/portal')) return stateRedirect
+
+  const currentSearch = String(location?.search || '').trim()
+  if (currentSearch) return `/portal${currentSearch}`
+
+  return '/portal'
+}
+
 export default function PortalLoginPage() {
   usePageMeta({
     title: 'Portal Login',
@@ -13,6 +23,7 @@ export default function PortalLoginPage() {
 
   const navigate = useNavigate()
   const location = useLocation()
+  const redirectPath = resolvePortalRedirectPath(location)
   const sessionExpired = Boolean(location.state?.sessionExpired)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -33,7 +44,7 @@ export default function PortalLoginPage() {
   }, [sessionExpired])
 
   if (!sessionExpired && hasPortalSession()) {
-    return <Navigate to="/portal" replace />
+    return <Navigate to={redirectPath} replace />
   }
 
   async function onSubmit(event) {
@@ -45,7 +56,7 @@ export default function PortalLoginPage() {
 
     try {
       await portalLogin(username.trim(), password)
-      navigate('/portal', { replace: true })
+      navigate(redirectPath, { replace: true })
     } catch (error) {
       setErrorMessage(String(error?.message || 'Login failed. Please try again.'))
     } finally {

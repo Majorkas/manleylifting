@@ -22,6 +22,7 @@ function renderLoginPage(initialEntries = ['/portal/login']) {
       <Routes>
         <Route path="/portal/login" element={<PortalLoginPage />} />
         <Route path="/portal" element={<div>Portal Home</div>} />
+        <Route path="/portal/*" element={<div>Portal Home</div>} />
       </Routes>
     </MemoryRouter>,
   )
@@ -36,6 +37,14 @@ describe('PortalLoginPage', () => {
     hasPortalSession.mockReturnValue(true)
 
     renderLoginPage()
+
+    expect(screen.getByText('Portal Home')).toBeInTheDocument()
+  })
+
+  it('redirects authenticated users to preserved deep link target when present', () => {
+    hasPortalSession.mockReturnValue(true)
+
+    renderLoginPage([{ pathname: '/portal/login', state: { redirectTo: '/portal?companyId=1&eqId=101' } }])
 
     expect(screen.getByText('Portal Home')).toBeInTheDocument()
   })
@@ -71,6 +80,20 @@ describe('PortalLoginPage', () => {
     await user.click(screen.getByRole('button', { name: 'Sign In' }))
 
     expect(portalLogin).toHaveBeenCalledWith('DemoUser', 'testpass123')
+  })
+
+  it('navigates to preserved redirect target after successful login', async () => {
+    hasPortalSession.mockReturnValue(false)
+    portalLogin.mockResolvedValue({})
+    const user = userEvent.setup()
+
+    renderLoginPage([{ pathname: '/portal/login', state: { redirectTo: '/portal?companyId=1&eqId=101' } }])
+
+    await user.type(screen.getByRole('textbox', { name: 'Username' }), 'demo_owner')
+    await user.type(screen.getByLabelText('Password'), 'DemoPass!234')
+    await user.click(screen.getByRole('button', { name: 'Sign In' }))
+
+    expect(await screen.findByText('Portal Home')).toBeInTheDocument()
   })
 
   it('toggles password visibility', async () => {
