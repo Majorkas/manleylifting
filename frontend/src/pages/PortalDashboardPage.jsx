@@ -1219,6 +1219,7 @@ export default function PortalDashboardPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const loginRedirectPath = `/portal${String(location.search || '')}`
   const loginRedirectState = { redirectTo: loginRedirectPath }
+  const loginRedirectQuery = `/portal/login?redirect=${encodeURIComponent(loginRedirectPath)}`
   const queryClient = useQueryClient()
   const initialSearchQuery = String(searchParams.get('q') || '').trim()
   const initialReportYearFilter = String(searchParams.get('reportYear') || '').trim()
@@ -3985,7 +3986,7 @@ export default function PortalDashboardPage() {
 
         if (Number(error?.status || 0) === 401) {
           clearPortalSession()
-          navigate('/portal/login', { replace: true, state: loginRedirectState })
+          navigate(loginRedirectQuery, { replace: true, state: loginRedirectState })
           return
         }
 
@@ -5067,7 +5068,7 @@ export default function PortalDashboardPage() {
   }
 
   if (!isAuthenticated) {
-    return <Navigate to="/portal/login" state={loginRedirectState} replace />
+    return <Navigate to={loginRedirectQuery} state={loginRedirectState} replace />
   }
 
   return (

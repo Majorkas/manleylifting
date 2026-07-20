@@ -84,6 +84,25 @@ if not SECRET_KEY:
 
 DEBUG = env_bool("DJANGO_DEBUG", False)
 
+DEFAULT_DEV_FRONTEND_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://localhost:5175",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+    "http://127.0.0.1:5175",
+]
+
+DEFAULT_PROD_FRONTEND_ORIGINS = [
+    "https://manleylifting.onrender.com",
+    "https://manleylifting.ie",
+    "https://www.manleylifting.ie",
+]
+
+DEFAULT_FRONTEND_ORIGINS = (
+    DEFAULT_DEV_FRONTEND_ORIGINS if DEBUG else DEFAULT_PROD_FRONTEND_ORIGINS
+)
+
 ALLOWED_HOSTS = env_list(
     "DJANGO_ALLOWED_HOSTS",
     ["localhost", "127.0.0.1"] if DEBUG else [],
@@ -252,26 +271,12 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 CORS_ALLOWED_ORIGINS = env_list(
     "CORS_ALLOWED_ORIGINS",
-    [
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://localhost:5175",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "http://127.0.0.1:5175",
-    ],
+    DEFAULT_FRONTEND_ORIGINS,
 )
 
 CSRF_TRUSTED_ORIGINS = env_list(
     "CSRF_TRUSTED_ORIGINS",
-    [
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://localhost:5175",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-        "http://127.0.0.1:5175",
-    ],
+    DEFAULT_FRONTEND_ORIGINS,
 )
 
 CORS_ALLOW_CREDENTIALS = True

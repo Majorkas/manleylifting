@@ -49,6 +49,14 @@ describe('PortalLoginPage', () => {
     expect(screen.getByText('Portal Home')).toBeInTheDocument()
   })
 
+  it('redirects authenticated users using redirect query parameter when present', () => {
+    hasPortalSession.mockReturnValue(true)
+
+    renderLoginPage(['/portal/login?redirect=%2Fportal%3FcompanyId%3D1%26eqId%3D101'])
+
+    expect(screen.getByText('Portal Home')).toBeInTheDocument()
+  })
+
   it('shows the login form for signed-out users', () => {
     hasPortalSession.mockReturnValue(false)
 
@@ -88,6 +96,20 @@ describe('PortalLoginPage', () => {
     const user = userEvent.setup()
 
     renderLoginPage([{ pathname: '/portal/login', state: { redirectTo: '/portal?companyId=1&eqId=101' } }])
+
+    await user.type(screen.getByRole('textbox', { name: 'Username' }), 'demo_owner')
+    await user.type(screen.getByLabelText('Password'), 'DemoPass!234')
+    await user.click(screen.getByRole('button', { name: 'Sign In' }))
+
+    expect(await screen.findByText('Portal Home')).toBeInTheDocument()
+  })
+
+  it('navigates to redirect query target after successful login', async () => {
+    hasPortalSession.mockReturnValue(false)
+    portalLogin.mockResolvedValue({})
+    const user = userEvent.setup()
+
+    renderLoginPage(['/portal/login?redirect=%2Fportal%3FcompanyId%3D1%26eqId%3D101'])
 
     await user.type(screen.getByRole('textbox', { name: 'Username' }), 'demo_owner')
     await user.type(screen.getByLabelText('Password'), 'DemoPass!234')

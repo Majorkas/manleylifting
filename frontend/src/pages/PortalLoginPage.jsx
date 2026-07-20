@@ -5,11 +5,15 @@ import { clearPortalSession, hasPortalSession, portalLogin } from '../utils/port
 import usePageMeta from '../utils/usePageMeta'
 
 function resolvePortalRedirectPath(location) {
+  const queryParams = new URLSearchParams(String(location?.search || ''))
+  const queryRedirect = String(queryParams.get('redirect') || '').trim()
+  if (queryRedirect.startsWith('/portal')) return queryRedirect
+
   const stateRedirect = String(location?.state?.redirectTo || '').trim()
   if (stateRedirect.startsWith('/portal')) return stateRedirect
 
   const currentSearch = String(location?.search || '').trim()
-  if (currentSearch) return `/portal${currentSearch}`
+  if (currentSearch && !currentSearch.startsWith('?redirect=')) return `/portal${currentSearch}`
 
   return '/portal'
 }

@@ -1,6 +1,45 @@
 const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').trim()
-const defaultApiBaseUrl = import.meta.env.PROD ? '/api' : 'http://localhost:8000/api'
-const apiBaseUrl = (configuredApiBaseUrl || defaultApiBaseUrl).replace(/\/+$/, '')
+
+function alignDevApiBaseUrl(configuredBaseUrl) {
+  const trimmed = String(configuredBaseUrl || '').trim()
+  if (!trimmed || typeof window === 'undefined') return trimmed
+
+  // Relative API paths are already same-site in dev and prod.
+  if (trimmed.startsWith('/')) return trimmed
+
+  try {
+    const parsed = new URL(trimmed)
+    const appHost = String(window.location.hostname || '').trim()
+    const apiHost = String(parsed.hostname || '').trim()
+
+    const isLocalAliasPair =
+      (apiHost === 'localhost' && appHost === '127.0.0.1') ||
+      (apiHost === '127.0.0.1' && appHost === 'localhost')
+
+    if (isLocalAliasPair) {
+      parsed.hostname = appHost
+      return parsed.toString()
+    }
+
+    return trimmed
+  } catch {
+    return trimmed
+  }
+}
+
+function resolveDevApiBaseUrl() {
+  if (typeof window === 'undefined') return 'http://localhost:8000/api'
+
+  const protocol = String(window.location.protocol || 'http:')
+  const hostname = String(window.location.hostname || 'localhost')
+  return `${protocol}//${hostname}:8000/api`
+}
+
+const defaultApiBaseUrl = import.meta.env.PROD ? '/api' : resolveDevApiBaseUrl()
+const effectiveConfiguredApiBaseUrl = import.meta.env.PROD
+  ? configuredApiBaseUrl
+  : alignDevApiBaseUrl(configuredApiBaseUrl)
+const apiBaseUrl = (effectiveConfiguredApiBaseUrl || defaultApiBaseUrl).replace(/\/+$/, '')
 
 const SESSION_FLAG_KEY = 'manley-portal-session-v1'
 let accessTokenMemory = ''
