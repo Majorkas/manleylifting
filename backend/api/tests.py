@@ -1,10 +1,12 @@
 import json
-from io import BytesIO
+from io import BytesIO, StringIO
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import Client, TestCase, override_settings
 from datetime import date
 from PIL import Image
@@ -75,6 +77,70 @@ class BaseApiTestCase(TestCase):
             },
         )
         self.client = Client()
+
+
+class IdentityEmailAuditCommandTests(TestCase):
+    def test_audit_passes_for_unique_canonical_emails(self):
+        user_model = get_user_model()
+        user_model.objects.create_user(
+            username="first-user",
+            email="first@example.com",
+        )
+        user_model.objects.create_user(
+            username="second-user",
+            email="second@example.com",
+        )
+        stdout = StringIO()
+
+        call_command("audit_identity_emails", stdout=stdout)
+
+        output = stdout.getvalue()
+        self.assertIn("Audited 2 user account(s).", output)
+        self.assertIn("Email identity audit passed.", output)
+
+    def test_audit_fails_without_disclosing_or_mutating_email_values(self):
+        user_model = get_user_model()
+        missing_user = user_model.objects.create_user(username="missing-email")
+        invalid_user = user_model.objects.create_user(
+            username="invalid-email",
+            email="not-an-email",
+        )
+        noncanonical_user = user_model.objects.create_user(
+            username="noncanonical-email",
+            email="person@example.com",
+        )
+        user_model.objects.filter(pk=noncanonical_user.pk).update(
+            email=" Person@Example.com "
+        )
+        noncanonical_user.refresh_from_db()
+        stored_noncanonical_email = noncanonical_user.email
+        duplicate_user = user_model.objects.create_user(
+            username="duplicate-email",
+            email="person@example.com",
+        )
+        stdout = StringIO()
+
+        with self.assertRaisesMessage(CommandError, "Email identity audit failed"):
+            call_command("audit_identity_emails", stdout=stdout)
+
+        output = stdout.getvalue()
+        self.assertIn("Missing email: 1", output)
+        self.assertIn(f"user_id={missing_user.pk} username='missing-email'", output)
+        self.assertIn("Invalid email: 1", output)
+        self.assertIn(f"user_id={invalid_user.pk} username='invalid-email'", output)
+        self.assertIn("Non-canonical email: 1", output)
+        self.assertIn(
+            f"user_id={noncanonical_user.pk} username='noncanonical-email'",
+            output,
+        )
+        self.assertIn("Duplicate email groups: 1", output)
+        self.assertIn(f"user_id={duplicate_user.pk} username='duplicate-email'", output)
+        self.assertNotIn("not-an-email", output)
+        self.assertNotIn("Person@Example.com", output)
+        self.assertNotIn("person@example.com", output)
+
+        noncanonical_user.refresh_from_db()
+        self.assertEqual(noncanonical_user.email, stored_noncanonical_email)
 
 
 class ApiBasicEndpointTests(BaseApiTestCase):
