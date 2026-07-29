@@ -7,6 +7,7 @@ from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.db import IntegrityError, transaction
 from django.test import Client, TestCase, override_settings
 from django.utils import timezone
 from datetime import date
@@ -100,50 +101,103 @@ class IdentityEmailAuditCommandTests(TestCase):
         self.assertIn("Audited 2 user account(s).", output)
         self.assertIn("Email identity audit passed.", output)
 
-    def test_audit_fails_without_disclosing_or_mutating_email_values(self):
-        user_model = get_user_model()
-        missing_user = user_model.objects.create_user(username="missing-email")
-        invalid_user = user_model.objects.create_user(
-            username="invalid-email",
-            email="not-an-email",
-        )
-        noncanonical_user = user_model.objects.create_user(
-            username="noncanonical-email",
-            email="person@example.com",
-        )
-        user_model.objects.filter(pk=noncanonical_user.pk).update(
-            email=" Person@Example.com "
-        )
-        noncanonical_user.refresh_from_db()
-        stored_noncanonical_email = noncanonical_user.email
-        duplicate_user = user_model.objects.create_user(
-            username="duplicate-email",
-            email="person@example.com",
-        )
+    def test_audit_fails_without_disclosing_email_values(self):
+        class FakeUsers:
+            def order_by(self, *args):
+                return self
+
+            def values(self, *args):
+                return self
+
+            def iterator(self):
+                return iter(
+                    [
+                        {"pk": 1, "username": "missing-email", "email": ""},
+                        {"pk": 2, "username": "invalid-email", "email": "not-an-email"},
+                        {
+                            "pk": 3,
+                            "username": "noncanonical-email",
+                            "email": " Person@Example.com ",
+                        },
+                        {
+                            "pk": 4,
+                            "username": "duplicate-email",
+                            "email": "person@example.com",
+                        },
+                    ]
+                )
+
+        class FakeUserModel:
+            objects = FakeUsers()
+
         stdout = StringIO()
 
-        with self.assertRaisesMessage(CommandError, "Email identity audit failed"):
-            call_command("audit_identity_emails", stdout=stdout)
+        with patch(
+            "api.management.commands.audit_identity_emails.get_user_model",
+            return_value=FakeUserModel,
+        ):
+            with self.assertRaisesMessage(CommandError, "Email identity audit failed"):
+                call_command("audit_identity_emails", stdout=stdout)
 
         output = stdout.getvalue()
         self.assertIn("Missing email: 1", output)
-        self.assertIn(f"user_id={missing_user.pk} username='missing-email'", output)
+        self.assertIn("user_id=1 username='missing-email'", output)
         self.assertIn("Invalid email: 1", output)
-        self.assertIn(f"user_id={invalid_user.pk} username='invalid-email'", output)
+        self.assertIn("user_id=2 username='invalid-email'", output)
         self.assertIn("Non-canonical email: 1", output)
-        self.assertIn(
-            f"user_id={noncanonical_user.pk} username='noncanonical-email'",
-            output,
-        )
+        self.assertIn("user_id=3 username='noncanonical-email'", output)
         self.assertIn("Duplicate email groups: 1", output)
-        self.assertIn(f"user_id={duplicate_user.pk} username='duplicate-email'", output)
+        self.assertIn("user_id=4 username='duplicate-email'", output)
         self.assertNotIn("not-an-email", output)
         self.assertNotIn("Person@Example.com", output)
         self.assertNotIn("person@example.com", output)
 
-        noncanonical_user.refresh_from_db()
-        self.assertEqual(noncanonical_user.email, stored_noncanonical_email)
+    def test_audit_does_not_mutate_noncanonical_email(self):
+        user_model = get_user_model()
+        user = user_model.objects.create_user(
+            username="noncanonical-email",
+            email="unique@example.com",
+        )
+        user_model.objects.filter(pk=user.pk).update(email=" Unique@Example.com ")
+        user.refresh_from_db()
+        stored_email = user.email
 
+        with self.assertRaisesMessage(CommandError, "Email identity audit failed"):
+            call_command("audit_identity_emails", stdout=StringIO())
+
+        user.refresh_from_db()
+        self.assertEqual(user.email, stored_email)
+
+
+class IdentityEmailConstraintTests(TestCase):
+    def test_normalized_email_collision_is_rejected_by_database(self):
+        user_model = get_user_model()
+        user_model.objects.create_user(
+            username="first-identity",
+            email="person@example.com",
+        )
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                user_model.objects.create_user(
+                    username="second-identity",
+                    email=" Person@Example.com ",
+                )
+
+    @patch.dict(
+        "os.environ",
+        {
+            "OWNER_USERNAME": "StoreOwner",
+            "OWNER_EMAIL": " Owner@Example.com ",
+            "OWNER_PASSWORD": "owner-password-123",
+        },
+        clear=True,
+    )
+    def test_owner_bootstrap_normalizes_identity_email(self):
+        call_command("create_owner_from_env", stdout=StringIO())
+
+        user = get_user_model().objects.get(username="storeowner")
+        self.assertEqual(user.email, "owner@example.com")
 
 class CommerceCustomerProfileTests(TestCase):
     def test_commerce_profile_lifecycle_does_not_grant_portal_access(self):

@@ -19,7 +19,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         username = os.getenv("OWNER_USERNAME", "").strip().lower()
-        email = os.getenv("OWNER_EMAIL", "").strip()
+        email = os.getenv("OWNER_EMAIL", "").strip().lower()
         password = os.getenv("OWNER_PASSWORD", "").strip()
         first_name = os.getenv("OWNER_FIRST_NAME", "").strip()
         last_name = os.getenv("OWNER_LAST_NAME", "").strip()
