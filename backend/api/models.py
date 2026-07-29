@@ -200,6 +200,25 @@ class UserProfile(models.Model):
         return f"{self.user.username} ({self.role})"
 
 
+class CommerceCustomerProfile(models.Model):
+    user = models.OneToOneField(
+        "auth.User",
+        on_delete=models.CASCADE,
+        related_name="commerce_profile",
+    )
+    email_verified_at = models.DateTimeField(null=True, blank=True)
+    disabled_at = models.DateTimeField(null=True, blank=True)
+    anonymized_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["user__id"]
+
+    def __str__(self):
+        return f"Commerce profile for {self.user.username}"
+
+
 class Equipment(models.Model):
     STATUS_ACTIVE = "active"
     STATUS_INACTIVE = "inactive"

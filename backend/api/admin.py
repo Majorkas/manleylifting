@@ -5,6 +5,7 @@ from .models import (
 	CatalogCollection,
 	CatalogProduct,
 	Certificate,
+	CommerceCustomerProfile,
 	Company,
 	Equipment,
 	InspectionReport,
@@ -50,6 +51,25 @@ class UserProfileAdmin(admin.ModelAdmin):
 	list_filter = ("role",)
 	search_fields = ("user__username", "user__email")
 	filter_horizontal = ("allowed_companies",)
+
+
+@admin.register(CommerceCustomerProfile)
+class CommerceCustomerProfileAdmin(admin.ModelAdmin):
+	list_display = (
+		"user",
+		"email_verified_at",
+		"disabled_at",
+		"anonymized_at",
+		"updated_at",
+	)
+	search_fields = ("user__username", "user__email")
+	readonly_fields = (
+		"email_verified_at",
+		"disabled_at",
+		"anonymized_at",
+		"created_at",
+		"updated_at",
+	)
 
 
 @admin.register(Equipment)

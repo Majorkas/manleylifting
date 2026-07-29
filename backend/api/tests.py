@@ -8,6 +8,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import Client, TestCase, override_settings
+from django.utils import timezone
 from datetime import date
 from PIL import Image
 from rest_framework.throttling import ScopedRateThrottle
@@ -19,6 +20,7 @@ from .models import (
     CatalogCollection,
     CatalogProduct,
     Certificate,
+    CommerceCustomerProfile,
     Company,
     Equipment,
     InspectionReport,
@@ -141,6 +143,41 @@ class IdentityEmailAuditCommandTests(TestCase):
 
         noncanonical_user.refresh_from_db()
         self.assertEqual(noncanonical_user.email, stored_noncanonical_email)
+
+
+class CommerceCustomerProfileTests(TestCase):
+    def test_commerce_profile_lifecycle_does_not_grant_portal_access(self):
+        user = get_user_model().objects.create_user(
+            username="commerce-customer",
+            email="commerce-customer@example.com",
+            password="commercepass123",
+        )
+        verified_at = timezone.now()
+        profile = CommerceCustomerProfile.objects.create(
+            user=user,
+            email_verified_at=verified_at,
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        response = client.get("/api/portal/me/")
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(profile.email_verified_at, verified_at)
+        self.assertIsNone(profile.disabled_at)
+        self.assertIsNone(profile.anonymized_at)
+        self.assertFalse(UserProfile.objects.filter(user=user).exists())
+
+    def test_portal_profile_does_not_implicitly_create_commerce_profile(self):
+        user = get_user_model().objects.create_user(
+            username="portal-customer",
+            email="portal-customer@example.com",
+            password="portalpass123",
+        )
+
+        UserProfile.objects.create(user=user, role=UserProfile.ROLE_CUSTOMER)
+
+        self.assertFalse(CommerceCustomerProfile.objects.filter(user=user).exists())
 
 
 class ApiBasicEndpointTests(BaseApiTestCase):
