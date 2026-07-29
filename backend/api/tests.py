@@ -883,6 +883,128 @@ class CommerceCustomerProfileTests(TestCase):
         self.assertFalse(profile.has_verified_email())
 
 
+class AccountBootstrapTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="shared-account",
+            email="shared-account@example.com",
+            first_name="Shared",
+            last_name="Customer",
+            password="shared-account-password",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_returns_minimal_identity_and_independent_capabilities(self):
+        UserProfile.objects.create(user=self.user, role=UserProfile.ROLE_OWNER)
+        CommerceCustomerProfile.objects.create(
+            user=self.user,
+            verified_email=self.user.email,
+            email_verified_at=timezone.now(),
+        )
+
+        response = self.client.get("/api/account/bootstrap/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "username": "shared-account",
+                "email": "shared-account@example.com",
+                "full_name": "Shared Customer",
+                "email_verified": True,
+                "capabilities": {
+                    "can_shop": True,
+                    "can_view_orders": True,
+                    "can_access_portal": True,
+                },
+            },
+        )
+
+    def test_commerce_profile_does_not_grant_portal_capability(self):
+        CommerceCustomerProfile.objects.create(
+            user=self.user,
+            verified_email=self.user.email,
+            email_verified_at=timezone.now(),
+        )
+
+        response = self.client.get("/api/account/bootstrap/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["capabilities"],
+            {
+                "can_shop": True,
+                "can_view_orders": True,
+                "can_access_portal": False,
+            },
+        )
+
+    def test_portal_profile_does_not_create_or_grant_commerce_capabilities(self):
+        UserProfile.objects.create(user=self.user, role=UserProfile.ROLE_CUSTOMER)
+
+        response = self.client.get("/api/account/bootstrap/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()["capabilities"],
+            {
+                "can_shop": False,
+                "can_view_orders": False,
+                "can_access_portal": True,
+            },
+        )
+        self.assertFalse(CommerceCustomerProfile.objects.filter(user=self.user).exists())
+
+    def test_unverified_disabled_or_anonymized_commerce_profile_has_no_capabilities(self):
+        profile = CommerceCustomerProfile.objects.create(user=self.user)
+
+        for changes, expected_email_verified in (
+            ({}, False),
+            ({
+                "verified_email": self.user.email,
+                "email_verified_at": timezone.now(),
+                "disabled_at": timezone.now(),
+            }, True),
+            ({
+                "disabled_at": None,
+                "anonymized_at": timezone.now(),
+            }, True),
+        ):
+            for field, value in changes.items():
+                setattr(profile, field, value)
+            profile.save()
+
+            response = self.client.get("/api/account/bootstrap/")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["email_verified"], expected_email_verified)
+            self.assertFalse(response.json()["capabilities"]["can_shop"])
+            self.assertFalse(response.json()["capabilities"]["can_view_orders"])
+
+    def test_read_does_not_create_authorization_state(self):
+        response = self.client.get("/api/account/bootstrap/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(UserProfile.objects.filter(user=self.user).exists())
+        self.assertFalse(CommerceCustomerProfile.objects.filter(user=self.user).exists())
+        self.assertEqual(
+            response.json()["capabilities"],
+            {
+                "can_shop": False,
+                "can_view_orders": False,
+                "can_access_portal": False,
+            },
+        )
+
+    def test_requires_authentication(self):
+        self.client.force_authenticate(user=None)
+
+        response = self.client.get("/api/account/bootstrap/")
+
+        self.assertEqual(response.status_code, 401)
+
+
 class ApiBasicEndpointTests(BaseApiTestCase):
     def test_hello_endpoint(self):
         response = self.client.get("/api/hello/")

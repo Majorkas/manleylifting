@@ -208,7 +208,7 @@ Create migrations before building operational screens.
 - [ ] **P0** Add public registration for commerce-only accounts using email, password, terms/privacy acceptance, Turnstile, throttling, and verified-email activation.
 - [ ] **P0** Prevent registration from creating a duplicate identity when the email belongs to an existing portal account. Return a generic response and direct the legitimate owner through login or password recovery.
 - [ ] **P0** Use the existing case-insensitive portal credentials for current portal customers and allow verified-email login only after duplicate-email cleanup.
-- [ ] **P0** Build one account/session bootstrap endpoint that returns minimal profile data and explicit capabilities such as `can_shop`, `can_view_orders`, and `can_access_portal`; do not send authorization data the user does not need.
+- [x] **P0** Build one account/session bootstrap endpoint that returns minimal profile data and explicit capabilities such as `can_shop`, `can_view_orders`, and `can_access_portal`; do not send authorization data the user does not need.
 - [ ] **P0** Ensure commerce-only accounts receive `403` from every company/equipment/report/certificate/staff endpoint even if they manually call the API.
 - [ ] **P0** Add verified email activation, resend verification, forgot password, reset password, change password, change email/reverify, logout, logout-all-sessions, and account disable/delete flows.
 - [ ] **P0** Preserve a validated internal redirect through login/verification/reset so QR equipment links, checkout returns, and order-history links return to the requested page. Reject external/open redirects.

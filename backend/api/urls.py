@@ -1,5 +1,6 @@
 from django.urls import path
 
+from .account_views import account_bootstrap
 from .auth_views import PortalTokenObtainPairView, PortalTokenRefreshView
 from .portal_views import (
     portal_create_customer,
@@ -41,6 +42,7 @@ from .views import (
 )
 
 urlpatterns = [
+    path("account/bootstrap/", account_bootstrap, name="account_bootstrap"),
     path("auth/token/", PortalTokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("auth/token/refresh/", PortalTokenRefreshView.as_view(), name="token_refresh"),
     path("auth/logout/", portal_logout),

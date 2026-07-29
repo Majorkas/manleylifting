@@ -421,6 +421,20 @@ class PortalMeSerializer(serializers.Serializer):
     required_password_change = serializers.BooleanField()
 
 
+class AccountCapabilitiesSerializer(serializers.Serializer):
+    can_shop = serializers.BooleanField()
+    can_view_orders = serializers.BooleanField()
+    can_access_portal = serializers.BooleanField()
+
+
+class AccountBootstrapSerializer(serializers.Serializer):
+    username = serializers.CharField()
+    email = serializers.EmailField(allow_blank=True)
+    full_name = serializers.CharField(allow_blank=True)
+    email_verified = serializers.BooleanField()
+    capabilities = AccountCapabilitiesSerializer()
+
+
 class PortalChangePasswordSerializer(serializers.Serializer):
     current_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
     new_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
