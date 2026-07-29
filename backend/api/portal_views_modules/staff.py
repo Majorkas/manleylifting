@@ -7,6 +7,7 @@ from rest_framework.response import Response
 
 from ..audit import log_portal_audit_event
 from ..models import Company, UserProfile
+from ..permissions import HasPortalAccess
 from ..portal_views import (
     _get_pagination_params,
     _is_employee_role,
@@ -25,7 +26,7 @@ from ..throttles import PortalMethodRateThrottle
 
 
 @api_view(["GET", "POST", "PATCH", "DELETE"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_staff_assignments(request):
     if not _is_owner(request.user):

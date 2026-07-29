@@ -7,6 +7,7 @@ from rest_framework.response import Response
 
 from ..audit import log_portal_audit_event
 from ..models import AuditLog, Company, Equipment, InspectionReport, Site
+from ..permissions import HasPortalAccess
 from ..portal_views import (
     _get_or_create_default_site,
     _is_owner,
@@ -20,7 +21,7 @@ from ..throttles import PortalMethodRateThrottle
 
 
 @api_view(["GET", "POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_company_sites(request):
     company_id_raw = request.GET.get("companyId") if request.method == "GET" else request.data.get("company_id")
@@ -64,7 +65,7 @@ def portal_company_sites(request):
 
 
 @api_view(["PATCH", "DELETE"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_company_site_detail(request, site_id):
     site = Site.objects.select_related("company").filter(id=site_id).first()
@@ -112,7 +113,7 @@ def portal_company_site_detail(request, site_id):
 
 
 @api_view(["GET", "POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_equipment_list(request):
     if request.method == "POST":
@@ -212,7 +213,7 @@ def portal_equipment_list(request):
 
 
 @api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_equipment_update(request, equipment_id):
     equipment = Equipment.objects.select_related("company", "site").filter(id=equipment_id).first()
@@ -251,7 +252,7 @@ def portal_equipment_update(request, equipment_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_equipment_activity(request, equipment_id):
     equipment = Equipment.objects.select_related("company", "site").filter(id=equipment_id).first()

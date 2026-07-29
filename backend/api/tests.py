@@ -529,6 +529,62 @@ class PortalRBACTests(TestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 429)
 
+    def test_commerce_only_user_is_denied_by_every_portal_route(self):
+        commerce_user = get_user_model().objects.create_user(
+            username="commerce-only",
+            email="commerce-only@example.com",
+            password="commercepass123",
+        )
+        self.client.force_authenticate(user=commerce_user)
+        portal_requests = [
+            ("get", "/api/portal/me/"),
+            ("post", "/api/portal/me/change-password/"),
+            ("get", "/api/portal/companies/"),
+            ("post", "/api/portal/customers/"),
+            ("get", "/api/portal/company-header/"),
+            ("get", "/api/portal/company-sites/"),
+            ("patch", f"/api/portal/company-sites/{self.site_a.id}/"),
+            ("get", "/api/portal/equipment/"),
+            ("patch", f"/api/portal/equipment/{self.equipment_a.id}/"),
+            ("get", f"/api/portal/equipment/{self.equipment_a.id}/activity/"),
+            ("get", f"/api/portal/equipment/{self.equipment_a.id}/reports/"),
+            ("get", "/api/portal/pending-report-approvals/"),
+            ("get", "/api/portal/dashboard-stats/"),
+            ("patch", "/api/portal/reports/999999/"),
+            ("get", "/api/portal/reports/999999/revisions/"),
+            ("post", "/api/portal/reports/999999/recover/"),
+            ("get", f"/api/portal/company-sites/{self.site_a.id}/certificates/"),
+            ("post", f"/api/portal/company-sites/{self.site_a.id}/certificates/generate/"),
+            ("get", f"/api/portal/equipment/{self.equipment_a.id}/certificates/"),
+            ("get", "/api/portal/certificates/999999/download/"),
+            ("delete", "/api/portal/certificates/999999/"),
+            ("post", "/api/portal/certificates/999999/recover/"),
+            ("get", "/api/portal/staff-assignments/"),
+        ]
+
+        for method, url in portal_requests:
+            with self.subTest(method=method, url=url):
+                response = getattr(self.client, method)(url, data={}, format="json")
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(
+                    response.json().get("detail"),
+                    "Portal access is not enabled for this account.",
+                )
+        self.assertFalse(UserProfile.objects.filter(user=commerce_user).exists())
+
+    def test_commerce_only_user_can_logout_without_portal_profile(self):
+        commerce_user = get_user_model().objects.create_user(
+            username="commerce-logout",
+            email="commerce-logout@example.com",
+            password="commercepass123",
+        )
+        self.client.force_authenticate(user=commerce_user)
+
+        response = self.client.post("/api/auth/logout/", data={}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(UserProfile.objects.filter(user=commerce_user).exists())
+
     def test_owner_sees_pending_report_approvals_only(self):
         submitted_a = InspectionReport.objects.create(
             equipment=self.equipment_a,

@@ -16,6 +16,7 @@ from rest_framework.response import Response
 
 from ..audit import log_portal_audit_event
 from ..models import Certificate, Equipment, InspectionReport, Site
+from ..permissions import HasPortalAccess
 from ..portal_views import _is_owner, _is_staff_or_owner, _validate_certificate_upload, _visible_company_ids
 from ..serializers import CertificateSerializer
 from ..throttles import PortalMethodRateThrottle
@@ -834,7 +835,7 @@ def _build_site_certificate_pdf(site, equipment_reports):
 
 
 @api_view(["GET", "POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_equipment_certificates(request, equipment_id):
     equipment = Equipment.objects.select_related("company").filter(id=equipment_id).first()
@@ -903,7 +904,7 @@ def portal_equipment_certificates(request, equipment_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_certificate_download(request, certificate_id):
     certificate = Certificate.objects.select_related("company").filter(id=certificate_id).first()
@@ -924,7 +925,7 @@ def portal_certificate_download(request, certificate_id):
 
 
 @api_view(["DELETE"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_certificate_delete(request, certificate_id):
     certificate = Certificate.objects.select_related("company", "equipment").filter(id=certificate_id).first()
@@ -973,7 +974,7 @@ def portal_certificate_delete(request, certificate_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_certificate_recover(request, certificate_id):
     certificate = Certificate.objects.select_related("company", "equipment").filter(id=certificate_id).first()
@@ -1021,7 +1022,7 @@ def portal_certificate_recover(request, certificate_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_site_certificates_generate(request, site_id):
     site = Site.objects.select_related("company").filter(id=site_id).first()
@@ -1106,7 +1107,7 @@ def portal_site_certificates_generate(request, site_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_site_certificates(request, site_id):
     site = Site.objects.select_related("company").filter(id=site_id).first()

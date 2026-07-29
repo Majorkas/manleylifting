@@ -17,6 +17,7 @@ from django.utils.text import slugify
 from PIL import Image, UnidentifiedImageError
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.exceptions import TokenError
@@ -25,6 +26,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from .auth_cookies import clear_refresh_cookie
 from .models import Company, Equipment, InspectionReport, ReportImage, Site, UserProfile
+from .permissions import HasPortalAccess
 from .serializers import (
     CompanyHeaderSerializer,
     PortalMeSerializer,
@@ -83,10 +85,9 @@ def _cloudinary_is_configured():
 
 
 def _profile_for_user(user):
-    profile, _ = UserProfile.objects.get_or_create(
-        user=user,
-        defaults={"role": UserProfile.ROLE_CUSTOMER},
-    )
+    profile = UserProfile.objects.filter(user=user).first()
+    if profile is None:
+        raise PermissionDenied(HasPortalAccess.message)
     return profile
 
 
@@ -445,7 +446,7 @@ def _refresh_equipment_next_due_from_approved_reports(equipment):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_me(request):
     profile = _profile_for_user(request.user)
@@ -463,7 +464,7 @@ def portal_me(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_change_password(request):
     serializer = PortalChangePasswordSerializer(data=request.data)
@@ -535,7 +536,7 @@ def portal_logout(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_company_header(request):
     company_id = request.GET.get("companyId")
@@ -548,7 +549,7 @@ def portal_company_header(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_companies(request):
     today = timezone.localdate()
@@ -595,7 +596,7 @@ def portal_companies(request):
 
 
 @api_view(["POST", "PATCH"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_create_customer(request):
     if not _is_owner(request.user):

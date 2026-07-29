@@ -10,6 +10,7 @@ from rest_framework.response import Response
 
 from ..audit import log_portal_audit_event
 from ..models import Equipment, InspectionReport, ReportRevision, UserProfile
+from ..permissions import HasPortalAccess
 from ..portal_views import (
     _get_pagination_params,
     _is_engineer,
@@ -41,7 +42,7 @@ REPORT_RECOVERY_WINDOW_DAYS = 3
 
 
 @api_view(["GET", "POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_equipment_reports(request, equipment_id):
     equipment = Equipment.objects.select_related("company").filter(id=equipment_id).first()
@@ -136,7 +137,7 @@ def portal_equipment_reports(request, equipment_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_pending_report_approvals(request):
     if not _is_owner(request.user):
@@ -166,7 +167,7 @@ def portal_pending_report_approvals(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_dashboard_stats(request):
     if not _is_owner(request.user):
@@ -196,7 +197,7 @@ def portal_dashboard_stats(request):
 
 
 @api_view(["PATCH", "DELETE"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_report_owner_edit(request, report_id):
     report = InspectionReport.objects.select_related("equipment__company").filter(id=report_id).first()
@@ -411,7 +412,7 @@ def portal_report_owner_edit(request, report_id):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_report_revisions(request, report_id):
     report = InspectionReport.objects.select_related("equipment__company").filter(id=report_id).first()
@@ -433,7 +434,7 @@ def portal_report_revisions(request, report_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticated, HasPortalAccess])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_report_recover(request, report_id):
     report = InspectionReport.objects.select_related("equipment__company").filter(id=report_id).first()
