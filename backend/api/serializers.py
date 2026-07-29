@@ -3,12 +3,27 @@ from datetime import timedelta
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
+from django.utils import timezone
 import json
 
 from rest_framework import serializers
+from rest_framework.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
+from rest_framework_simplejwt.settings import api_settings
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
+from rest_framework_simplejwt.utils import get_md5_hash_password
 
-from .models import Certificate, Company, Equipment, InspectionReport, ReportImage, ReportRevision, Site, UserProfile
+from .auth_sessions import (
+    SESSION_GENERATION_CLAIM,
+    SESSION_ID_CLAIM,
+    create_account_session,
+    get_user_session_generation,
+    parse_refresh_token,
+    token_has_current_session_generation,
+)
+from .models import AccountSession, Certificate, Company, Equipment, InspectionReport, ReportImage, ReportRevision, Site, UserProfile
 
 REPORT_CHECKLIST_ALLOWED_STATUSES = {
     "good_order",
@@ -507,6 +522,12 @@ class PortalTokenObtainPairSerializer(TokenObtainPairSerializer):
     LOGIN_FAILURE_LIMIT = 5
     LOCKOUT_SECONDS = 15 * 60
 
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        token[SESSION_GENERATION_CLAIM] = get_user_session_generation(user)
+        return token
+
     def _login_failure_cache_key(self, username):
         normalized = str(username or "").strip().lower()
         return f"portal_login_failures:{normalized}"
@@ -545,21 +566,85 @@ class PortalTokenObtainPairSerializer(TokenObtainPairSerializer):
 
         cache.delete(failure_key)
 
-        return super().validate(attrs)
+        with transaction.atomic():
+            data = super().validate(attrs)
+            refresh_token = self.token_class(data["refresh"])
+            create_account_session(user=self.user, refresh_token=refresh_token)
+            data["refresh"] = str(refresh_token)
+            data["access"] = str(refresh_token.access_token)
+            return data
 
 
 class PortalTokenRefreshSerializer(TokenRefreshSerializer):
-    refresh = serializers.CharField(required=False, allow_blank=True)
+    refresh = serializers.CharField(required=False, allow_blank=True, write_only=True)
 
     def validate(self, attrs):
-        refresh = str(attrs.get("refresh") or "").strip()
-        if not refresh:
-            request = self.context.get("request")
-            cookie_name = settings.JWT_REFRESH_COOKIE_NAME
-            refresh = str(getattr(request, "COOKIES", {}).get(cookie_name) or "").strip()
+        request = self.context.get("request")
+        cookie_name = settings.JWT_REFRESH_COOKIE_NAME
+        refresh = str(getattr(request, "COOKIES", {}).get(cookie_name) or "").strip()
 
         if not refresh:
             raise serializers.ValidationError({"detail": "refresh token is required"})
 
-        attrs["refresh"] = refresh
-        return super().validate(attrs)
+        untyped_token = parse_refresh_token(refresh)
+        user_id = untyped_token.get(api_settings.USER_ID_CLAIM)
+        user_model = get_user_model()
+        try:
+            user = user_model.objects.get(
+                **{api_settings.USER_ID_FIELD: user_id}
+            )
+        except (user_model.DoesNotExist, TypeError, ValueError) as error:
+            raise AuthenticationFailed(
+                "Session is no longer valid.",
+                code="session_revoked",
+            ) from error
+
+        session_id = untyped_token.get(SESSION_ID_CLAIM)
+        jti = untyped_token.get(api_settings.JTI_CLAIM)
+        if not session_id or not jti:
+            raise AuthenticationFailed(
+                "Session is no longer valid.",
+                code="session_revoked",
+            )
+
+        with transaction.atomic():
+            try:
+                account_session = AccountSession.objects.select_for_update().filter(
+                    pk=session_id,
+                    user=user,
+                    revoked_at__isnull=True,
+                    expires_at__gt=timezone.now(),
+                ).first()
+            except (TypeError, ValueError, DjangoValidationError):
+                account_session = None
+
+            outstanding_token = OutstandingToken.objects.select_for_update().filter(
+                user=user,
+                jti=jti,
+            ).first()
+            if (
+                account_session is None
+                or outstanding_token is None
+                or BlacklistedToken.objects.filter(token=outstanding_token).exists()
+            ):
+                raise AuthenticationFailed(
+                    "Session is no longer valid.",
+                    code="session_revoked",
+                )
+
+            refresh_token = self.token_class(refresh)
+            password_claim = refresh_token.get(api_settings.REVOKE_TOKEN_CLAIM)
+            if (
+                not token_has_current_session_generation(user, refresh_token)
+                or password_claim != get_md5_hash_password(user.password)
+            ):
+                raise AuthenticationFailed(
+                    "Session is no longer valid.",
+                    code="session_revoked",
+                )
+
+            attrs["refresh"] = refresh
+            data = super().validate(attrs)
+            account_session.last_seen_at = timezone.now()
+            account_session.save(update_fields=["last_seen_at"])
+            return data

@@ -44,9 +44,57 @@ const apiBaseUrl = (effectiveConfiguredApiBaseUrl || defaultApiBaseUrl).replace(
 const SESSION_FLAG_KEY = 'manley-portal-session-v1'
 let accessTokenMemory = ''
 let refreshAccessTokenPromise = null
+let csrfSeedPromise = null
+let csrfTokenMemory = ''
 
 function apiUrl(path) {
   return apiBaseUrl + path
+}
+
+function getCookie(name) {
+  if (typeof document === 'undefined') return ''
+  const prefix = `${encodeURIComponent(name)}=`
+  const cookie = String(document.cookie || '')
+    .split(';')
+    .map((item) => item.trim())
+    .find((item) => item.startsWith(prefix))
+  if (!cookie) return ''
+  return decodeURIComponent(cookie.slice(prefix.length))
+}
+
+async function getCsrfToken() {
+  if (csrfTokenMemory) return csrfTokenMemory
+
+  const existingToken = getCookie('csrftoken')
+  if (existingToken) {
+    csrfTokenMemory = existingToken
+    return csrfTokenMemory
+  }
+
+  if (!csrfSeedPromise) {
+    csrfSeedPromise = (async () => {
+      const path = '/csrf/'
+      const response = await fetch(apiUrl(path), {
+        method: 'GET',
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+      })
+      return parseResponse(response, path)
+    })()
+  }
+
+  let seedResponse
+  try {
+    seedResponse = await csrfSeedPromise
+  } finally {
+    csrfSeedPromise = null
+  }
+
+  csrfTokenMemory = String(seedResponse?.csrf_token || getCookie('csrftoken') || '')
+  if (!csrfTokenMemory) {
+    throw new Error('Unable to establish a secure request token')
+  }
+  return csrfTokenMemory
 }
 
 function parseJsonSafe(raw) {
@@ -289,6 +337,7 @@ export function savePortalAccessToken(accessToken) {
 
 export function clearPortalSession() {
   accessTokenMemory = ''
+  csrfTokenMemory = ''
   if (typeof window === 'undefined') return
   window.localStorage.removeItem(SESSION_FLAG_KEY)
   // Signal session expiry to other parts of the app
@@ -304,12 +353,14 @@ async function refreshAccessToken() {
 
   refreshAccessTokenPromise = (async () => {
     const path = '/auth/token/refresh/'
+    const csrfToken = await getCsrfToken()
     const response = await fetch(apiUrl(path), {
       method: 'POST',
       credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
+        'X-CSRFToken': csrfToken,
       },
       body: JSON.stringify({}),
     })
@@ -391,12 +442,14 @@ async function authFetch(path, options = {}) {
 
 export async function portalLogin(username, password) {
   const path = '/auth/token/'
+  const csrfToken = await getCsrfToken()
   const response = await fetch(apiUrl(path), {
     method: 'POST',
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
+      'X-CSRFToken': csrfToken,
     },
     body: JSON.stringify({ username, password }),
   })

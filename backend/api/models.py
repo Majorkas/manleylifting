@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 
 
@@ -206,6 +208,7 @@ class CommerceCustomerProfile(models.Model):
         on_delete=models.CASCADE,
         related_name="commerce_profile",
     )
+    verified_email = models.EmailField(blank=True, default="")
     email_verified_at = models.DateTimeField(null=True, blank=True)
     disabled_at = models.DateTimeField(null=True, blank=True)
     anonymized_at = models.DateTimeField(null=True, blank=True)
@@ -217,6 +220,84 @@ class CommerceCustomerProfile(models.Model):
 
     def __str__(self):
         return f"Commerce profile for {self.user.username}"
+
+    def has_verified_email(self):
+        current_email = str(self.user.email or "").strip().lower()
+        verified_email = str(self.verified_email or "").strip().lower()
+        return bool(
+            self.email_verified_at
+            and current_email
+            and verified_email
+            and current_email == verified_email
+        )
+
+
+class AccountSecurityState(models.Model):
+    user = models.OneToOneField(
+        "auth.User",
+        on_delete=models.CASCADE,
+        related_name="security_state",
+    )
+    session_generation = models.PositiveBigIntegerField(default=0)
+    sessions_revoked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Security state for user {self.user_id}"
+
+
+class AccountSession(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        "auth.User",
+        on_delete=models.CASCADE,
+        related_name="account_sessions",
+    )
+    expires_at = models.DateTimeField(db_index=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Session {self.id} for user {self.user_id}"
+
+
+class AccountActionToken(models.Model):
+    class Purpose(models.TextChoices):
+        VERIFY_EMAIL = "verify_email", "Verify email"
+        PASSWORD_RESET = "password_reset", "Password reset"
+        EMAIL_CHANGE = "email_change", "Email change"
+
+    user = models.ForeignKey(
+        "auth.User",
+        on_delete=models.CASCADE,
+        related_name="account_action_tokens",
+    )
+    purpose = models.CharField(max_length=32, choices=Purpose.choices)
+    token_digest = models.CharField(max_length=64, unique=True, editable=False)
+    issued_for_email = models.EmailField()
+    target_email = models.EmailField()
+    expires_at = models.DateTimeField(db_index=True)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "purpose"],
+                condition=models.Q(consumed_at__isnull=True, revoked_at__isnull=True),
+                name="unique_active_account_action",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.get_purpose_display()} for user {self.user_id}"
 
 
 class Equipment(models.Model):

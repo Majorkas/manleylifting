@@ -40,7 +40,8 @@ describe('portalApi error messaging', () => {
     })
     clearPortalSession()
     window.localStorage.clear()
-    global.fetch = vi.fn()
+    document.cookie = 'csrftoken=test-csrf-token; path=/'
+    globalThis.fetch = vi.fn()
   })
 
   it('shows generic login message for invalid credentials', async () => {
@@ -48,6 +49,30 @@ describe('portalApi error messaging', () => {
 
     await expect(portalLogin('wrong_user', 'password123')).rejects.toThrow(
       'Username or password is incorrect. Try again.',
+    )
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/auth/token/'),
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'X-CSRFToken': 'test-csrf-token' }),
+      }),
+    )
+  })
+
+  it('uses the CSRF seed response when the API cookie is not readable', async () => {
+    document.cookie = 'csrftoken=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
+    clearPortalSession()
+    fetch
+      .mockResolvedValueOnce(mockJsonResponse(200, { ok: true, csrf_token: 'seeded-csrf-token' }))
+      .mockResolvedValueOnce(mockJsonResponse(200, { access: 'access-token' }))
+
+    await portalLogin('owner', 'password123')
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('/auth/token/'),
+      expect.objectContaining({
+        headers: expect.objectContaining({ 'X-CSRFToken': 'seeded-csrf-token' }),
+      }),
     )
   })
 

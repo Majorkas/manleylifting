@@ -21,10 +21,9 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.exceptions import TokenError
-from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
-from rest_framework_simplejwt.tokens import RefreshToken
 
 from .auth_cookies import clear_refresh_cookie
+from .auth_sessions import SESSION_ID_CLAIM, revoke_account_session, revoke_refresh_session
 from .models import Company, Equipment, InspectionReport, ReportImage, Site, UserProfile
 from .permissions import HasPortalAccess
 from .serializers import (
@@ -162,12 +161,6 @@ def _get_or_create_default_site(company):
     if site:
         return site
     return Site.objects.create(company=company, name="Main Site", address=company.address or "")
-
-
-def _revoke_user_refresh_tokens(user):
-    """Blacklist every outstanding refresh token for a user (e.g. after password change or deactivation)."""
-    for token in OutstandingToken.objects.filter(user=user):
-        BlacklistedToken.objects.get_or_create(token=token)
 
 
 def _validate_certificate_upload(uploaded_file):
@@ -498,16 +491,14 @@ def portal_change_password(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    request.user.set_password(new_password)
-    request.user.save()
+    with transaction.atomic():
+        request.user.set_password(new_password)
+        request.user.save(update_fields=["password"])
 
-    # Invalidate every other session: old refresh tokens must not survive a password change.
-    _revoke_user_refresh_tokens(request.user)
-
-    profile = _profile_for_user(request.user)
-    if profile.required_password_change:
-        profile.required_password_change = False
-        profile.save(update_fields=["required_password_change", "updated_at"])
+        profile = _profile_for_user(request.user)
+        if profile.required_password_change:
+            profile.required_password_change = False
+            profile.save(update_fields=["required_password_change", "updated_at"])
 
     return Response({"ok": True})
 
@@ -516,6 +507,7 @@ def portal_change_password(request):
 @permission_classes([IsAuthenticated])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_logout(request):
+    session_id = request.auth.get(SESSION_ID_CLAIM) if request.auth else None
     refresh = str(
         request.data.get("refresh")
         or request.COOKIES.get(settings.JWT_REFRESH_COOKIE_NAME)
@@ -524,11 +516,18 @@ def portal_logout(request):
 
     if refresh:
         try:
-            token = RefreshToken(refresh)
-            token.blacklist()
+            revoke_refresh_session(
+                raw_token=refresh,
+                user=request.user,
+                expected_session_id=session_id,
+            )
         except TokenError:
             # Logout should stay idempotent even with stale/invalid refresh cookies.
-            pass
+            with transaction.atomic():
+                revoke_account_session(session_id=session_id, user=request.user)
+    else:
+        with transaction.atomic():
+            revoke_account_session(session_id=session_id, user=request.user)
 
     response = Response({"ok": True})
     clear_refresh_cookie(response)

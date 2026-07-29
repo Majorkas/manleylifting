@@ -142,9 +142,9 @@ Complete these decisions before changing models or checkout logic.
 - [ ] **P0** Maintain separate Stripe test and live keys/webhook secrets. Never use live keys in local development or automated tests.
 - [ ] **P0** Set exact production origin allowlists. Do not use wildcard CORS or CSRF origins.
 - [ ] **P0** Require HTTPS, HSTS, secure cookies, and the existing strict host configuration in production.
-- [ ] **P0** Keep the current secure session model: short-lived access token in memory and refresh token in an `HttpOnly`, `Secure` cookie. Never place access or refresh tokens in local storage.
-- [ ] **P0** Use one authentication authority and one Django `User` identity for portal and commerce. Do not create a second password database or duplicate login system.
-- [ ] **P0** Model authorization as independent capabilities. Authentication or commerce registration alone must never imply portal/company access.
+- [x] **P0** Keep the current secure session model: short-lived access token in memory and refresh token in an `HttpOnly`, `Secure` cookie. Never place access or refresh tokens in local storage.
+- [x] **P0** Use one authentication authority and one Django `User` identity for portal and commerce. Do not create a second password database or duplicate login system.
+- [x] **P0** Model authorization as independent capabilities. Authentication or commerce registration alone must never imply portal/company access.
 - [ ] **P0** Prefer a host-only refresh cookie on the API domain and the narrowest viable `SameSite` policy. Do not widen the cookie to every parent-domain subdomain unless a documented requirement and threat review justify it.
 - [ ] **P0** Add strict rate limits and Turnstile to registration, login, verification resend, password reset, email change, and order-claim endpoints.
 - [ ] **P0** Return generic responses for registration, login, verification, and password reset so attackers cannot enumerate existing accounts.
@@ -173,9 +173,9 @@ Complete these decisions before changing models or checkout logic.
 
 Create migrations before building operational screens.
 
-- [ ] **P0** Keep `auth.User` as the single login identity. Keep portal roles/company membership in the portal profile and add a separate one-to-one `CommerceCustomerProfile` for commerce preferences and lifecycle state.
-- [ ] **P0** Do not add `ecommerce_customer` as another mutually exclusive portal role. Portal access must depend on explicit portal profile/capabilities; commerce-only users have no allowed companies or portal permissions.
-- [ ] **P0** Enforce a normalized, case-insensitive unique verified email for commerce accounts after auditing and resolving missing/duplicate emails on existing portal users.
+- [x] **P0** Keep `auth.User` as the single login identity. Keep portal roles/company membership in the portal profile and add a separate one-to-one `CommerceCustomerProfile` for commerce preferences and lifecycle state.
+- [x] **P0** Do not add `ecommerce_customer` as another mutually exclusive portal role. Portal access must depend on explicit portal profile/capabilities; commerce-only users have no allowed companies or portal permissions.
+- [x] **P0** Enforce a normalized, case-insensitive unique verified email for commerce accounts after auditing and resolving missing/duplicate emails on existing portal users.
 - [ ] **P0** Add a `SavedAddress` model owned by the commerce profile with label, recipient, controlled phone, address fields, type/default flags, timestamps, and soft-delete/audit fields.
 - [ ] **P0** Add database constraints so each account has at most one default shipping and one default billing address, and cap the number of active addresses per account.
 - [ ] **P0** Link each order to a nullable authenticated `User`/commerce profile using `SET_NULL` for legally retained orders, while preserving immutable customer and address snapshots.
@@ -202,9 +202,9 @@ Create migrations before building operational screens.
 
 ## Phase 2A: Implement Unified Customer Authentication and Account Lifecycle
 
-- [ ] **P0** Audit existing portal users for missing, duplicate, unverified, or shared email addresses before enabling email-based commerce login.
+- [x] **P0** Audit existing portal users for missing, duplicate, unverified, or shared email addresses before enabling email-based commerce login.
 - [ ] **P0** Backfill commerce profiles for existing portal users lazily after a successful login or through a reviewed migration. Do not alter their passwords, portal roles, or company memberships.
-- [ ] **P0** Stop portal request helpers from automatically creating a default portal customer profile for every authenticated user. Portal profiles/company memberships must be explicitly provisioned, while commerce profiles may be created independently.
+- [x] **P0** Stop portal request helpers from automatically creating a default portal customer profile for every authenticated user. Portal profiles/company memberships must be explicitly provisioned, while commerce profiles may be created independently.
 - [ ] **P0** Add public registration for commerce-only accounts using email, password, terms/privacy acceptance, Turnstile, throttling, and verified-email activation.
 - [ ] **P0** Prevent registration from creating a duplicate identity when the email belongs to an existing portal account. Return a generic response and direct the legitimate owner through login or password recovery.
 - [ ] **P0** Use the existing case-insensitive portal credentials for current portal customers and allow verified-email login only after duplicate-email cleanup.
@@ -218,6 +218,8 @@ Create migrations before building operational screens.
 - [ ] **P1** Add a user-facing active-session list with device/time metadata and individual session revocation.
 
 **Acceptance gate:** An existing portal customer signs in once and can access both authorized portal features and commerce account features. A newly registered commerce-only user can verify, sign in, recover their account, and use commerce features but receives no portal data or permissions.
+
+**Session rollout note:** Deploying session-bound JWTs intentionally invalidates tokens issued by older releases, so the release must announce a one-time sign-in reset. Browser sessions have a 30-day absolute lifetime from login even when refresh tokens rotate; active users must sign in again after that boundary.
 
 ---
 

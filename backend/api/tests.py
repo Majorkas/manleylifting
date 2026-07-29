@@ -10,13 +10,19 @@ from django.core.management.base import CommandError
 from django.db import IntegrityError, transaction
 from django.test import Client, TestCase, override_settings
 from django.utils import timezone
-from datetime import date
+from datetime import date, timedelta
 from PIL import Image
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.test import APIClient
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
+from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 
+from .account_tokens import consume_account_action_token, issue_account_action_token
+from .auth_sessions import revoke_user_sessions
 from .models import (
+    AccountActionToken,
+    AccountSession,
+    AccountSecurityState,
     AuditLog,
     CatalogCollection,
     CatalogProduct,
@@ -199,6 +205,569 @@ class IdentityEmailConstraintTests(TestCase):
         user = get_user_model().objects.get(username="storeowner")
         self.assertEqual(user.email, "owner@example.com")
 
+
+class AccountActionTokenTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="account-action-user",
+            email="account-action@example.com",
+            password="test-password-123",
+        )
+
+    def issue_token(self, purpose=AccountActionToken.Purpose.VERIFY_EMAIL):
+        return issue_account_action_token(
+            user=self.user,
+            purpose=purpose,
+            target_email=" Account-Action@Example.com ",
+            lifetime=timedelta(hours=1),
+        )
+
+    def test_issue_stores_only_digest_and_normalized_target_email(self):
+        raw_token = self.issue_token()
+
+        action_token = AccountActionToken.objects.get(user=self.user)
+        self.assertEqual(action_token.issued_for_email, "account-action@example.com")
+        self.assertEqual(action_token.target_email, "account-action@example.com")
+        self.assertEqual(len(action_token.token_digest), 64)
+        self.assertNotEqual(action_token.token_digest, raw_token)
+        self.assertFalse(
+            AccountActionToken.objects.filter(token_digest=raw_token).exists()
+        )
+
+    def test_consume_is_atomic_and_single_use(self):
+        raw_token = self.issue_token()
+
+        consumed = consume_account_action_token(
+            raw_token=raw_token,
+            purpose=AccountActionToken.Purpose.VERIFY_EMAIL,
+            action=lambda action_token: action_token.pk,
+        )
+        replayed = consume_account_action_token(
+            raw_token=raw_token,
+            purpose=AccountActionToken.Purpose.VERIFY_EMAIL,
+            action=lambda action_token: action_token.pk,
+        )
+
+        self.assertIsNotNone(consumed)
+        self.assertIsNotNone(AccountActionToken.objects.get(pk=consumed).consumed_at)
+        self.assertIsNone(replayed)
+
+    def test_failed_account_action_does_not_consume_token(self):
+        raw_token = self.issue_token()
+
+        def fail_account_action(_action_token):
+            raise RuntimeError("account action failed")
+
+        with self.assertRaisesMessage(RuntimeError, "account action failed"):
+            consume_account_action_token(
+                raw_token=raw_token,
+                purpose=AccountActionToken.Purpose.VERIFY_EMAIL,
+                action=fail_account_action,
+            )
+
+        action_token = AccountActionToken.objects.get(user=self.user)
+        self.assertIsNone(action_token.consumed_at)
+
+    def test_issuing_replacement_revokes_previous_token(self):
+        first_raw_token = self.issue_token()
+        first_action_token = AccountActionToken.objects.get(user=self.user)
+
+        second_raw_token = self.issue_token()
+
+        first_action_token.refresh_from_db()
+        self.assertIsNotNone(first_action_token.revoked_at)
+        self.assertIsNone(
+            consume_account_action_token(
+                raw_token=first_raw_token,
+                purpose=AccountActionToken.Purpose.VERIFY_EMAIL,
+                action=lambda action_token: action_token.pk,
+            )
+        )
+        self.assertIsNotNone(
+            consume_account_action_token(
+                raw_token=second_raw_token,
+                purpose=AccountActionToken.Purpose.VERIFY_EMAIL,
+                action=lambda action_token: action_token.pk,
+            )
+        )
+
+    def test_consume_requires_matching_purpose_and_current_email(self):
+        raw_token = self.issue_token()
+
+        self.assertIsNone(
+            consume_account_action_token(
+                raw_token=raw_token,
+                purpose=AccountActionToken.Purpose.PASSWORD_RESET,
+                action=lambda action_token: action_token.pk,
+            )
+        )
+
+        self.user.email = "different@example.com"
+        self.user.save(update_fields=["email"])
+        self.assertIsNone(
+            consume_account_action_token(
+                raw_token=raw_token,
+                purpose=AccountActionToken.Purpose.VERIFY_EMAIL,
+                action=lambda action_token: action_token.pk,
+            )
+        )
+
+        action_token = AccountActionToken.objects.get(user=self.user)
+        self.assertIsNotNone(action_token.revoked_at)
+        self.user.email = "account-action@example.com"
+        self.user.save(update_fields=["email"])
+        self.assertIsNone(
+            consume_account_action_token(
+                raw_token=raw_token,
+                purpose=AccountActionToken.Purpose.VERIFY_EMAIL,
+                action=lambda action_token: action_token.pk,
+            )
+        )
+
+    def test_consume_rejects_expired_token(self):
+        raw_token = self.issue_token()
+        AccountActionToken.objects.filter(user=self.user).update(
+            expires_at=timezone.now() - timedelta(seconds=1)
+        )
+        self.assertIsNone(
+            consume_account_action_token(
+                raw_token=raw_token,
+                purpose=AccountActionToken.Purpose.VERIFY_EMAIL,
+                action=lambda action_token: action_token.pk,
+            )
+        )
+
+    def test_database_allows_only_one_active_token_per_user_and_purpose(self):
+        common_fields = {
+            "user": self.user,
+            "purpose": AccountActionToken.Purpose.VERIFY_EMAIL,
+            "issued_for_email": self.user.email,
+            "target_email": self.user.email,
+            "expires_at": timezone.now() + timedelta(hours=1),
+        }
+        AccountActionToken.objects.create(token_digest="a" * 64, **common_fields)
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                AccountActionToken.objects.create(
+                    token_digest="b" * 64,
+                    **common_fields,
+                )
+
+    @patch.dict(
+        "os.environ",
+        {
+            "OWNER_USERNAME": "account-action-user",
+            "OWNER_EMAIL": "account-action@example.com",
+            "OWNER_PASSWORD": "new-owner-password-123!",
+        },
+        clear=True,
+    )
+    def test_owner_force_password_revokes_sessions_and_action_tokens(self):
+        raw_token = self.issue_token(AccountActionToken.Purpose.PASSWORD_RESET)
+        refresh_token = RefreshToken.for_user(self.user)
+
+        call_command("create_owner_from_env", force_password=True, stdout=StringIO())
+
+        self.user.refresh_from_db()
+        action_token = AccountActionToken.objects.get(user=self.user)
+        self.assertTrue(self.user.check_password("new-owner-password-123!"))
+        self.assertIsNotNone(action_token.revoked_at)
+        self.assertTrue(
+            BlacklistedToken.objects.filter(token__jti=refresh_token["jti"]).exists()
+        )
+        self.assertIsNone(
+            consume_account_action_token(
+                raw_token=raw_token,
+                purpose=AccountActionToken.Purpose.PASSWORD_RESET,
+                action=lambda action_token: action_token.pk,
+            )
+        )
+
+
+@override_settings(
+    CACHES=TEST_CACHES,
+    SECURE_SSL_REDIRECT=False,
+    ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"],
+)
+class AccountSessionRevocationTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = get_user_model().objects.create_user(
+            username="session-user",
+            email="session-user@example.com",
+            password="session-password-123",
+        )
+        UserProfile.objects.create(user=self.user, role=UserProfile.ROLE_CUSTOMER)
+
+    def login(self):
+        client = APIClient()
+        response = client.post(
+            "/api/auth/token/",
+            data={
+                "username": self.user.username,
+                "password": "session-password-123",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        return response.json()["access"], response.cookies["manley_portal_refresh"].value
+
+    def refresh(self, refresh_token, *, client=None, data=None, **extra):
+        refresh_client = client or APIClient()
+        refresh_client.cookies["manley_portal_refresh"] = refresh_token
+        return refresh_client.post(
+            "/api/auth/token/refresh/",
+            data=data or {},
+            format="json",
+            **extra,
+        )
+
+    @override_settings(CSRF_TRUSTED_ORIGINS=["https://trusted-frontend.example"])
+    def test_cookie_setting_login_requires_csrf(self):
+        client = APIClient(enforce_csrf_checks=True)
+
+        rejected_response = client.post(
+            "/api/auth/token/",
+            data={
+                "username": self.user.username,
+                "password": "session-password-123",
+            },
+            format="json",
+            HTTP_ORIGIN="https://attacker.example",
+        )
+
+        seed_response = client.get("/api/csrf/")
+        csrf_token = seed_response.cookies["csrftoken"].value
+        accepted_response = client.post(
+            "/api/auth/token/",
+            data={
+                "username": self.user.username,
+                "password": "session-password-123",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=csrf_token,
+            HTTP_ORIGIN="https://trusted-frontend.example",
+        )
+
+        self.assertEqual(rejected_response.status_code, 403)
+        self.assertEqual(accepted_response.status_code, 200)
+        self.assertIn("manley_portal_refresh", accepted_response.cookies)
+
+    def test_refresh_uses_cookie_and_ignores_body_token(self):
+        _, victim_refresh = self.login()
+        attacker = get_user_model().objects.create_user(
+            username="attacker-session",
+            email="attacker-session@example.com",
+            password="attacker-password-123",
+        )
+        UserProfile.objects.create(user=attacker, role=UserProfile.ROLE_CUSTOMER)
+        attacker_client = APIClient()
+        attacker_login = attacker_client.post(
+            "/api/auth/token/",
+            data={
+                "username": attacker.username,
+                "password": "attacker-password-123",
+            },
+            format="json",
+        )
+        attacker_refresh = attacker_login.cookies["manley_portal_refresh"].value
+        client = APIClient()
+        client.cookies["manley_portal_refresh"] = victim_refresh
+
+        response = client.post(
+            "/api/auth/token/refresh/",
+            data={"refresh": attacker_refresh},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        access_token = UntypedToken(response.json()["access"])
+        self.assertEqual(str(access_token["user_id"]), str(self.user.pk))
+
+    def test_refresh_body_token_without_cookie_is_rejected(self):
+        _, refresh_token = self.login()
+        client = APIClient()
+        client.cookies.clear()
+
+        response = client.post(
+            "/api/auth/token/refresh/",
+            data={"refresh": refresh_token},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    @override_settings(CSRF_TRUSTED_ORIGINS=["https://trusted-frontend.example"])
+    def test_cookie_setting_refresh_requires_csrf(self):
+        _, refresh_token = self.login()
+        client = APIClient(enforce_csrf_checks=True)
+        client.cookies["manley_portal_refresh"] = refresh_token
+
+        rejected_response = client.post(
+            "/api/auth/token/refresh/",
+            data={},
+            format="json",
+            HTTP_ORIGIN="https://attacker.example",
+        )
+        seed_response = client.get("/api/csrf/")
+        csrf_token = seed_response.json()["csrf_token"]
+        accepted_response = client.post(
+            "/api/auth/token/refresh/",
+            data={},
+            format="json",
+            HTTP_X_CSRFTOKEN=csrf_token,
+            HTTP_ORIGIN="https://trusted-frontend.example",
+        )
+
+        self.assertEqual(rejected_response.status_code, 403)
+        self.assertEqual(accepted_response.status_code, 200)
+
+    def test_revocation_invalidates_existing_access_and_refresh_tokens(self):
+        access_token, refresh_token = self.login()
+        initial_generation = AccountSecurityState.objects.get(
+            user=self.user
+        ).session_generation
+        revoke_user_sessions(self.user)
+
+        access_client = APIClient()
+        access_client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+        access_response = access_client.get("/api/portal/me/")
+        refresh_response = self.refresh(refresh_token)
+
+        self.assertEqual(access_response.status_code, 401)
+        self.assertEqual(refresh_response.status_code, 401)
+        state = AccountSecurityState.objects.get(user=self.user)
+        self.assertEqual(state.session_generation, initial_generation + 1)
+        self.assertIsNotNone(state.sessions_revoked_at)
+
+    def test_refresh_rotated_during_revocation_keeps_stale_generation(self):
+        _, refresh_token = self.login()
+        raced_refresh = RefreshToken(refresh_token)
+
+        revoke_user_sessions(self.user)
+        raced_refresh.set_jti()
+        raced_refresh.set_exp()
+        raced_refresh.set_iat()
+        raced_refresh.outstand()
+        raced_refresh_token = str(raced_refresh)
+
+        refresh_response = self.refresh(raced_refresh_token)
+        raced_access = str(raced_refresh.access_token)
+        access_client = APIClient()
+        access_client.credentials(HTTP_AUTHORIZATION=f"Bearer {raced_access}")
+        access_response = access_client.get("/api/portal/me/")
+
+        self.assertEqual(refresh_response.status_code, 401)
+        self.assertEqual(access_response.status_code, 401)
+
+    def test_rotated_refresh_token_cannot_be_replayed(self):
+        _, refresh_token = self.login()
+
+        first_response = self.refresh(refresh_token)
+        replay_response = self.refresh(refresh_token)
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(replay_response.status_code, 401)
+
+    def test_malformed_signed_refresh_user_claim_returns_unauthorized(self):
+        malformed_refresh = RefreshToken()
+        malformed_refresh["user_id"] = "not-a-valid-user-id"
+
+        response = self.refresh(str(malformed_refresh))
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_malformed_signed_session_claim_returns_unauthorized(self):
+        _, refresh_token = self.login()
+        malformed_refresh = RefreshToken(refresh_token)
+        malformed_refresh["session_id"] = "not-a-valid-session-id"
+
+        refresh_response = self.refresh(str(malformed_refresh))
+        access_client = APIClient()
+        access_client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {str(malformed_refresh.access_token)}"
+        )
+        access_response = access_client.get("/api/portal/me/")
+
+        self.assertEqual(refresh_response.status_code, 401)
+        self.assertEqual(access_response.status_code, 401)
+
+    def test_logout_revokes_rotated_descendant_and_access_token(self):
+        access_token, refresh_token = self.login()
+        refresh_response = self.refresh(refresh_token)
+        self.assertEqual(refresh_response.status_code, 200)
+        rotated_refresh = refresh_response.cookies["manley_portal_refresh"].value
+
+        logout_client = APIClient()
+        logout_client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+        logout_client.cookies["manley_portal_refresh"] = refresh_token
+        logout_response = logout_client.post("/api/auth/logout/", data={}, format="json")
+
+        rotated_response = self.refresh(rotated_refresh)
+        access_client = APIClient()
+        access_client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+        access_response = access_client.get("/api/portal/me/")
+
+        self.assertEqual(logout_response.status_code, 200)
+        self.assertEqual(rotated_response.status_code, 401)
+        self.assertEqual(access_response.status_code, 401)
+
+    def test_logout_revokes_only_the_current_account_session(self):
+        first_access, first_refresh = self.login()
+        second_access, second_refresh = self.login()
+        self.assertEqual(AccountSession.objects.filter(user=self.user).count(), 2)
+
+        logout_client = APIClient()
+        logout_client.credentials(HTTP_AUTHORIZATION=f"Bearer {first_access}")
+        logout_client.cookies["manley_portal_refresh"] = first_refresh
+        logout_response = logout_client.post("/api/auth/logout/", data={}, format="json")
+
+        first_access_client = APIClient()
+        first_access_client.credentials(HTTP_AUTHORIZATION=f"Bearer {first_access}")
+        first_access_response = first_access_client.get("/api/portal/me/")
+        first_refresh_response = self.refresh(first_refresh)
+        second_access_client = APIClient()
+        second_access_client.credentials(HTTP_AUTHORIZATION=f"Bearer {second_access}")
+        second_access_response = second_access_client.get("/api/portal/me/")
+        second_refresh_response = self.refresh(second_refresh)
+
+        self.assertEqual(logout_response.status_code, 200)
+        self.assertEqual(first_access_response.status_code, 401)
+        self.assertEqual(first_refresh_response.status_code, 401)
+        self.assertEqual(second_access_response.status_code, 200)
+        self.assertEqual(second_refresh_response.status_code, 200)
+
+    def test_logout_without_refresh_cookie_still_revokes_access_session(self):
+        access_token, _ = self.login()
+        logout_client = APIClient()
+        logout_client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+
+        logout_response = logout_client.post("/api/auth/logout/", data={}, format="json")
+
+        access_client = APIClient()
+        access_client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+        access_response = access_client.get("/api/portal/me/")
+        self.assertEqual(logout_response.status_code, 200)
+        self.assertEqual(access_response.status_code, 401)
+
+    def test_direct_password_hash_change_invalidates_tokens(self):
+        access_token, refresh_token = self.login()
+        initial_generation = AccountSecurityState.objects.get(
+            user=self.user
+        ).session_generation
+        self.user.set_password("replacement-password-123")
+        self.user.save(update_fields=["password"])
+
+        access_client = APIClient()
+        access_client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+        access_response = access_client.get("/api/portal/me/")
+        refresh_response = self.refresh(refresh_token)
+
+        self.assertEqual(access_response.status_code, 401)
+        self.assertEqual(refresh_response.status_code, 401)
+        state = AccountSecurityState.objects.get(user=self.user)
+        self.assertEqual(state.session_generation, initial_generation + 1)
+
+    @patch.dict(
+        "os.environ",
+        {
+            "OWNER_USERNAME": "session-user",
+            "OWNER_EMAIL": "session-user@example.com",
+            "OWNER_PASSWORD": "session-password-123",
+        },
+        clear=True,
+    )
+    def test_owner_privilege_promotion_revokes_existing_credentials(self):
+        access_token, refresh_token = self.login()
+        raw_action_token = issue_account_action_token(
+            user=self.user,
+            purpose=AccountActionToken.Purpose.PASSWORD_RESET,
+            target_email=self.user.email,
+            lifetime=timedelta(hours=1),
+        )
+
+        call_command("create_owner_from_env", stdout=StringIO())
+
+        access_client = APIClient()
+        access_client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+        access_response = access_client.get("/api/portal/me/")
+        refresh_response = self.refresh(refresh_token)
+        profile = UserProfile.objects.get(user=self.user)
+
+        self.assertEqual(profile.role, UserProfile.ROLE_OWNER)
+        self.assertEqual(access_response.status_code, 401)
+        self.assertEqual(refresh_response.status_code, 401)
+        self.assertIsNone(
+            consume_account_action_token(
+                raw_token=raw_action_token,
+                purpose=AccountActionToken.Purpose.PASSWORD_RESET,
+                action=lambda action_token: action_token.pk,
+            )
+        )
+
+    def test_direct_portal_role_change_revokes_existing_credentials(self):
+        access_token, refresh_token = self.login()
+        profile = UserProfile.objects.get(user=self.user)
+
+        profile.role = UserProfile.ROLE_OFFICE_STAFF
+        profile.save(update_fields=["role", "updated_at"])
+
+        access_client = APIClient()
+        access_client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+        access_response = access_client.get("/api/portal/me/")
+        refresh_response = self.refresh(refresh_token)
+
+        self.assertEqual(access_response.status_code, 401)
+        self.assertEqual(refresh_response.status_code, 401)
+
+    def test_password_change_with_stale_user_does_not_reactivate_account(self):
+        stale_user = get_user_model().objects.get(pk=self.user.pk)
+        current_user = get_user_model().objects.get(pk=self.user.pk)
+        current_user.is_active = False
+        current_user.save(update_fields=["is_active"])
+        client = APIClient()
+        client.force_authenticate(user=stale_user)
+
+        response = client.post(
+            "/api/portal/me/change-password/",
+            data={
+                "current_password": "session-password-123",
+                "new_password": "replacement-password-123!",
+            },
+            format="json",
+        )
+
+        self.user.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(self.user.is_active)
+        self.assertTrue(self.user.check_password("replacement-password-123!"))
+
+    def test_company_membership_change_revokes_existing_credentials(self):
+        access_token, refresh_token = self.login()
+        company = Company.objects.create(name="Session Company", slug="session-company")
+        profile = UserProfile.objects.get(user=self.user)
+
+        profile.allowed_companies.add(company)
+
+        access_client = APIClient()
+        access_client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+        access_response = access_client.get("/api/portal/me/")
+        refresh_response = self.refresh(refresh_token)
+        self.assertEqual(access_response.status_code, 401)
+        self.assertEqual(refresh_response.status_code, 401)
+
+    def test_user_delete_cascades_security_records_cleanly(self):
+        self.login()
+        user_id = self.user.pk
+
+        self.user.delete()
+
+        self.assertFalse(get_user_model().objects.filter(pk=user_id).exists())
+        self.assertFalse(AccountSession.objects.filter(user_id=user_id).exists())
+        self.assertFalse(AccountSecurityState.objects.filter(user_id=user_id).exists())
+
+
 class CommerceCustomerProfileTests(TestCase):
     def test_commerce_profile_lifecycle_does_not_grant_portal_access(self):
         user = get_user_model().objects.create_user(
@@ -209,6 +778,7 @@ class CommerceCustomerProfileTests(TestCase):
         verified_at = timezone.now()
         profile = CommerceCustomerProfile.objects.create(
             user=user,
+            verified_email=user.email,
             email_verified_at=verified_at,
         )
         client = APIClient()
@@ -218,6 +788,7 @@ class CommerceCustomerProfileTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertEqual(profile.email_verified_at, verified_at)
+        self.assertTrue(profile.has_verified_email())
         self.assertIsNone(profile.disabled_at)
         self.assertIsNone(profile.anonymized_at)
         self.assertFalse(UserProfile.objects.filter(user=user).exists())
@@ -233,6 +804,84 @@ class CommerceCustomerProfileTests(TestCase):
 
         self.assertFalse(CommerceCustomerProfile.objects.filter(user=user).exists())
 
+    def test_email_verification_is_bound_to_current_normalized_email(self):
+        user = get_user_model().objects.create_user(
+            username="verified-commerce-customer",
+            email="verified-commerce@example.com",
+        )
+        profile = CommerceCustomerProfile.objects.create(
+            user=user,
+            verified_email="verified-commerce@example.com",
+            email_verified_at=timezone.now(),
+        )
+
+        self.assertTrue(profile.has_verified_email())
+
+        user.email = "changed-commerce@example.com"
+        user.save(update_fields=["email"])
+
+        user.email = "verified-commerce@example.com"
+        user.save(update_fields=["email"])
+
+        profile.refresh_from_db()
+        self.assertEqual(profile.verified_email, "")
+        self.assertIsNone(profile.email_verified_at)
+
+        self.assertFalse(profile.has_verified_email())
+
+    def test_email_change_away_and_back_cannot_resurrect_action_token(self):
+        user = get_user_model().objects.create_user(
+            username="action-email-change",
+            email="action-email-change@example.com",
+        )
+        raw_token = issue_account_action_token(
+            user=user,
+            purpose=AccountActionToken.Purpose.VERIFY_EMAIL,
+            target_email=user.email,
+            lifetime=timedelta(hours=1),
+        )
+
+        user.email = "different-action-email@example.com"
+        user.save(update_fields=["email"])
+        user.email = "action-email-change@example.com"
+        user.save(update_fields=["email"])
+
+        self.assertIsNone(
+            consume_account_action_token(
+                raw_token=raw_token,
+                purpose=AccountActionToken.Purpose.VERIFY_EMAIL,
+                action=lambda action_token: action_token.pk,
+            )
+        )
+
+    @patch.dict(
+        "os.environ",
+        {
+            "OWNER_USERNAME": "verified-owner",
+            "OWNER_EMAIL": "new-owner-email@example.com",
+            "OWNER_PASSWORD": "owner-password-123",
+        },
+        clear=True,
+    )
+    def test_owner_email_change_clears_commerce_verification(self):
+        user = get_user_model().objects.create_user(
+            username="verified-owner",
+            email="old-owner-email@example.com",
+            password="owner-password-123",
+        )
+        profile = CommerceCustomerProfile.objects.create(
+            user=user,
+            verified_email=user.email,
+            email_verified_at=timezone.now(),
+        )
+
+        call_command("create_owner_from_env", stdout=StringIO())
+
+        profile.refresh_from_db()
+        self.assertEqual(profile.verified_email, "")
+        self.assertIsNone(profile.email_verified_at)
+        self.assertFalse(profile.has_verified_email())
+
 
 class ApiBasicEndpointTests(BaseApiTestCase):
     def test_hello_endpoint(self):
@@ -243,7 +892,8 @@ class ApiBasicEndpointTests(BaseApiTestCase):
     def test_csrf_seed_endpoint(self):
         response = self.client.get("/api/csrf/")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"ok": True})
+        self.assertTrue(response.json().get("ok"))
+        self.assertTrue(response.json().get("csrf_token"))
 
 
 class CatalogReadEndpointTests(BaseApiTestCase):
@@ -432,6 +1082,7 @@ class StripeWebhookTests(BaseApiTestCase):
 )
 class PortalRBACTests(TestCase):
     def setUp(self):
+        cache.clear()
         self.client = APIClient()
         user_model = get_user_model()
 
@@ -1826,6 +2477,56 @@ class PortalRBACTests(TestCase):
             ).exists()
         )
 
+    def test_employee_role_change_revokes_existing_credentials(self):
+        self.staff_user.email = "role-change-staff@example.com"
+        self.staff_user.save(update_fields=["email"])
+        login_client = APIClient()
+        login_response = login_client.post(
+            "/api/auth/token/",
+            data={"username": "staff", "password": "testpass123"},
+            format="json",
+        )
+        self.assertEqual(login_response.status_code, 200)
+        access_token = login_response.json()["access"]
+        refresh_token = login_response.cookies["manley_portal_refresh"].value
+        raw_action_token = issue_account_action_token(
+            user=self.staff_user,
+            purpose=AccountActionToken.Purpose.PASSWORD_RESET,
+            target_email=self.staff_user.email,
+            lifetime=timedelta(hours=1),
+        )
+        self.client.force_authenticate(user=self.owner_user)
+
+        update_response = self.client.patch(
+            "/api/portal/staff-assignments/",
+            data={
+                "user_id": self.staff_user.id,
+                "role": UserProfile.ROLE_OFFICE_STAFF,
+            },
+            format="json",
+        )
+
+        old_access_client = APIClient()
+        old_access_client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+        access_response = old_access_client.get("/api/portal/me/")
+        refresh_client = APIClient()
+        refresh_client.cookies["manley_portal_refresh"] = refresh_token
+        refresh_response = refresh_client.post(
+            "/api/auth/token/refresh/",
+            data={},
+            format="json",
+        )
+        self.assertEqual(update_response.status_code, 200)
+        self.assertEqual(access_response.status_code, 401)
+        self.assertEqual(refresh_response.status_code, 401)
+        self.assertIsNone(
+            consume_account_action_token(
+                raw_token=raw_action_token,
+                purpose=AccountActionToken.Purpose.PASSWORD_RESET,
+                action=lambda action_token: action_token.pk,
+            )
+        )
+
     def test_office_staff_does_not_see_self_in_staff_assignments(self):
         office_user = get_user_model().objects.create_user(
             username="office_assignment_user",
@@ -2185,10 +2886,79 @@ class PortalRBACTests(TestCase):
             "Staff and owner passwords must be at least 12 characters long",
         )
 
-    def test_logout_blacklists_refresh_token(self):
+    def test_password_change_revokes_account_action_tokens(self):
+        self.owner_user.email = "owner-security@example.com"
+        self.owner_user.save(update_fields=["email"])
+        raw_token = issue_account_action_token(
+            user=self.owner_user,
+            purpose=AccountActionToken.Purpose.PASSWORD_RESET,
+            target_email=self.owner_user.email,
+            lifetime=timedelta(hours=1),
+        )
+        action_token = AccountActionToken.objects.get(user=self.owner_user)
         self.client.force_authenticate(user=self.owner_user)
-        refresh = RefreshToken.for_user(self.owner_user)
-        self.client.cookies["manley_portal_refresh"] = str(refresh)
+
+        response = self.client.post(
+            "/api/portal/me/change-password/",
+            data={
+                "current_password": "testpass123",
+                "new_password": "A-New-Strong-Password-234!",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        action_token.refresh_from_db()
+        self.assertIsNotNone(action_token.revoked_at)
+        self.assertIsNone(
+            consume_account_action_token(
+                raw_token=raw_token,
+                purpose=AccountActionToken.Purpose.PASSWORD_RESET,
+                action=lambda action_token: action_token.pk,
+            )
+        )
+
+    def test_employee_deactivation_revokes_account_action_tokens(self):
+        self.staff_user.email = "staff-security@example.com"
+        self.staff_user.save(update_fields=["email"])
+        raw_token = issue_account_action_token(
+            user=self.staff_user,
+            purpose=AccountActionToken.Purpose.PASSWORD_RESET,
+            target_email=self.staff_user.email,
+            lifetime=timedelta(hours=1),
+        )
+        action_token = AccountActionToken.objects.get(user=self.staff_user)
+        self.client.force_authenticate(user=self.owner_user)
+
+        response = self.client.delete(
+            "/api/portal/staff-assignments/",
+            data={"user_id": self.staff_user.id},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        action_token.refresh_from_db()
+        self.assertIsNotNone(action_token.revoked_at)
+        self.assertIsNone(
+            consume_account_action_token(
+                raw_token=raw_token,
+                purpose=AccountActionToken.Purpose.PASSWORD_RESET,
+                action=lambda action_token: action_token.pk,
+            )
+        )
+
+    def test_logout_blacklists_refresh_token(self):
+        login_client = APIClient()
+        login_response = login_client.post(
+            "/api/auth/token/",
+            data={"username": "owner", "password": "testpass123"},
+            format="json",
+        )
+        self.assertEqual(login_response.status_code, 200)
+        access_token = login_response.json()["access"]
+        refresh_token = login_response.cookies["manley_portal_refresh"].value
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access_token}")
+        self.client.cookies["manley_portal_refresh"] = refresh_token
 
         response = self.client.post(
             "/api/auth/logout/",
@@ -2197,9 +2967,11 @@ class PortalRBACTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
-        reuse_response = self.client.post(
+        reuse_client = APIClient()
+        reuse_client.cookies["manley_portal_refresh"] = refresh_token
+        reuse_response = reuse_client.post(
             "/api/auth/token/refresh/",
-            data={"refresh": str(refresh)},
+            data={},
             format="json",
         )
         self.assertEqual(reuse_response.status_code, 401)

@@ -1,3 +1,6 @@
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_protect
+from rest_framework.parsers import JSONParser
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
@@ -5,8 +8,10 @@ from .auth_cookies import set_refresh_cookie
 from .serializers import PortalTokenObtainPairSerializer, PortalTokenRefreshSerializer
 
 
+@method_decorator(csrf_protect, name="dispatch")
 class PortalTokenObtainPairView(TokenObtainPairView):
     serializer_class = PortalTokenObtainPairSerializer
+    parser_classes = [JSONParser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "auth.token"
 
@@ -19,8 +24,10 @@ class PortalTokenObtainPairView(TokenObtainPairView):
         return response
 
 
+@method_decorator(csrf_protect, name="dispatch")
 class PortalTokenRefreshView(TokenRefreshView):
     serializer_class = PortalTokenRefreshSerializer
+    parser_classes = [JSONParser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "auth.refresh"
 

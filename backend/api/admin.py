@@ -57,6 +57,7 @@ class UserProfileAdmin(admin.ModelAdmin):
 class CommerceCustomerProfileAdmin(admin.ModelAdmin):
 	list_display = (
 		"user",
+		"verified_email",
 		"email_verified_at",
 		"disabled_at",
 		"anonymized_at",
@@ -64,6 +65,7 @@ class CommerceCustomerProfileAdmin(admin.ModelAdmin):
 	)
 	search_fields = ("user__username", "user__email")
 	readonly_fields = (
+		"verified_email",
 		"email_verified_at",
 		"disabled_at",
 		"anonymized_at",

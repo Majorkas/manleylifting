@@ -10,6 +10,7 @@ import stripe
 
 from django.core.cache import cache
 from django.conf import settings
+from django.middleware.csrf import get_token
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
@@ -69,7 +70,7 @@ TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverif
 @ensure_csrf_cookie
 @require_GET
 def csrf_seed(request):
-  return JsonResponse({"ok": True})
+  return JsonResponse({"ok": True, "csrf_token": get_token(request)})
 
 
 def _safe_shop_error(message, status=502):

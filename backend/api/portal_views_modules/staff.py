@@ -13,7 +13,6 @@ from ..portal_views import (
     _is_employee_role,
     _is_owner,
     _paginate_queryset,
-    _revoke_user_refresh_tokens,
     _suggest_available_username,
     _visible_company_ids,
 )
@@ -150,9 +149,9 @@ def portal_staff_assignments(request):
         if not _is_employee_role(profile.role):
             return Response({"detail": "Only employee accounts can be removed"}, status=status.HTTP_400_BAD_REQUEST)
 
-        profile.user.is_active = False
-        profile.user.save(update_fields=["is_active"])
-        _revoke_user_refresh_tokens(profile.user)
+        with transaction.atomic():
+            profile.user.is_active = False
+            profile.user.save(update_fields=["is_active"])
         log_portal_audit_event(
             request=request,
             action="staff.deactivated",
@@ -182,17 +181,17 @@ def portal_staff_assignments(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         previous_role = profile.role
-        profile.role = payload["role"]
-        profile.save(update_fields=["role", "updated_at"])
+        with transaction.atomic():
+            profile.role = payload["role"]
+            profile.save(update_fields=["role", "updated_at"])
         if previous_role != profile.role:
             change_details["role"] = {"from": previous_role, "to": profile.role}
 
     if "is_active" in payload:
         previous_active = bool(profile.user.is_active)
-        profile.user.is_active = bool(payload["is_active"])
-        profile.user.save(update_fields=["is_active"])
-        if previous_active and not profile.user.is_active:
-            _revoke_user_refresh_tokens(profile.user)
+        with transaction.atomic():
+            profile.user.is_active = bool(payload["is_active"])
+            profile.user.save(update_fields=["is_active"])
         if previous_active != bool(profile.user.is_active):
             change_details["is_active"] = {"from": previous_active, "to": bool(profile.user.is_active)}
 

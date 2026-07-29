@@ -279,8 +279,13 @@ async function getJson(path) {
   return parseResponse(response, path)
 }
 
-async function ensureCsrfCookie() {
-  await getJson('/csrf/')
+async function getCsrfToken() {
+  const body = await getJson('/csrf/')
+  const csrfToken = String(body?.csrf_token || getCookie('csrftoken') || '')
+  if (!csrfToken) {
+    throw new Error('Missing CSRF token')
+  }
+  return csrfToken
 }
 
 async function postJson(path, payload, options = {}) {
@@ -288,11 +293,7 @@ async function postJson(path, payload, options = {}) {
   let csrfToken = ''
 
   if (requireCsrf) {
-    await ensureCsrfCookie()
-    csrfToken = getCookie('csrftoken')
-    if (!csrfToken) {
-      throw new Error('Missing CSRF token')
-    }
+    csrfToken = await getCsrfToken()
   }
 
   const headers = {
