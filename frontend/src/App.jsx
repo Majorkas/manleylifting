@@ -6,6 +6,11 @@ import HomePage from './pages/HomePage'
 import PortalDashboardPage from './pages/PortalDashboardPage'
 import PortalLoginPage from './pages/PortalLoginPage'
 import StoreWorkInProgressPage from './pages/StoreWorkInProgressPage'
+import AccountLoginPage from './pages/AccountLoginPage'
+import AccountOverviewPage from './pages/AccountOverviewPage'
+import AccountRegisterPage from './pages/AccountRegisterPage'
+import AccountResendVerificationPage from './pages/AccountResendVerificationPage'
+import AccountVerifyEmailPage from './pages/AccountVerifyEmailPage'
 
 export default function App() {
   return (
@@ -17,6 +22,11 @@ export default function App() {
       <Route path="/cart" element={<StoreWorkInProgressPage />} />
       <Route path="/checkout" element={<StoreWorkInProgressPage />} />
       <Route path="/order-confirmed" element={<StoreWorkInProgressPage />} />
+      <Route path="/account" element={<AccountOverviewPage />} />
+      <Route path="/account/login" element={<AccountLoginPage />} />
+      <Route path="/account/register" element={<AccountRegisterPage />} />
+      <Route path="/account/verify-email" element={<AccountVerifyEmailPage />} />
+      <Route path="/account/resend-verification" element={<AccountResendVerificationPage />} />
       <Route path="/portal" element={<PortalDashboardPage />} />
       <Route path="/portal/login" element={<PortalLoginPage />} />
       <Route path="/contact" element={<ContactPage />} />

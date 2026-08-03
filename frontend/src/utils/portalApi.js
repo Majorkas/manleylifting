@@ -122,6 +122,10 @@ function formatFieldLabel(fieldName) {
     email: 'Email',
     current_password: 'Current password',
     new_password: 'New password',
+    first_name: 'First name',
+    last_name: 'Last name',
+    accept_terms: 'Terms',
+    accept_privacy: 'Privacy notice',
   }
 
   if (knownLabels[fieldName]) return knownLabels[fieldName]
@@ -464,6 +468,46 @@ export async function portalLogin(username, password) {
   return body
 }
 
+async function publicAccountPost(path, payload) {
+  const csrfToken = await getCsrfToken()
+  const response = await fetch(apiUrl(path), {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      'X-CSRFToken': csrfToken,
+    },
+    body: JSON.stringify(payload),
+  })
+  return parseResponse(response, path)
+}
+
+export async function registerCommerceAccount(payload) {
+  return publicAccountPost('/account/register/', {
+    email: String(payload?.email || '').trim(),
+    password: String(payload?.password || ''),
+    first_name: String(payload?.firstName || '').trim(),
+    last_name: String(payload?.lastName || '').trim(),
+    accept_terms: Boolean(payload?.acceptTerms),
+    accept_privacy: Boolean(payload?.acceptPrivacy),
+    turnstile_token: String(payload?.turnstileToken || ''),
+  })
+}
+
+export async function verifyCommerceEmail(token) {
+  return publicAccountPost('/account/verify-email/', {
+    token: String(token || '').trim(),
+  })
+}
+
+export async function resendCommerceVerification(email, turnstileToken = '') {
+  return publicAccountPost('/account/resend-verification/', {
+    email: String(email || '').trim(),
+    turnstile_token: String(turnstileToken || ''),
+  })
+}
+
 export async function portalLogout() {
   const path = '/auth/logout/'
 
@@ -497,6 +541,23 @@ export async function getPortalMe() {
     role: String(body?.role || ''),
     allowedCompanyIds: Array.isArray(body?.allowed_company_ids) ? body.allowed_company_ids : [],
     requiredPasswordChange: Boolean(body?.required_password_change),
+  }
+}
+
+export async function getAccountBootstrap() {
+  const path = '/account/bootstrap/'
+  const response = await authFetch(path)
+  const body = await parseResponse(response, path)
+  return {
+    username: String(body?.username || ''),
+    email: String(body?.email || ''),
+    fullName: String(body?.full_name || ''),
+    emailVerified: Boolean(body?.email_verified),
+    capabilities: {
+      canShop: Boolean(body?.capabilities?.can_shop),
+      canViewOrders: Boolean(body?.capabilities?.can_view_orders),
+      canAccessPortal: Boolean(body?.capabilities?.can_access_portal),
+    },
   }
 }
 

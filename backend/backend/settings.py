@@ -39,6 +39,45 @@ def validate_required_secrets(*, debug: bool, values: dict[str, str]) -> None:
         raise ValueError(f"Missing required environment variables: {missing_str}")
 
 
+def validate_account_registration_configuration(
+    *,
+    debug: bool,
+    registration_enabled: bool,
+    turnstile_required: bool,
+    values: dict[str, str],
+) -> None:
+    if debug or not registration_enabled:
+        return
+
+    required_names = [
+        "ZEPTOMAIL_SEND_TOKEN",
+        "ZEPTOMAIL_FROM_EMAIL",
+        "ACCOUNT_TERMS_VERSION",
+        "ACCOUNT_PRIVACY_VERSION",
+    ]
+    if turnstile_required:
+        required_names.append("ACCOUNT_TURNSTILE_SECRET_KEY")
+    missing = [name for name in required_names if not str(values.get(name) or "").strip()]
+    if missing:
+        raise ValueError(
+            "Account registration is enabled but missing environment variables: "
+            + ", ".join(missing)
+        )
+
+    placeholder_versions = {
+        "draft",
+        "replace-with-approved-terms-version",
+        "replace-with-approved-privacy-version",
+    }
+    if (
+        values["ACCOUNT_TERMS_VERSION"].strip().lower() in placeholder_versions
+        or values["ACCOUNT_PRIVACY_VERSION"].strip().lower() in placeholder_versions
+    ):
+        raise ValueError(
+            "Account registration requires approved terms and privacy versions"
+        )
+
+
 def database_config():
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url:
@@ -102,6 +141,22 @@ DEFAULT_PROD_FRONTEND_ORIGINS = [
 DEFAULT_FRONTEND_ORIGINS = (
     DEFAULT_DEV_FRONTEND_ORIGINS if DEBUG else DEFAULT_PROD_FRONTEND_ORIGINS
 )
+
+ACCOUNT_FRONTEND_URL = os.getenv(
+    "ACCOUNT_FRONTEND_URL",
+    DEFAULT_FRONTEND_ORIGINS[0],
+).strip().rstrip("/")
+ACCOUNT_REGISTRATION_ENABLED = env_bool("ACCOUNT_REGISTRATION_ENABLED", DEBUG)
+ACCOUNT_REQUIRE_TURNSTILE = env_bool("ACCOUNT_REQUIRE_TURNSTILE", not DEBUG)
+ACCOUNT_TURNSTILE_SECRET_KEY = os.getenv(
+    "ACCOUNT_TURNSTILE_SECRET_KEY",
+    os.getenv("SHOP_TURNSTILE_SECRET_KEY", ""),
+).strip()
+ACCOUNT_VERIFY_TOKEN_LIFETIME = timedelta(
+    hours=max(1, min(int(os.getenv("ACCOUNT_VERIFY_TOKEN_HOURS", "24")), 72))
+)
+ACCOUNT_TERMS_VERSION = os.getenv("ACCOUNT_TERMS_VERSION", "draft").strip() or "draft"
+ACCOUNT_PRIVACY_VERSION = os.getenv("ACCOUNT_PRIVACY_VERSION", "draft").strip() or "draft"
 
 ALLOWED_HOSTS = env_list(
     "DJANGO_ALLOWED_HOSTS",
@@ -228,6 +283,14 @@ STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
+ZEPTOMAIL_API_URL = os.getenv(
+    "ZEPTOMAIL_API_URL",
+    "https://api.zeptomail.eu/v1.1/email",
+).strip()
+ZEPTOMAIL_SEND_TOKEN = os.getenv("ZEPTOMAIL_SEND_TOKEN", "").strip()
+ZEPTOMAIL_FROM_EMAIL = os.getenv("ZEPTOMAIL_FROM_EMAIL", "").strip()
+ZEPTOMAIL_FROM_NAME = os.getenv("ZEPTOMAIL_FROM_NAME", "Manley Lifting").strip()
+
 if USE_R2_STORAGE:
     AWS_S3_REGION_NAME = os.getenv("R2_REGION", "auto").strip() or "auto"
     AWS_STORAGE_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "").strip()
@@ -294,6 +357,10 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "auth.token": "5/minute",
         "auth.refresh": "30/minute",
+        "account.register": "5/hour",
+        "account.verify": "20/hour",
+        "account.resend": "5/hour",
+        "account.email": "3/hour",
         "portal.read": "300/hour",
         "portal.write": "120/hour",
     },
@@ -341,6 +408,19 @@ validate_required_secrets(
     values={
         "STRIPE_SECRET_KEY": os.getenv("STRIPE_SECRET_KEY", ""),
         "STRIPE_WEBHOOK_SECRET": os.getenv("STRIPE_WEBHOOK_SECRET", ""),
+    },
+)
+
+validate_account_registration_configuration(
+    debug=DEBUG,
+    registration_enabled=ACCOUNT_REGISTRATION_ENABLED,
+    turnstile_required=ACCOUNT_REQUIRE_TURNSTILE,
+    values={
+        "ZEPTOMAIL_SEND_TOKEN": ZEPTOMAIL_SEND_TOKEN,
+        "ZEPTOMAIL_FROM_EMAIL": ZEPTOMAIL_FROM_EMAIL,
+        "ACCOUNT_TURNSTILE_SECRET_KEY": ACCOUNT_TURNSTILE_SECRET_KEY,
+        "ACCOUNT_TERMS_VERSION": ACCOUNT_TERMS_VERSION,
+        "ACCOUNT_PRIVACY_VERSION": ACCOUNT_PRIVACY_VERSION,
     },
 )
 

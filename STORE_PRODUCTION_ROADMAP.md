@@ -28,6 +28,10 @@ Already implemented:
 - Origin checks, rate limiting, Turnstile support, HTTPS settings, and secret validation.
 - Backend tests for catalog reads, intent creation, and a successful Stripe webhook.
 - A shared Django `User` identity and portal `UserProfile` already exist, with company access represented by `allowed_companies`.
+- A hardened shared session authority with short-lived memory-only access tokens, rotating `HttpOnly` refresh cookies, per-browser revocation, and independent portal/commerce capabilities.
+- Public commerce-only registration with legal acceptance, Turnstile, throttling, pending activation, verified-email activation, and generic verification resend responses.
+- Shared `/account` login, registration, verification, resend, and capability-driven overview screens that do not grant commerce-only users portal access.
+- ZeptoMail authentication-email transport with tracking disabled and fail-closed production registration configuration.
 
 Not currently launchable:
 
@@ -37,7 +41,7 @@ Not currently launchable:
 - `OnsiteOrder` and Stripe webhook records are not available in Django admin.
 - Payment retries, reconciliation, and webhook validation need hardening.
 - Storefront tests and end-to-end checkout tests are missing.
-- There is no public account registration, email verification, password recovery, or commerce account lifecycle.
+- Password recovery, email/password changes, logout-all, account deletion, MFA, security notifications, and the remaining commerce account lifecycle are not implemented.
 - Orders are not linked to authenticated users and there are no saved-address or account order-history models/APIs.
 - The existing single portal role must not be reused as a commerce entitlement because one person can be both a portal customer and a store customer.
 
@@ -101,7 +105,7 @@ Complete these decisions before changing models or checkout logic.
 - New commerce accounts require verified email ownership and a minimum 12-character password, in addition to Django's similarity, common-password, and numeric-password checks.
 - Existing user emails must be cleaned up before email identity or commerce registration is implemented. The read-only `audit_identity_emails` command is the blocking audit gate.
 - Staff and owner MFA is mandatory before production commerce access. Customer MFA is optional.
-- Postmark is the transactional email provider. Its verified sender address remains unset until the business confirms it.
+- ZeptoMail is the transactional email provider for account verification, password recovery, security notifications, and other authentication email. Its verified sender address remains unset until the business confirms it.
 - Shared customer account screens live under `/account`, separate from portal-only equipment routes while reusing the same Django identity and secure session.
 - Customers may anonymize optional account/profile data, while immutable order records required for accounting, fraud, disputes, and other legal obligations are retained for the approved period.
 - Catalog administration remains manual in Django admin for launch. Fulfillment is handled in a protected portal staff/owner interface.
@@ -114,7 +118,7 @@ Complete these decisions before changing models or checkout logic.
 - Cancellation, returns, partial/full refund, damaged-goods, and failed-delivery policies.
 - Which staff roles may issue refunds and adjust stock, including any step-up authentication or approval thresholds.
 - Saved-address deletion behavior, dormant-account retention, and exact statutory/order/account audit retention periods.
-- Verified Postmark sender address plus the support email, phone, legal business address, company number, and VAT number.
+- Verified ZeptoMail sender address plus the support email, phone, legal business address, company number, and VAT number.
 
 - [x] **P0** Confirm the countries and regions that can place orders.
 - [x] **P0** Decide whether displayed prices include Irish VAT.
@@ -126,7 +130,7 @@ Complete these decisions before changing models or checkout logic.
 - [x] **P0** Decide whether guest checkout remains available or whether checkout requires a verified account.
 - [x] **P0** Decide whether orders placed by portal customers are personal purchases, company purchases, or selectable at checkout.
 - [x] **P0** Define whether company orders/addresses are visible only to the purchaser or to authorized members/owners of that company.
-- [ ] **P0** Decide whether commerce users sign in with email only while existing portal users may continue using username or verified email.
+- [x] **P0** Use verified-email login for commerce-only users while existing portal users may continue using their case-insensitive username or verified email.
 - [ ] **P0** Define account deletion, address deletion, order retention, dormant-account retention, and guest-order claiming rules.
 - [x] **P0** Decide which roles require MFA. At minimum, staff and owner accounts should require MFA before production commerce operations are enabled.
 - [ ] **P1** Confirm support email, phone, business name/address, company number, and VAT number used in legal pages and emails.
@@ -146,13 +150,18 @@ Complete these decisions before changing models or checkout logic.
 - [x] **P0** Use one authentication authority and one Django `User` identity for portal and commerce. Do not create a second password database or duplicate login system.
 - [x] **P0** Model authorization as independent capabilities. Authentication or commerce registration alone must never imply portal/company access.
 - [ ] **P0** Prefer a host-only refresh cookie on the API domain and the narrowest viable `SameSite` policy. Do not widen the cookie to every parent-domain subdomain unless a documented requirement and threat review justify it.
-- [ ] **P0** Add strict rate limits and Turnstile to registration, login, verification resend, password reset, email change, and order-claim endpoints.
-- [ ] **P0** Return generic responses for registration, login, verification, and password reset so attackers cannot enumerate existing accounts.
+- [x] **P0** Add scoped rate limits, email-keyed throttling, and Turnstile to commerce registration and verification resend endpoints.
+- [x] **P0** Keep public registration disabled by default and fail startup outside debug when enabled without ZeptoMail delivery, required Turnstile, or approved legal-version configuration.
+- [ ] **P0** Complete strict rate limits and Turnstile coverage for login, password reset, email change, and order-claim endpoints.
+- [x] **P0** Return generic registration and verification-resend responses so attackers cannot enumerate existing accounts.
+- [ ] **P0** Complete generic anti-enumeration responses for password reset and the remaining account-recovery flows.
 - [ ] **P0** Require verified email ownership before showing order history, saving addresses, claiming guest orders, or changing the account email.
-- [ ] **P0** Use single-use, short-lived verification/reset links. Store only hashed tokens and revoke them after use, password change, email change, or account disablement.
-- [ ] **P0** Support password change, password reset, sign out, sign out all devices, and server-side refresh-session revocation.
+- [x] **P0** Use email-bound, single-use, short-lived verification links, store only token digests, and revoke tokens after use or relevant identity-state changes.
+- [ ] **P0** Implement password-reset and email-change links with the same hashed, short-lived, single-use guarantees.
+- [x] **P0** Support sign out and server-side per-browser refresh-session revocation.
+- [ ] **P0** Add password change, password reset, and sign-out-all-devices flows.
 - [ ] **P0** Require current-password or step-up authentication for email changes, password changes, MFA changes, account deletion, and other sensitive account actions.
-- [ ] **P0** Never auto-merge an ecommerce registration into an existing portal account based only on a matching email string. Require successful login or verified ownership recovery.
+- [x] **P0** Never auto-merge an ecommerce registration into an existing portal account based only on a matching email string. Require successful login or verified ownership recovery.
 - [ ] **P0** Enforce order/address ownership from `request.user` on the server. Never accept a client-supplied user ID as authorization.
 - [ ] **P0** Set `SHOP_REQUIRE_TURNSTILE=True`, provide a production Turnstile secret, and fail deployment if the corresponding frontend/backend keys are missing.
 - [ ] **P0** Keep catalog prices and final totals server-authoritative. Do not accept a total, discount, tax, or shipping charge calculated by the browser.
@@ -194,7 +203,8 @@ Create migrations before building operational screens.
 - [ ] **P1** Add order notes, tracking carrier/reference/URL, fulfilled timestamp, canceled timestamp, and refund totals.
 - [ ] **P1** Add constraints and indexes for order number, checkout ref, PaymentIntent ID, SKU, active catalog queries, status, and timestamps.
 - [ ] **P1** Add an audit trail for stock adjustments, order status changes, address edits, cancellations, and refunds.
-- [ ] **P1** Add account/session security records needed for email verification, MFA, session revocation, login alerts, and security-event auditing without storing raw tokens.
+- [x] **P1** Add account/session security records for email verification, secure action-token revocation, and per-browser session revocation without storing raw tokens.
+- [ ] **P1** Extend account security records for MFA, login alerts, and broader security-event auditing.
 
 **Acceptance gate:** Migrations apply cleanly to a production-size database copy and roll back safely. Model tests enforce identity separation, unique verified emails, saved-address ownership/default constraints, immutable order snapshots, legal state transitions, unique identifiers, nonnegative totals, and nonnegative stock.
 
@@ -205,19 +215,25 @@ Create migrations before building operational screens.
 - [x] **P0** Audit existing portal users for missing, duplicate, unverified, or shared email addresses before enabling email-based commerce login.
 - [ ] **P0** Backfill commerce profiles for existing portal users lazily after a successful login or through a reviewed migration. Do not alter their passwords, portal roles, or company memberships.
 - [x] **P0** Stop portal request helpers from automatically creating a default portal customer profile for every authenticated user. Portal profiles/company memberships must be explicitly provisioned, while commerce profiles may be created independently.
-- [ ] **P0** Add public registration for commerce-only accounts using email, password, terms/privacy acceptance, Turnstile, throttling, and verified-email activation.
-- [ ] **P0** Prevent registration from creating a duplicate identity when the email belongs to an existing portal account. Return a generic response and direct the legitimate owner through login or password recovery.
-- [ ] **P0** Use the existing case-insensitive portal credentials for current portal customers and allow verified-email login only after duplicate-email cleanup.
+- [x] **P0** Store explicit pending-activation state plus accepted terms/privacy versions and timestamps on the commerce profile without creating a portal profile.
+- [x] **P0** Add public registration for commerce-only accounts using email, password, terms/privacy acceptance, Turnstile, throttling, and verified-email activation.
+- [x] **P0** Prevent registration from creating a duplicate identity when the email belongs to an existing portal account. Return the same generic response and never auto-merge the identity.
+- [ ] **P0** Complete the password-recovery route for legitimate owners of existing identities.
+- [x] **P0** Use the existing case-insensitive portal credentials for current portal customers and allow verified-email login only after duplicate-email cleanup.
 - [x] **P0** Build one account/session bootstrap endpoint that returns minimal profile data and explicit capabilities such as `can_shop`, `can_view_orders`, and `can_access_portal`; do not send authorization data the user does not need.
-- [ ] **P0** Ensure commerce-only accounts receive `403` from every company/equipment/report/certificate/staff endpoint even if they manually call the API.
-- [ ] **P0** Add verified email activation, resend verification, forgot password, reset password, change password, change email/reverify, logout, logout-all-sessions, and account disable/delete flows.
-- [ ] **P0** Preserve a validated internal redirect through login/verification/reset so QR equipment links, checkout returns, and order-history links return to the requested page. Reject external/open redirects.
+- [x] **P0** Ensure commerce-only accounts receive `403` from company/equipment/report/certificate/staff endpoints even if they manually call the API.
+- [x] **P0** Add verified-email activation and verification-resend flows.
+- [ ] **P0** Add forgot/reset password, change password, change email/reverify, logout-all-sessions, and account disable/delete flows.
+- [x] **P0** Preserve validated internal redirects through login and reject external, protocol-relative, and backslash-based open redirects.
+- [ ] **P0** Extend redirect preservation through verification and reset so QR equipment, checkout-return, and order-history links return to the requested page.
 - [ ] **P0** Invalidate all refresh sessions after password reset, suspicious account recovery, or account disablement; let password change offer an explicit sign-out-other-sessions option.
 - [ ] **P0** Add generic security notifications for password/email/MFA changes and new-session activity without exposing secrets.
 - [ ] **P1** Add staff/owner mandatory MFA and optional customer MFA with one-time recovery codes stored only as secure hashes.
 - [ ] **P1** Add a user-facing active-session list with device/time metadata and individual session revocation.
 
 **Acceptance gate:** An existing portal customer signs in once and can access both authorized portal features and commerce account features. A newly registered commerce-only user can verify, sign in, recover their account, and use commerce features but receives no portal data or permissions.
+
+**Account implementation checkpoint (2026-07-29):** Shared sessions, authorization separation, commerce registration, verification/resend, verified-email login, account bootstrap, and the initial `/account` UI are implemented. Password recovery, email/password changes, logout-all, account disable/delete, security notifications, MFA, and active-session management remain open, so this phase's full acceptance gate is not yet complete.
 
 **Session rollout note:** Deploying session-bound JWTs intentionally invalidates tokens issued by older releases, so the release must announce a one-time sign-in reset. Browser sessions have a 30-day absolute lifetime from login even when refresh tokens rotate; active users must sign in again after that boundary.
 
@@ -332,9 +348,12 @@ Create migrations before building operational screens.
 
 ## Phase 8: Add Transactional Email
 
-- [ ] **P0** Select a transactional provider and configure separate staging/production credentials.
+- [x] **P0** Select ZeptoMail and implement environment-driven authentication-email delivery through its official HTTP API.
+- [ ] **P0** Provision and verify separate ZeptoMail staging/production credentials and sender identities.
 - [ ] **P0** Configure SPF, DKIM, and DMARC for the sending domain.
-- [ ] **P0** Send idempotent, expiring account verification, password reset, email-change confirmation, and security-change notification emails.
+- [x] **P0** Send expiring, single-use account-verification emails through ZeptoMail with click/open tracking disabled.
+- [x] **P0** Keep verification emails on ZeptoMail as part of the shared authentication-email delivery path.
+- [ ] **P0** Add password-reset, email-change confirmation, and security-change notification emails with idempotent delivery behavior.
 - [ ] **P0** Send idempotent customer emails for payment received/order confirmed, shipped, canceled, and refunded.
 - [ ] **P0** Send staff notifications for paid orders and operational exceptions.
 - [ ] **P0** Include order number, item summary, totals, support details, and delivery information; never include status tokens or payment secrets.
@@ -350,13 +369,15 @@ Create migrations before building operational screens.
 - [ ] **P0** Keep WIP routes in place until all previous P0 acceptance gates pass.
 - [ ] **P0** Restore the real components for `/shop`, collection/product pages, `/cart`, `/checkout`, and `/order-confirmed` in `frontend/src/App.jsx`.
 - [ ] **P0** Refactor the customer portal into a shared authenticated account shell. All authenticated customers see Orders, Addresses, Profile, and Security; only users with explicit portal capabilities see Companies, Equipment, Reports, and Certificates.
-- [ ] **P0** Reuse one login/session flow for portal and commerce. The store may expose an account-login entry route, but it must render the shared auth flow and use the same backend identity/session as `/portal/login`.
-- [ ] **P0** Add commerce registration, verify-email, forgot/reset-password, account profile, security, order history/detail, and saved-address screens.
-- [ ] **P0** Route commerce-only users to their order/account overview after login and never render an empty or unauthorized equipment dashboard.
-- [ ] **P0** Let existing portal customers move between equipment and store account sections without logging in again.
-- [ ] **P0** Preserve QR equipment, checkout, and order redirect targets through login and email verification using validated same-origin paths only.
-- [ ] **P0** Derive navigation from backend capabilities for usability while continuing to enforce every permission on the backend.
-- [ ] **P0** Never store access/refresh tokens, verification/reset tokens, full saved addresses, or order capability secrets in local storage.
+- [x] **P0** Reuse one login/session flow for portal and commerce. The account-login route uses the same backend identity and session authority as `/portal/login`.
+- [x] **P0** Add commerce login, registration, verify-email, resend-verification, and capability-driven account-overview screens.
+- [ ] **P0** Add forgot/reset-password, account profile, security, order history/detail, and saved-address screens.
+- [x] **P0** Route commerce-only users to their account overview after login and never render an empty or unauthorized equipment dashboard.
+- [x] **P0** Let existing portal customers move between portal and current shared account sections without logging in again.
+- [x] **P0** Preserve validated same-origin redirect targets through login and reject unsafe redirect paths.
+- [ ] **P0** Extend safe redirect preservation through email verification for QR equipment, checkout, and order-history destinations.
+- [x] **P0** Derive account navigation from backend capabilities for usability while continuing to enforce every permission on the backend.
+- [x] **P0** Never store access/refresh tokens, verification/reset tokens, full saved addresses, or order capability secrets in local storage.
 - [ ] **P0** Confirm `CartProvider` wraps every route/component that calls `useCart`.
 - [ ] **P0** Clamp and normalize cart quantities and reject malformed local-storage cart data.
 - [ ] **P0** Show server-confirmed pricing before payment and explain price/stock changes from stale carts.
@@ -381,9 +402,10 @@ Create migrations before building operational screens.
 
 - [ ] **P0** Local-catalog checkout makes no Stripe Product/Price API calls, ignores browser-supplied prices/totals, and sends the exact server-calculated minor-unit amount to the PaymentIntent.
 - [ ] **P0** Existing portal login compatibility and lazy commerce-profile creation without role/company changes.
-- [ ] **P0** Commerce registration, email uniqueness/normalization, verification, resend, password reset, email change, account disable/delete, session revocation, and generic anti-enumeration responses.
+- [x] **P0** Commerce registration, email uniqueness/normalization, verification, resend, per-browser session revocation, and generic registration/resend anti-enumeration responses.
+- [ ] **P0** Password reset, email change, account disable/delete, logout-all, and generic account-recovery response coverage.
 - [ ] **P0** Permission matrix covering portal customer, commerce-only customer, engineer, office staff, owner, inactive user, unverified user, and guest.
-- [ ] **P0** Commerce-only users are denied every portal/company/equipment/report/certificate/staff endpoint.
+- [x] **P0** Commerce-only users are denied portal/company/equipment/report/certificate/staff endpoints.
 - [ ] **P0** Account order list/detail ownership, optional company-order rules, guest-order claim proofs, and removal of access after relevant membership changes.
 - [ ] **P0** Saved-address CRUD ownership/default constraints, cross-account ID substitution, limits, validation, soft deletion, and immutable order snapshots.
 - [ ] **P0** Catalog activation, positive pricing, currency, SKU uniqueness, and unavailable-product behavior.
@@ -399,8 +421,10 @@ Create migrations before building operational screens.
 
 ### Frontend tests
 
-- [ ] **P0** Shared login, registration, verification, reset, safe redirect validation, session expiry, logout-all, and capability-driven navigation.
-- [ ] **P0** Portal customers see both portal and commerce areas; commerce-only customers never see or enter protected portal areas.
+- [x] **P0** Shared login, registration, verification, safe redirect validation, and capability-driven account navigation.
+- [ ] **P0** Password-reset, session-expiry, and logout-all frontend coverage.
+- [x] **P0** Capability-driven account navigation shows portal links only to users with explicit portal access.
+- [ ] **P0** Complete the frontend route matrix proving commerce-only customers cannot enter every protected portal area.
 - [ ] **P0** Order history/detail loading, pagination, empty/error states, unauthorized order behavior, and safe receipt/tracking links.
 - [ ] **P0** Saved-address create/edit/delete/default/select flows, explicit save consent, validation, and inaccessible foreign addresses.
 - [ ] **P0** Cart load/normalization, add/remove, quantity limits, stale product, and price change.
@@ -409,6 +433,8 @@ Create migrations before building operational screens.
 - [ ] **P0** Stripe decline, authentication-required payment, success, processing, cancellation, retry, double-submit, and timeout states.
 - [ ] **P0** Refresh recovery during pending/processing payment and secure confirmation lookup.
 - [ ] **P1** Accessibility checks for cart, forms, errors, and dialogs.
+
+**Account validation checkpoint (2026-07-29):** The complete backend API suite passes (173 tests), the complete frontend suite passes (65 tests), the focused account frontend suite passes (16 tests), the production frontend build and targeted account lint pass, Django reports no system-check issues or migration drift, and `git diff --check` is clean. Compatible dependency updates moved React Router to 7.18.2 and PostCSS to 8.5.25; the remaining router audit advisory applies only to unused unstable RSC APIs. Real staging ZeptoMail/Turnstile delivery and the end-to-end account matrix remain outstanding.
 
 ### End-to-end staging tests
 

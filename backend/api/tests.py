@@ -18,6 +18,7 @@ from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
 from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 
 from .account_tokens import consume_account_action_token, issue_account_action_token
+from .account_emails import TransactionalEmailDeliveryError, send_verification_email
 from .auth_sessions import revoke_user_sessions
 from .models import (
     AccountActionToken,
@@ -39,7 +40,10 @@ from .models import (
     UserProfile,
 )
 from .throttles import PortalMethodRateThrottle
-from backend.settings import validate_required_secrets
+from backend.settings import (
+    validate_account_registration_configuration,
+    validate_required_secrets,
+)
 
 
 TEST_CACHES = {
@@ -86,6 +90,42 @@ class BaseApiTestCase(TestCase):
             },
         )
         self.client = Client()
+
+    def test_registration_config_requires_zeptomail_and_turnstile_in_production(self):
+        with self.assertRaisesMessage(
+            ValueError,
+            "ZEPTOMAIL_SEND_TOKEN, ZEPTOMAIL_FROM_EMAIL, ACCOUNT_TURNSTILE_SECRET_KEY",
+        ):
+            validate_account_registration_configuration(
+                debug=False,
+                registration_enabled=True,
+                turnstile_required=True,
+                values={
+                    "ZEPTOMAIL_SEND_TOKEN": "",
+                    "ZEPTOMAIL_FROM_EMAIL": "",
+                    "ACCOUNT_TURNSTILE_SECRET_KEY": "",
+                    "ACCOUNT_TERMS_VERSION": "terms-2026-07",
+                    "ACCOUNT_PRIVACY_VERSION": "privacy-2026-07",
+                },
+            )
+
+    def test_registration_config_rejects_draft_legal_versions(self):
+        with self.assertRaisesMessage(
+            ValueError,
+            "approved terms and privacy versions",
+        ):
+            validate_account_registration_configuration(
+                debug=False,
+                registration_enabled=True,
+                turnstile_required=True,
+                values={
+                    "ZEPTOMAIL_SEND_TOKEN": "send-token",
+                    "ZEPTOMAIL_FROM_EMAIL": "accounts@manleylifting.ie",
+                    "ACCOUNT_TURNSTILE_SECRET_KEY": "turnstile-secret",
+                    "ACCOUNT_TERMS_VERSION": "draft",
+                    "ACCOUNT_PRIVACY_VERSION": "draft",
+                },
+            )
 
 
 class IdentityEmailAuditCommandTests(TestCase):
@@ -1003,6 +1043,389 @@ class AccountBootstrapTests(TestCase):
         response = self.client.get("/api/account/bootstrap/")
 
         self.assertEqual(response.status_code, 401)
+
+
+@override_settings(
+    ACCOUNT_REGISTRATION_ENABLED=True,
+    ACCOUNT_REQUIRE_TURNSTILE=False,
+    ACCOUNT_TERMS_VERSION="terms-v1",
+    ACCOUNT_PRIVACY_VERSION="privacy-v1",
+)
+class CommerceRegistrationTests(TestCase):
+    registration_payload = {
+        "email": "new-customer@example.com",
+        "password": "A-Strong-Commerce-Password-123!",
+        "first_name": "New",
+        "last_name": "Customer",
+        "accept_terms": True,
+        "accept_privacy": True,
+        "turnstile_token": "test-turnstile-token",
+    }
+    generic_registration_response = {
+        "detail": "If the address can be registered, check your email for next steps."
+    }
+    generic_resend_response = {
+        "detail": "If an unverified account exists, a verification email will be sent."
+    }
+
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+
+    def register(self, mock_send, **changes):
+        payload = {**self.registration_payload, **changes}
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                "/api/account/register/",
+                data=payload,
+                format="json",
+            )
+        return response
+
+    @patch("api.account_views.send_verification_email")
+    def test_registration_creates_only_pending_commerce_identity(self, mock_send):
+        response = self.register(mock_send, email="  NEW-CUSTOMER@example.com ")
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json(), self.generic_registration_response)
+        user = get_user_model().objects.get(email="new-customer@example.com")
+        profile = CommerceCustomerProfile.objects.get(user=user)
+        action_token = AccountActionToken.objects.get(
+            user=user,
+            purpose=AccountActionToken.Purpose.VERIFY_EMAIL,
+        )
+        raw_token = mock_send.call_args.kwargs["raw_token"]
+        self.assertFalse(user.is_active)
+        self.assertTrue(user.check_password(self.registration_payload["password"]))
+        self.assertTrue(user.username.startswith("commerce_"))
+        self.assertFalse(UserProfile.objects.filter(user=user).exists())
+        self.assertTrue(profile.activation_pending)
+        self.assertEqual(profile.terms_version, "terms-v1")
+        self.assertEqual(profile.privacy_version, "privacy-v1")
+        self.assertIsNotNone(profile.terms_accepted_at)
+        self.assertEqual(profile.privacy_accepted_at, profile.terms_accepted_at)
+        self.assertNotEqual(action_token.token_digest, raw_token)
+        self.assertNotIn(raw_token, str(response.json()))
+        mock_send.assert_called_once_with(
+            recipient_email="new-customer@example.com",
+            raw_token=raw_token,
+        )
+
+    @override_settings(ACCOUNT_REGISTRATION_ENABLED=False)
+    @patch("api.account_views.send_verification_email")
+    def test_registration_is_fail_closed_until_enabled(self, mock_send):
+        response = self.register(mock_send)
+
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(get_user_model().objects.exists())
+        mock_send.assert_not_called()
+
+    @patch("api.account_views.send_verification_email")
+    def test_existing_email_gets_same_generic_response_without_identity_merge(self, mock_send):
+        existing_user = get_user_model().objects.create_user(
+            username="existing-portal-user",
+            email="existing@example.com",
+            password="existing-password-123",
+        )
+        UserProfile.objects.create(user=existing_user, role=UserProfile.ROLE_OWNER)
+
+        response = self.register(mock_send, email=" Existing@Example.com ")
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json(), self.generic_registration_response)
+        self.assertEqual(get_user_model().objects.count(), 1)
+        self.assertFalse(CommerceCustomerProfile.objects.filter(user=existing_user).exists())
+        self.assertFalse(AccountActionToken.objects.filter(user=existing_user).exists())
+        mock_send.assert_not_called()
+
+    @patch("api.account_views.send_verification_email")
+    def test_registration_validates_password_and_legal_acceptance(self, mock_send):
+        response = self.register(
+            mock_send,
+            password="too-short",
+            accept_terms=False,
+            accept_privacy=False,
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("password", response.json())
+        self.assertIn("accept_terms", response.json())
+        self.assertIn("accept_privacy", response.json())
+        self.assertFalse(get_user_model().objects.exists())
+        mock_send.assert_not_called()
+
+    @patch("api.account_views.verify_turnstile_token", return_value=False)
+    @patch("api.account_views.send_verification_email")
+    def test_registration_rejects_failed_turnstile(self, mock_send, _mock_turnstile):
+        response = self.register(mock_send)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {"detail": "Bot verification failed."})
+        self.assertFalse(get_user_model().objects.exists())
+        mock_send.assert_not_called()
+
+    @patch("api.account_views.send_verification_email")
+    def test_verification_activates_pending_account_once(self, mock_send):
+        self.register(mock_send)
+        raw_token = mock_send.call_args.kwargs["raw_token"]
+        user = get_user_model().objects.get(email="new-customer@example.com")
+
+        first_response = self.client.post(
+            "/api/account/verify-email/",
+            data={"token": raw_token},
+            format="json",
+        )
+        second_response = self.client.post(
+            "/api/account/verify-email/",
+            data={"token": raw_token},
+            format="json",
+        )
+
+        user.refresh_from_db()
+        profile = CommerceCustomerProfile.objects.get(user=user)
+        action_token = AccountActionToken.objects.get(user=user)
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(first_response.json(), {"ok": True})
+        self.assertEqual(second_response.status_code, 400)
+        self.assertTrue(user.is_active)
+        self.assertFalse(profile.activation_pending)
+        self.assertEqual(profile.verified_email, user.email)
+        self.assertTrue(profile.has_verified_email())
+        self.assertIsNotNone(action_token.consumed_at)
+
+    def test_verification_never_reactivates_non_pending_disabled_account(self):
+        user = get_user_model().objects.create_user(
+            username="disabled-commerce-user",
+            email="disabled-commerce@example.com",
+            password="disabled-password-123",
+            is_active=False,
+        )
+        CommerceCustomerProfile.objects.create(
+            user=user,
+            activation_pending=False,
+        )
+        raw_token = issue_account_action_token(
+            user=user,
+            purpose=AccountActionToken.Purpose.VERIFY_EMAIL,
+            target_email=user.email,
+            lifetime=timedelta(hours=1),
+        )
+
+        response = self.client.post(
+            "/api/account/verify-email/",
+            data={"token": raw_token},
+            format="json",
+        )
+
+        user.refresh_from_db()
+        profile = CommerceCustomerProfile.objects.get(user=user)
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(user.is_active)
+        self.assertFalse(profile.has_verified_email())
+
+    @patch("api.account_views.send_verification_email")
+    def test_deactivation_cancels_pending_activation(self, mock_send):
+        self.register(mock_send)
+        raw_token = mock_send.call_args.kwargs["raw_token"]
+        user = get_user_model().objects.get(email="new-customer@example.com")
+        user.is_active = True
+        user.save(update_fields=["is_active"])
+        user.is_active = False
+        user.save(update_fields=["is_active"])
+
+        response = self.client.post(
+            "/api/account/verify-email/",
+            data={"token": raw_token},
+            format="json",
+        )
+
+        user.refresh_from_db()
+        profile = CommerceCustomerProfile.objects.get(user=user)
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(user.is_active)
+        self.assertFalse(profile.activation_pending)
+
+    @patch("api.account_views.send_verification_email")
+    def test_resend_replaces_token_and_remains_generic(self, mock_send):
+        self.register(mock_send)
+        first_token = AccountActionToken.objects.get()
+        mock_send.reset_mock()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            existing_response = self.client.post(
+                "/api/account/resend-verification/",
+                data={"email": "NEW-CUSTOMER@example.com"},
+                format="json",
+            )
+        missing_response = self.client.post(
+            "/api/account/resend-verification/",
+            data={"email": "missing@example.com"},
+            format="json",
+        )
+
+        first_token.refresh_from_db()
+        replacement = AccountActionToken.objects.exclude(pk=first_token.pk).get()
+        self.assertEqual(existing_response.status_code, 202)
+        self.assertEqual(existing_response.json(), self.generic_resend_response)
+        self.assertEqual(missing_response.status_code, 202)
+        self.assertEqual(missing_response.json(), self.generic_resend_response)
+        self.assertIsNotNone(first_token.revoked_at)
+        self.assertIsNone(replacement.revoked_at)
+        mock_send.assert_called_once()
+
+    @override_settings(
+        ACCOUNT_REQUIRE_TURNSTILE=True,
+        ACCOUNT_TURNSTILE_SECRET_KEY="test-secret",
+    )
+    @patch("api.account_views.verify_turnstile_token", return_value=False)
+    @patch("api.account_views.send_verification_email")
+    def test_resend_rejects_failed_turnstile_before_identity_lookup(
+        self,
+        mock_send,
+        _mock_turnstile,
+    ):
+        response = self.client.post(
+            "/api/account/resend-verification/",
+            data={
+                "email": "missing@example.com",
+                "turnstile_token": "failed-token",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {"detail": "Bot verification failed."})
+        self.assertFalse(AccountActionToken.objects.exists())
+        mock_send.assert_not_called()
+
+    @override_settings(
+        ACCOUNT_REQUIRE_TURNSTILE=True,
+        ACCOUNT_TURNSTILE_SECRET_KEY="test-secret",
+    )
+    @patch("api.account_views.verify_turnstile_token", return_value=True)
+    def test_resend_passes_turnstile_token_to_verifier(self, mock_turnstile):
+        response = self.client.post(
+            "/api/account/resend-verification/",
+            data={
+                "email": "missing@example.com",
+                "turnstile_token": "valid-turnstile-token",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 202)
+        mock_turnstile.assert_called_once_with(
+            "valid-turnstile-token",
+            required=True,
+            secret_key="test-secret",
+            remote_ip="127.0.0.1",
+        )
+
+    @patch("api.account_views.send_verification_email")
+    def test_verified_customer_can_login_with_email_but_pending_customer_cannot(self, mock_send):
+        self.register(mock_send)
+        raw_token = mock_send.call_args.kwargs["raw_token"]
+
+        pending_response = self.client.post(
+            "/api/auth/token/",
+            data={
+                "username": "new-customer@example.com",
+                "password": self.registration_payload["password"],
+            },
+            format="json",
+        )
+        self.client.post(
+            "/api/account/verify-email/",
+            data={"token": raw_token},
+            format="json",
+        )
+        verified_response = self.client.post(
+            "/api/auth/token/",
+            data={
+                "username": "NEW-CUSTOMER@example.com",
+                "password": self.registration_payload["password"],
+            },
+            format="json",
+        )
+
+        self.assertEqual(pending_response.status_code, 400)
+        self.assertEqual(verified_response.status_code, 200)
+        self.assertIn("access", verified_response.json())
+
+    @override_settings(CSRF_TRUSTED_ORIGINS=["https://trusted-frontend.example"])
+    @patch("api.account_views.send_verification_email")
+    def test_registration_is_json_only_and_csrf_protected(self, mock_send):
+        csrf_client = APIClient(enforce_csrf_checks=True)
+        rejected_response = csrf_client.post(
+            "/api/account/register/",
+            data=self.registration_payload,
+            format="json",
+            HTTP_ORIGIN="https://attacker.example",
+        )
+        seed_response = csrf_client.get("/api/csrf/")
+        accepted_response = csrf_client.post(
+            "/api/account/register/",
+            data=self.registration_payload,
+            format="json",
+            HTTP_X_CSRFTOKEN=seed_response.json()["csrf_token"],
+            HTTP_ORIGIN="https://trusted-frontend.example",
+        )
+        form_response = self.client.post(
+            "/api/account/register/",
+            data=self.registration_payload,
+        )
+
+        self.assertEqual(rejected_response.status_code, 403)
+        self.assertEqual(accepted_response.status_code, 202)
+        self.assertEqual(form_response.status_code, 415)
+
+
+class ZeptoMailDeliveryTests(TestCase):
+    @override_settings(
+        ACCOUNT_FRONTEND_URL="https://manleylifting.ie",
+        ZEPTOMAIL_API_URL="https://api.zeptomail.eu/v1.1/email",
+        ZEPTOMAIL_SEND_TOKEN="test-send-token",
+        ZEPTOMAIL_FROM_EMAIL="accounts@manleylifting.ie",
+        ZEPTOMAIL_FROM_NAME="Manley Lifting",
+    )
+    @patch("api.account_emails.urlopen")
+    def test_verification_email_uses_zeptomail_without_tracking(self, mock_urlopen):
+        response = mock_urlopen.return_value.__enter__.return_value
+        response.status = 201
+
+        send_verification_email(
+            recipient_email="customer@example.com",
+            raw_token="secret-verification-token",
+        )
+
+        request = mock_urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(request.full_url, "https://api.zeptomail.eu/v1.1/email")
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(
+            request.headers["Authorization"],
+            "Zoho-enczapikey test-send-token",
+        )
+        self.assertEqual(payload["from"]["address"], "accounts@manleylifting.ie")
+        self.assertEqual(
+            payload["to"][0]["email_address"]["address"],
+            "customer@example.com",
+        )
+        self.assertFalse(payload["track_clicks"])
+        self.assertFalse(payload["track_opens"])
+        self.assertIn("#token=secret-verification-token", payload["textbody"])
+        self.assertNotIn("secret-verification-token", request.full_url)
+
+    @override_settings(
+        ZEPTOMAIL_SEND_TOKEN="",
+        ZEPTOMAIL_FROM_EMAIL="accounts@manleylifting.ie",
+    )
+    def test_missing_zeptomail_token_fails_closed(self):
+        with self.assertRaises(TransactionalEmailDeliveryError):
+            send_verification_email(
+                recipient_email="customer@example.com",
+                raw_token="secret-verification-token",
+            )
 
 
 class ApiBasicEndpointTests(BaseApiTestCase):

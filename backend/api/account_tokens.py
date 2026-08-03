@@ -87,14 +87,33 @@ def consume_account_action_token(*, raw_token, purpose, action):
     if not candidate_token:
         return None
 
-    now = timezone.now()
+    token_digest = _token_digest(candidate_token, purpose)
+    candidate_user_id = AccountActionToken.objects.filter(
+        token_digest=token_digest,
+        purpose=purpose,
+        consumed_at__isnull=True,
+        revoked_at__isnull=True,
+        expires_at__gt=timezone.now(),
+    ).values_list("user_id", flat=True).first()
+    if candidate_user_id is None:
+        return None
+
     with transaction.atomic():
+        user_model = get_user_model()
+        try:
+            user = user_model.objects.select_for_update().only("pk", "email").get(
+                pk=candidate_user_id
+            )
+        except user_model.DoesNotExist:
+            return None
+
+        now = timezone.now()
         action_token = (
             AccountActionToken.objects.select_for_update()
-            .select_related("user")
             .filter(
-                token_digest=_token_digest(candidate_token, purpose),
+                token_digest=token_digest,
                 purpose=purpose,
+                user_id=user.pk,
                 consumed_at__isnull=True,
                 revoked_at__isnull=True,
                 expires_at__gt=now,
@@ -103,9 +122,10 @@ def consume_account_action_token(*, raw_token, purpose, action):
         )
         if action_token is None:
             return None
+        action_token.user = user
 
         try:
-            current_email = _normalize_email(action_token.user.email)
+            current_email = _normalize_email(user.email)
         except ValidationError:
             action_token.revoked_at = now
             action_token.save(update_fields=["revoked_at"])

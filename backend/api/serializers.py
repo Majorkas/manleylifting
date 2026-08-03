@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
 from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
@@ -23,6 +24,7 @@ from .auth_sessions import (
     parse_refresh_token,
     token_has_current_session_generation,
 )
+from .auth_backends import resolve_login_user
 from .models import AccountSession, Certificate, Company, Equipment, InspectionReport, ReportImage, ReportRevision, Site, UserProfile
 
 REPORT_CHECKLIST_ALLOWED_STATUSES = {
@@ -435,6 +437,63 @@ class AccountBootstrapSerializer(serializers.Serializer):
     capabilities = AccountCapabilitiesSerializer()
 
 
+class CommerceRegistrationSerializer(serializers.Serializer):
+    email = serializers.EmailField(max_length=254)
+    password = serializers.CharField(write_only=True, min_length=12, max_length=128)
+    first_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    last_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    accept_terms = serializers.BooleanField()
+    accept_privacy = serializers.BooleanField()
+    turnstile_token = serializers.CharField(
+        max_length=2048,
+        required=False,
+        allow_blank=True,
+        write_only=True,
+    )
+
+    def validate_email(self, value):
+        return str(value).strip().lower()
+
+    def validate_password(self, value):
+        user = get_user_model()(
+            email=str(self.initial_data.get("email") or "").strip().lower(),
+            first_name=str(self.initial_data.get("first_name") or "").strip(),
+            last_name=str(self.initial_data.get("last_name") or "").strip(),
+        )
+        try:
+            validate_password(value, user=user)
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(list(error.messages)) from error
+        return value
+
+    def validate_accept_terms(self, value):
+        if not value:
+            raise serializers.ValidationError("Terms acceptance is required.")
+        return value
+
+    def validate_accept_privacy(self, value):
+        if not value:
+            raise serializers.ValidationError("Privacy notice acceptance is required.")
+        return value
+
+
+class AccountEmailSerializer(serializers.Serializer):
+    email = serializers.EmailField(max_length=254)
+    turnstile_token = serializers.CharField(
+        max_length=2048,
+        required=False,
+        allow_blank=True,
+        write_only=True,
+    )
+
+    def validate_email(self, value):
+        return str(value).strip().lower()
+
+
+class VerifyEmailSerializer(serializers.Serializer):
+    token = serializers.CharField(max_length=256, trim_whitespace=True)
+
+
 class PortalChangePasswordSerializer(serializers.Serializer):
     current_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
     new_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
@@ -563,9 +622,10 @@ class PortalTokenObtainPairSerializer(TokenObtainPairSerializer):
                 {"detail": "Account temporarily locked due to failed login attempts. Try again in 15 minutes."}
             )
 
-        user_model = get_user_model()
-        user = user_model.objects.filter(username__iexact=username).first()
+        user = resolve_login_user(username)
 
+        if user is None:
+            get_user_model()().set_password(password)
         if user is None or not user.check_password(password):
             cache.set(failure_key, failed_attempts + 1, timeout=self.LOCKOUT_SECONDS)
             next_attempt_count = failed_attempts + 1

@@ -4,8 +4,7 @@ import os
 import re
 import secrets
 from datetime import timedelta
-from urllib.parse import urlencode, urlparse
-from urllib.request import Request, urlopen
+from urllib.parse import urlparse
 import stripe
 
 from django.core.cache import cache
@@ -22,6 +21,8 @@ from .models import (
   OnsiteOrder,
   ProcessedStripeEvent,
 )
+from .request_security import client_ip as _client_ip
+from .turnstile import verify_turnstile_token
 
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
@@ -64,7 +65,6 @@ CHECKOUT_ALLOWED_ORIGINS = set(
 )
 TURNSTILE_SECRET_KEY = os.getenv("SHOP_TURNSTILE_SECRET_KEY", "").strip()
 REQUIRE_TURNSTILE = _env_bool("SHOP_REQUIRE_TURNSTILE", not bool(getattr(settings, "DEBUG", False)))
-TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 
 
 @ensure_csrf_cookie
@@ -89,23 +89,6 @@ def _to_int(value, default=0):
     return int(value)
   except (TypeError, ValueError):
     return default
-
-
-def _client_ip(request):
-  remote_addr = str(request.META.get("REMOTE_ADDR", "")).strip()
-  forwarded_for = str(request.META.get("HTTP_X_FORWARDED_FOR", "")).strip()
-
-  trust_forwarded = bool(getattr(settings, "TRUST_X_FORWARDED_FOR", False))
-  trusted_proxies = set(getattr(settings, "TRUSTED_PROXY_IPS", []) or [])
-
-  if trust_forwarded and remote_addr and remote_addr in trusted_proxies and forwarded_for:
-    first_hop = forwarded_for.split(",")[0].strip()
-    if first_hop:
-      return first_hop
-
-  if remote_addr:
-    return remote_addr
-  return "unknown"
 
 
 def _is_rate_limited(request, scope, limit, window_seconds):
@@ -166,39 +149,12 @@ def _is_allowed_checkout_origin(request):
 
 
 def _verify_turnstile_token(token, remote_ip=""):
-  if not REQUIRE_TURNSTILE:
-    return True
-
-  if not TURNSTILE_SECRET_KEY:
-    logger.error("SHOP_TURNSTILE_SECRET_KEY is required when SHOP_REQUIRE_TURNSTILE is enabled")
-    return False
-
-  response_token = str(token or "").strip()
-  if not response_token:
-    return False
-
-  payload = {
-    "secret": TURNSTILE_SECRET_KEY,
-    "response": response_token,
-  }
-  if remote_ip:
-    payload["remoteip"] = remote_ip
-
-  req = Request(
-    TURNSTILE_VERIFY_URL,
-    data=urlencode(payload).encode("utf-8"),
-    headers={"Content-Type": "application/x-www-form-urlencoded"},
-    method="POST",
+  return verify_turnstile_token(
+    token,
+    required=REQUIRE_TURNSTILE,
+    secret_key=TURNSTILE_SECRET_KEY,
+    remote_ip=remote_ip,
   )
-
-  try:
-    with urlopen(req, timeout=10) as response:
-      body = json.loads(response.read().decode("utf-8") or "{}")
-  except Exception:
-    logger.warning("Turnstile verification request failed")
-    return False
-
-  return bool(body.get("success"))
 
 
 def _is_valid_checkout_ref(value):

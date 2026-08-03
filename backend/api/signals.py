@@ -42,6 +42,10 @@ def invalidate_credentials_after_user_change(sender, instance, created, **kwargs
             verified_email="",
             email_verified_at=None,
         )
+    if "is_active" in changed_fields and not instance.is_active:
+        CommerceCustomerProfile.objects.filter(user=instance).update(
+            activation_pending=False,
+        )
 
     revoke_user_sessions(instance)
     revoke_account_action_tokens(user=instance)
