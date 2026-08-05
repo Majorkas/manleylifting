@@ -1544,6 +1544,37 @@ class CommerceRegistrationTests(TestCase):
         self.assertFalse(user.check_password("Old-Strong-Password-123!"))
         self.assertIsNotNone(action_token.consumed_at)
 
+    def test_password_reset_completion_revokes_existing_sessions(self):
+        user = get_user_model().objects.create_user(
+            username="reset-session-user",
+            email="reset-session@example.com",
+            password="Old-Strong-Password-123!",
+            is_active=True,
+        )
+        CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        session = AccountSession.objects.create(
+            user=user,
+            expires_at=timezone.now() + timedelta(hours=2),
+        )
+        raw_token = issue_account_action_token(
+            user=user,
+            purpose=AccountActionToken.Purpose.PASSWORD_RESET,
+            target_email=user.email,
+            lifetime=timedelta(hours=1),
+        )
+
+        response = self.client.post(
+            "/api/account/password-reset/complete/",
+            data={"token": raw_token, "new_password": "Reset-Strong-Password-789!"},
+            format="json",
+        )
+
+        session.refresh_from_db()
+        state = AccountSecurityState.objects.get(user=user)
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNotNone(session.revoked_at)
+        self.assertGreater(state.session_generation, 0)
+
     def test_account_password_change_requires_current_password_and_revokes_sessions(self):
         user = get_user_model().objects.create_user(
             username="account-password-user",

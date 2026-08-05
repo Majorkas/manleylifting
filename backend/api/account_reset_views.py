@@ -14,6 +14,7 @@ from rest_framework.views import APIView
 
 from .account_emails import send_password_reset_email
 from .account_tokens import consume_account_action_token, issue_account_action_token
+from .auth_sessions import revoke_user_sessions
 from .models import AccountActionToken, CommerceCustomerProfile
 from .request_security import client_ip
 from .serializers import AccountEmailSerializer, PasswordResetCompleteSerializer
@@ -95,6 +96,7 @@ class PasswordResetCompleteView(APIView):
             user = get_user_model().objects.select_for_update().get(pk=action_token.user_id)
             user.set_password(payload["new_password"])
             user.save(update_fields=["password"])
+            revoke_user_sessions(user)
             return user.pk
 
         completed_user_id = consume_account_action_token(
