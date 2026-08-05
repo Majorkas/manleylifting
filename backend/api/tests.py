@@ -579,14 +579,29 @@ class AccountSessionRevocationTests(TestCase):
             format="json",
         )
         logout_response = client.post("/api/account/logout-all/", data={}, format="json")
+        setup_response = client.post(
+            "/api/account/mfa/setup/",
+            data={"current_password": "New-Strong-Password-456!"},
+            format="json",
+        )
+        security_state = AccountSecurityState.objects.get(user=user)
+        verify_response = client.post(
+            "/api/account/mfa/verify/",
+            data={"code": generate_totp_code(security_state.mfa_pending_secret)},
+            format="json",
+        )
         events_response = client.get("/api/account/security-events/", format="json")
 
         self.assertEqual(password_response.status_code, 200)
         self.assertEqual(logout_response.status_code, 200)
+        self.assertEqual(setup_response.status_code, 200)
+        self.assertEqual(verify_response.status_code, 200)
         self.assertEqual(events_response.status_code, 200)
         actions = [item["action"] for item in events_response.json()]
         self.assertIn("account.password_change", actions)
         self.assertIn("account.logout_all", actions)
+        self.assertIn("account.mfa_setup", actions)
+        self.assertIn("account.mfa_verify", actions)
 
     def test_refresh_uses_cookie_and_ignores_body_token(self):
         _, victim_refresh = self.login()
@@ -1544,7 +1559,7 @@ class CommerceRegistrationTests(TestCase):
         self.assertFalse(user.check_password("Old-Strong-Password-123!"))
         self.assertIsNotNone(action_token.consumed_at)
 
-    def test_password_reset_completion_revokes_existing_sessions(self):
+    def test_password_reset_completion_revokes_existing_sessions_and_logs_security_event(self):
         user = get_user_model().objects.create_user(
             username="reset-session-user",
             email="reset-session@example.com",
@@ -1571,9 +1586,11 @@ class CommerceRegistrationTests(TestCase):
 
         session.refresh_from_db()
         state = AccountSecurityState.objects.get(user=user)
+        security_event = AuditLog.objects.filter(actor=user, action="account.password_reset", target_type="account", target_id=str(user.pk)).first()
         self.assertEqual(response.status_code, 200)
         self.assertIsNotNone(session.revoked_at)
         self.assertGreater(state.session_generation, 0)
+        self.assertIsNotNone(security_event)
 
     def test_account_password_change_requires_current_password_and_revokes_sessions(self):
         user = get_user_model().objects.create_user(
@@ -2099,6 +2116,14 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         self.assertEqual(order.user, claimant)
         self.assertEqual(claim.claim_state, GuestOrderClaim.STATE_CLAIMED)
         self.assertEqual(claim.claimed_by, claimant)
+        self.assertTrue(
+            AuditLog.objects.filter(
+                actor=claimant,
+                action="account.claim_order",
+                target_type="order",
+                target_id=str(order.order_number),
+            ).exists()
+        )
 
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)

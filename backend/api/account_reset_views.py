@@ -14,6 +14,7 @@ from rest_framework.views import APIView
 
 from .account_emails import send_password_reset_email
 from .account_tokens import consume_account_action_token, issue_account_action_token
+from .audit import log_portal_audit_event
 from .auth_sessions import revoke_user_sessions
 from .models import AccountActionToken, CommerceCustomerProfile
 from .request_security import client_ip
@@ -99,6 +100,16 @@ class PasswordResetCompleteView(APIView):
             revoke_user_sessions(user)
             return user.pk
 
+        def log_password_reset_completion(request, user):
+            log_portal_audit_event(
+                request=request,
+                action="account.password_reset",
+                target_type="account",
+                target_id=str(user.pk),
+                details={"completed": True},
+                actor=user,
+            )
+
         completed_user_id = consume_account_action_token(
             raw_token=payload["token"],
             purpose=AccountActionToken.Purpose.PASSWORD_RESET,
@@ -109,4 +120,8 @@ class PasswordResetCompleteView(APIView):
                 {"detail": "Reset link is invalid or has expired."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        user = get_user_model().objects.filter(pk=completed_user_id).first()
+        if user is not None:
+            log_password_reset_completion(request, user)
         return Response({"ok": True})

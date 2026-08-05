@@ -18,12 +18,16 @@ def _request_ip(request):
     return remote_addr or None
 
 
-def log_portal_audit_event(*, request, action, target_type, target_id="", company=None, details=None):
+def log_portal_audit_event(*, request, action, target_type, target_id="", company=None, details=None, actor=None):
     if details is None:
         details = {}
 
+    resolved_actor = actor
+    if resolved_actor is None:
+        resolved_actor = getattr(request, "user", None) if getattr(getattr(request, "user", None), "is_authenticated", False) else None
+
     AuditLog.objects.create(
-        actor=getattr(request, "user", None) if getattr(getattr(request, "user", None), "is_authenticated", False) else None,
+        actor=resolved_actor,
         company=company,
         action=action,
         target_type=target_type,
