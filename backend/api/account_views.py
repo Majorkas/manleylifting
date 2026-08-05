@@ -25,7 +25,7 @@ from .account_emails import send_email_change_email, send_verification_email
 from .account_tokens import consume_account_action_token, issue_account_action_token
 from .audit import log_portal_audit_event
 from .auth_sessions import SESSION_ID_CLAIM, revoke_account_session, revoke_user_sessions
-from .models import AccountActionToken, AccountSecurityState, AccountSession, AuditLog, CommerceCustomerProfile, OnsiteOrder, SavedAddress, UserProfile
+from .models import AccountActionToken, AccountSecurityState, AccountSession, AuditLog, CommerceCustomerProfile, GuestOrderClaim, OnsiteOrder, SavedAddress, UserProfile
 from .request_security import client_ip
 from .serializers import (
     AccountBootstrapSerializer,
@@ -493,6 +493,55 @@ class AccountAddressesView(APIView):
             "isDefaultShipping": address.is_default_shipping,
             "isDefaultBilling": address.is_default_billing,
         }
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
+def account_claim_order(request):
+    order_number = str(request.data.get("orderNumber") or "").strip()
+    claim_token = str(request.data.get("claimToken") or "").strip()
+
+    if not order_number or not claim_token:
+        return Response({"detail": "Order number and claim token are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+    profile = CommerceCustomerProfile.objects.filter(user=request.user, disabled_at__isnull=True, anonymized_at__isnull=True).first()
+    if profile is None or not profile.has_verified_email():
+        return Response({"detail": "Account access is not available yet."}, status=status.HTTP_403_FORBIDDEN)
+
+    with transaction.atomic():
+        claim = (
+            GuestOrderClaim.objects.select_for_update()
+            .filter(claim_token=claim_token, claim_state=GuestOrderClaim.STATE_PENDING)
+            .first()
+        )
+        if claim is None:
+            return Response({"detail": "Claim token is invalid or has already been used."}, status=status.HTTP_400_BAD_REQUEST)
+        if claim.expires_at and claim.expires_at < timezone.now():
+            claim.claim_state = GuestOrderClaim.STATE_EXPIRED
+            claim.save(update_fields=["claim_state", "updated_at"])
+            return Response({"detail": "Claim token has expired."}, status=status.HTTP_400_BAD_REQUEST)
+        if claim.order.order_number != order_number:
+            return Response({"detail": "Claim token does not match the requested order."}, status=status.HTTP_400_BAD_REQUEST)
+        if claim.order.user_id is not None:
+            return Response({"detail": "This order is already attached to an account."}, status=status.HTTP_400_BAD_REQUEST)
+
+        order = claim.order
+        order.user = request.user
+        order.save(update_fields=["user", "updated_at"])
+        claim.claim_state = GuestOrderClaim.STATE_CLAIMED
+        claim.claimed_by = request.user
+        claim.claimed_at = timezone.now()
+        claim.save(update_fields=["claim_state", "claimed_by", "claimed_at", "updated_at"])
+
+    log_portal_audit_event(
+        request=request,
+        action="account.claim_order",
+        target_type="order",
+        target_id=str(order.order_number),
+        details={"order_number": order.order_number},
+    )
+    return Response({"ok": True, "orderNumber": order.order_number})
 
 
 @api_view(["POST"])

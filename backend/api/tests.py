@@ -36,6 +36,7 @@ from .models import (
     CommerceCustomerProfile,
     Company,
     Equipment,
+    GuestOrderClaim,
     InspectionReport,
     OnsiteOrder,
     ProcessedStripeEvent,
@@ -1996,6 +1997,77 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         self.assertTrue(body["orderNumber"].startswith("MNL-"))
         order = OnsiteOrder.objects.get(checkout_ref="onsite_order_number")
         self.assertEqual(body["orderNumber"], order.order_number)
+
+    @patch("api.views._is_allowed_checkout_origin", return_value=True)
+    @patch("api.views._stripe_config_ok", return_value=True)
+    @patch("api.views._verify_turnstile_token", return_value=True)
+    @patch("api.views.stripe.PaymentIntent.create")
+    def test_guest_checkout_returns_claim_token_and_allows_authenticated_claim(
+        self,
+        mock_intent_create,
+        _mock_turnstile,
+        _mock_cfg,
+        _mock_origin,
+    ):
+        CatalogProduct.objects.create(
+            product_ref="legacy-product-id",
+            variant_ref="legacy-variant-id",
+            handle="chain-block",
+            title="Chain Block",
+            price_amount="10.00",
+            currency_code="EUR",
+            is_active=True,
+        )
+        mock_intent_create.return_value = {
+            "id": "pi_claim_1",
+            "client_secret": "pi_claim_1_secret",
+        }
+
+        response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps(
+                {
+                    "checkoutRef": "guest_claim_1",
+                    "customer": {"name": "Jane Doe", "email": "jane@example.com"},
+                    "items": [{"variantId": "legacy-variant-id", "quantity": 1}],
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["claimToken"])
+
+        order = OnsiteOrder.objects.get(checkout_ref="guest_claim_1")
+        claim = GuestOrderClaim.objects.get(order=order)
+        self.assertEqual(claim.claim_state, GuestOrderClaim.STATE_PENDING)
+
+        claimant = get_user_model().objects.create_user(
+            username="claimant",
+            email="jane@example.com",
+            password="testpass123",
+            is_active=True,
+        )
+        profile = CommerceCustomerProfile.objects.create(user=claimant, activation_pending=False)
+        profile.verified_email = claimant.email
+        profile.email_verified_at = timezone.now()
+        profile.save(update_fields=["verified_email", "email_verified_at", "updated_at"])
+
+        claimant_client = APIClient()
+        claimant_client.force_authenticate(user=claimant)
+        claim_response = claimant_client.post(
+            "/api/account/claim-order/",
+            data={"orderNumber": order.order_number, "claimToken": body["claimToken"]},
+            format="json",
+        )
+
+        self.assertEqual(claim_response.status_code, 200)
+        order.refresh_from_db()
+        claim.refresh_from_db()
+        self.assertEqual(order.user, claimant)
+        self.assertEqual(claim.claim_state, GuestOrderClaim.STATE_CLAIMED)
+        self.assertEqual(claim.claimed_by, claimant)
 
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)

@@ -45,6 +45,40 @@ class ProcessedWebhookEvent(models.Model):
         return self.webhook_id
 
 
+class GuestOrderClaim(models.Model):
+    STATE_PENDING = "pending"
+    STATE_CLAIMED = "claimed"
+    STATE_EXPIRED = "expired"
+
+    STATE_CHOICES = [
+        (STATE_PENDING, "Pending"),
+        (STATE_CLAIMED, "Claimed"),
+        (STATE_EXPIRED, "Expired"),
+    ]
+
+    order = models.OneToOneField("OnsiteOrder", on_delete=models.CASCADE, related_name="guest_claim")
+    claim_token = models.CharField(max_length=128, unique=True, db_index=True)
+    claim_state = models.CharField(max_length=20, choices=STATE_CHOICES, default=STATE_PENDING)
+    claimed_by = models.ForeignKey(
+        "auth.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="claimed_guest_orders",
+    )
+    issued_at = models.DateTimeField(auto_now_add=True)
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Claim for {self.order_id}"
+
+
 class OnsiteOrder(models.Model):
     STATUS_PENDING = "pending"
     STATUS_PROCESSING = "processing"

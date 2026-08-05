@@ -18,6 +18,7 @@ from django.views.decorators.http import require_GET, require_POST
 from .models import (
   CatalogCollection,
   CatalogProduct,
+  GuestOrderClaim,
   OnsiteOrder,
   ProcessedStripeEvent,
 )
@@ -189,7 +190,7 @@ def _stripe_config_ok():
 
 def _is_valid_payment_intent_id(value):
   text = str(value or "").strip()
-  return bool(re.fullmatch(r"pi_[A-Za-z0-9]+", text))
+  return bool(re.fullmatch(r"pi_[A-Za-z0-9_]+", text))
 
 
 def _to_minor_units(amount):
@@ -560,6 +561,18 @@ def onsite_checkout_intent(request):
     },
   )
 
+  claim_token = secrets.token_urlsafe(24)
+  GuestOrderClaim.objects.update_or_create(
+    order=order,
+    defaults={
+      "claim_token": claim_token,
+      "claim_state": GuestOrderClaim.STATE_PENDING,
+      "claimed_by": None,
+      "claimed_at": None,
+      "expires_at": timezone.now() + timedelta(days=7),
+    },
+  )
+
   refresh_notice = (
     "We refreshed your order with the latest pricing and stock availability."
     if len(line_items) >= 1
@@ -570,6 +583,7 @@ def onsite_checkout_intent(request):
     {
       "checkoutRef": checkout_ref,
       "orderNumber": getattr(order, "order_number", ""),
+      "claimToken": claim_token,
       "statusToken": status_token,
       "clientSecret": client_secret,
       "paymentIntentId": payment_intent_id,
