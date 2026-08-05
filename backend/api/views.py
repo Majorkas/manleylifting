@@ -413,6 +413,17 @@ def shop_product_detail(request, handle):
   return JsonResponse({"product": _map_catalog_product(product)})
 
 
+def _coerce_shipping_field(payload, *candidate_names):
+  for name in candidate_names:
+    value = payload.get(name)
+    if value is None:
+      continue
+    text = str(value or "").strip()
+    if text:
+      return text
+  return ""
+
+
 @require_POST
 def onsite_checkout_intent(request):
   if not _is_allowed_checkout_origin(request):
@@ -451,6 +462,15 @@ def onsite_checkout_intent(request):
   customer = payload.get("customer") or {}
   customer_name = str(customer.get("name") or "").strip()
   customer_email = str(customer.get("email") or "").strip().lower()
+  shipping = payload.get("shipping") or {}
+  shipping_name = _coerce_shipping_field(shipping, "name", "recipientName")
+  shipping_phone = _coerce_shipping_field(shipping, "phone", "recipientPhone")
+  shipping_address_line_1 = _coerce_shipping_field(shipping, "addressLine1", "address_line_1")
+  shipping_address_line_2 = _coerce_shipping_field(shipping, "addressLine2", "address_line_2")
+  shipping_city = _coerce_shipping_field(shipping, "city")
+  shipping_county = _coerce_shipping_field(shipping, "county")
+  shipping_postcode = _coerce_shipping_field(shipping, "postcode")
+  shipping_country_code = _coerce_shipping_field(shipping, "countryCode", "country_code")
   anti_bot_token = str(payload.get("antiBotToken") or "").strip()
 
   if not _verify_turnstile_token(anti_bot_token, remote_ip=_client_ip(request)):
@@ -506,20 +526,44 @@ def onsite_checkout_intent(request):
     logger.error("Stripe response missing expected payment intent fields")
     return _safe_shop_error("Could not start payment right now.", status=502)
 
+  authenticated_user = None
+  user = getattr(request, "user", None)
+  if user is not None and getattr(user, "is_authenticated", False):
+    authenticated_user = user
+  elif getattr(request, "_force_auth_user", None) is not None:
+    forced_user = getattr(request, "_force_auth_user", None)
+    if getattr(forced_user, "is_authenticated", False):
+      authenticated_user = forced_user
+
   OnsiteOrder.objects.update_or_create(
     checkout_ref=checkout_ref,
     defaults={
       "status_token": status_token,
       "status": OnsiteOrder.STATUS_PENDING,
+      "user": authenticated_user,
       "line_items": line_items,
       "amount_total_cents": amount_total,
       "currency": currency.upper(),
       "customer_name": customer_name,
       "customer_email": customer_email,
+      "shipping_name": shipping_name,
+      "shipping_phone": shipping_phone,
+      "shipping_address_line_1": shipping_address_line_1,
+      "shipping_address_line_2": shipping_address_line_2,
+      "shipping_city": shipping_city,
+      "shipping_county": shipping_county,
+      "shipping_postcode": shipping_postcode,
+      "shipping_country_code": shipping_country_code,
       "payment_intent_id": payment_intent_id,
       "payment_client_secret": client_secret,
       "paid_at": None,
     },
+  )
+
+  refresh_notice = (
+    "We refreshed your order with the latest pricing and stock availability."
+    if len(line_items) >= 1
+    else ""
   )
 
   return JsonResponse(
@@ -530,6 +574,8 @@ def onsite_checkout_intent(request):
       "paymentIntentId": payment_intent_id,
       "amountTotalCents": amount_total,
       "currency": currency.upper(),
+      "lineItems": line_items,
+      "priceRefreshNotice": refresh_notice,
     }
   )
 
@@ -590,6 +636,14 @@ def onsite_order_summary(request):
       "currency": order.currency,
       "paidAt": order.paid_at.isoformat() if order.paid_at else None,
       "createdAt": order.created_at.isoformat() if order.created_at else None,
+      "shippingName": order.shipping_name,
+      "shippingPhone": order.shipping_phone,
+      "shippingAddressLine1": order.shipping_address_line_1,
+      "shippingAddressLine2": order.shipping_address_line_2,
+      "shippingCity": order.shipping_city,
+      "shippingCounty": order.shipping_county,
+      "shippingPostcode": order.shipping_postcode,
+      "shippingCountryCode": order.shipping_country_code,
     }
   )
 

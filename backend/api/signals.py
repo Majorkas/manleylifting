@@ -4,7 +4,7 @@ from django.dispatch import receiver
 
 from .account_tokens import revoke_account_action_tokens
 from .auth_sessions import revoke_user_sessions
-from .models import CommerceCustomerProfile, UserProfile
+from .models import AccountSecurityState, CommerceCustomerProfile, UserProfile
 
 
 SENSITIVE_USER_FIELDS = {"email", "password", "is_active", "is_staff", "is_superuser"}
@@ -29,6 +29,12 @@ def capture_sensitive_user_changes(sender, instance, update_fields=None, **kwarg
         for field in fields_to_check
         if previous is not None and previous[field] != getattr(instance, field)
     }
+
+
+@receiver(post_save, sender=settings.AUTH_USER_MODEL)
+def ensure_account_security_state(sender, instance, created, **kwargs):
+    if created:
+        AccountSecurityState.objects.get_or_create(user=instance)
 
 
 @receiver(post_save, sender=settings.AUTH_USER_MODEL)

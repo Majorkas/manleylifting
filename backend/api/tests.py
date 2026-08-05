@@ -1,6 +1,6 @@
 import json
 from io import BytesIO, StringIO
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -18,7 +18,11 @@ from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
 from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 
 from .account_tokens import consume_account_action_token, issue_account_action_token
-from .account_emails import TransactionalEmailDeliveryError, send_verification_email
+from .account_emails import (
+    TransactionalEmailDeliveryError,
+    send_password_reset_email,
+    send_verification_email,
+)
 from .auth_sessions import revoke_user_sessions
 from .models import (
     AccountActionToken,
@@ -36,6 +40,7 @@ from .models import (
     ProcessedStripeEvent,
     ReportImage,
     ReportRevision,
+    SavedAddress,
     Site,
     UserProfile,
 )
@@ -1111,6 +1116,41 @@ class CommerceRegistrationTests(TestCase):
             raw_token=raw_token,
         )
 
+    @patch("api.account_views.send_verification_email")
+    def test_registration_saves_address_when_address_payload_is_provided(self, mock_send):
+        response = self.client.post(
+            "/api/account/register/",
+            data={
+                **self.registration_payload,
+                "recipient_name": "Guest User",
+                "recipient_phone": "+353871234567",
+                "address_line_1": "10 Harbour Road",
+                "address_line_2": "Apartment 2",
+                "city": "Cork",
+                "county": "Cork",
+                "postcode": "T12 3AB",
+                "country_code": "IE",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 202)
+        user = get_user_model().objects.get(email="new-customer@example.com")
+        profile = CommerceCustomerProfile.objects.get(user=user)
+        address = SavedAddress.objects.get(commerce_profile=profile)
+
+        self.assertEqual(address.label, "Checkout address")
+        self.assertEqual(address.recipient_name, "Guest User")
+        self.assertEqual(address.recipient_phone, "+353871234567")
+        self.assertEqual(address.address_line_1, "10 Harbour Road")
+        self.assertEqual(address.address_line_2, "Apartment 2")
+        self.assertEqual(address.city, "Cork")
+        self.assertEqual(address.county, "Cork")
+        self.assertEqual(address.postcode, "T12 3AB")
+        self.assertEqual(address.country_code, "IE")
+        self.assertTrue(address.is_default_shipping)
+        self.assertFalse(address.is_default_billing)
+
     @override_settings(ACCOUNT_REGISTRATION_ENABLED=False)
     @patch("api.account_views.send_verification_email")
     def test_registration_is_fail_closed_until_enabled(self, mock_send):
@@ -1352,6 +1392,235 @@ class CommerceRegistrationTests(TestCase):
         self.assertEqual(verified_response.status_code, 200)
         self.assertIn("access", verified_response.json())
 
+    @patch("api.account_reset_views.send_password_reset_email")
+    def test_password_reset_request_issues_single_use_token_and_sends_email(self, mock_send):
+        user = get_user_model().objects.create_user(
+            username="reset-request-user",
+            email="reset-request@example.com",
+            password="A-Strong-Commerce-Password-123!",
+            is_active=True,
+        )
+        CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                "/api/account/password-reset/",
+                data={"email": "RESET-REQUEST@example.com"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json(), {"detail": "If an account exists, a reset email will be sent."})
+        self.assertTrue(
+            AccountActionToken.objects.filter(
+                user=user,
+                purpose=AccountActionToken.Purpose.PASSWORD_RESET,
+            ).exists()
+        )
+        mock_send.assert_called_once()
+        self.assertEqual(mock_send.call_args.kwargs["recipient_email"], user.email)
+
+    def test_password_reset_completion_updates_password_and_rejects_replay(self):
+        user = get_user_model().objects.create_user(
+            username="reset-complete-user",
+            email="reset-complete@example.com",
+            password="Old-Strong-Password-123!",
+            is_active=True,
+        )
+        CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        raw_token = issue_account_action_token(
+            user=user,
+            purpose=AccountActionToken.Purpose.PASSWORD_RESET,
+            target_email=user.email,
+            lifetime=timedelta(hours=1),
+        )
+
+        first_response = self.client.post(
+            "/api/account/password-reset/complete/",
+            data={"token": raw_token, "new_password": "New-Strong-Password-456!"},
+            format="json",
+        )
+        second_response = self.client.post(
+            "/api/account/password-reset/complete/",
+            data={"token": raw_token, "new_password": "Another-Strong-Password-789!"},
+            format="json",
+        )
+
+        user.refresh_from_db()
+        action_token = AccountActionToken.objects.get(user=user, purpose=AccountActionToken.Purpose.PASSWORD_RESET)
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(first_response.json(), {"ok": True})
+        self.assertEqual(second_response.status_code, 400)
+        self.assertTrue(user.check_password("New-Strong-Password-456!"))
+        self.assertFalse(user.check_password("Old-Strong-Password-123!"))
+        self.assertIsNotNone(action_token.consumed_at)
+
+    def test_account_password_change_requires_current_password_and_revokes_sessions(self):
+        user = get_user_model().objects.create_user(
+            username="account-password-user",
+            email="account-password@example.com",
+            password="Old-Strong-Password-123!",
+            is_active=True,
+        )
+        CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        initial_generation = AccountSecurityState.objects.get(user=user).session_generation
+        self.client.force_authenticate(user=user)
+
+        invalid_response = self.client.post(
+            "/api/account/change-password/",
+            data={"current_password": "wrong-password", "new_password": "Cobalt-Glacier-44!"},
+            format="json",
+        )
+        success_response = self.client.post(
+            "/api/account/change-password/",
+            data={"current_password": "Old-Strong-Password-123!", "new_password": "Cobalt-Glacier-44!"},
+            format="json",
+        )
+
+        user.refresh_from_db()
+        state = AccountSecurityState.objects.get(user=user)
+        self.assertEqual(invalid_response.status_code, 400)
+        self.assertEqual(success_response.status_code, 200)
+        self.assertTrue(user.check_password("Cobalt-Glacier-44!"))
+        self.assertEqual(state.session_generation, initial_generation + 1)
+
+    def test_account_logout_all_revokes_all_active_sessions(self):
+        user = get_user_model().objects.create_user(
+            username="account-logout-all-user",
+            email="account-logout-all@example.com",
+            password="Strong-Password-123!",
+            is_active=True,
+        )
+        CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post("/api/account/logout-all/", data={}, format="json")
+
+        state = AccountSecurityState.objects.get(user=user)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(AccountSession.objects.filter(user=user, revoked_at__isnull=True).count(), 0)
+        self.assertGreater(state.session_generation, 0)
+
+    def test_account_disable_marks_account_inactive_and_revokes_sessions(self):
+        user = get_user_model().objects.create_user(
+            username="account-disable-user",
+            email="account-disable@example.com",
+            password="Strong-Password-123!",
+            is_active=True,
+        )
+        profile = CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            "/api/account/disable/",
+            data={"current_password": "Strong-Password-123!"},
+            format="json",
+        )
+
+        user.refresh_from_db()
+        profile.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(user.is_active)
+        self.assertIsNotNone(profile.disabled_at)
+        self.assertEqual(AccountSession.objects.filter(user=user, revoked_at__isnull=True).count(), 0)
+        self.assertTrue(
+            AuditLog.objects.filter(actor=user, action="account.disable", target_type="account", target_id=str(user.pk)).exists()
+        )
+
+    def test_account_delete_requires_confirmation_and_current_password(self):
+        user = get_user_model().objects.create_user(
+            username="account-delete-user",
+            email="account-delete@example.com",
+            password="Strong-Password-123!",
+            is_active=True,
+        )
+        CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        self.client.force_authenticate(user=user)
+
+        missing_confirmation = self.client.post(
+            "/api/account/delete/",
+            data={"current_password": "Strong-Password-123!", "confirm": False},
+            format="json",
+        )
+        bad_password = self.client.post(
+            "/api/account/delete/",
+            data={"current_password": "wrong-password", "confirm": True},
+            format="json",
+        )
+        success = self.client.post(
+            "/api/account/delete/",
+            data={"current_password": "Strong-Password-123!", "confirm": True},
+            format="json",
+        )
+
+        self.assertEqual(missing_confirmation.status_code, 400)
+        self.assertEqual(bad_password.status_code, 400)
+        self.assertEqual(success.status_code, 200)
+        self.assertFalse(get_user_model().objects.filter(pk=user.pk).exists())
+        self.assertTrue(
+            AuditLog.objects.filter(action="account.delete", target_type="account").exists()
+        )
+
+    @patch("api.account_views.send_email_change_email")
+    def test_account_email_change_request_issues_verification_to_new_address(self, mock_send):
+        user = get_user_model().objects.create_user(
+            username="account-email-change-user",
+            email="account-email-change@example.com",
+            password="Old-Strong-Password-123!",
+            is_active=True,
+        )
+        CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            "/api/account/change-email/",
+            data={"current_password": "Old-Strong-Password-123!", "new_email": "new-email@example.com"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True})
+        token = AccountActionToken.objects.get(user=user, purpose=AccountActionToken.Purpose.EMAIL_CHANGE)
+        self.assertEqual(token.target_email, "new-email@example.com")
+        self.assertTrue(
+            AuditLog.objects.filter(actor=user, action="account.email_change_request", target_type="account", target_id=str(user.pk)).exists()
+        )
+        mock_send.assert_called_once_with(recipient_email="new-email@example.com", raw_token=ANY)
+
+    def test_account_email_change_completion_updates_email_and_clears_verification(self):
+        user = get_user_model().objects.create_user(
+            username="account-email-confirm-user",
+            email="current-email@example.com",
+            password="Strong-Password-123!",
+            is_active=True,
+        )
+        profile = CommerceCustomerProfile.objects.create(
+            user=user,
+            activation_pending=False,
+            verified_email=user.email,
+            email_verified_at=timezone.now(),
+        )
+        raw_token = issue_account_action_token(
+            user=user,
+            purpose=AccountActionToken.Purpose.EMAIL_CHANGE,
+            target_email="updated-email@example.com",
+            lifetime=timedelta(hours=1),
+        )
+
+        response = self.client.post(
+            "/api/account/change-email/complete/",
+            data={"token": raw_token},
+            format="json",
+        )
+
+        user.refresh_from_db()
+        profile.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True})
+        self.assertEqual(user.email, "updated-email@example.com")
+        self.assertEqual(profile.verified_email, "")
+        self.assertIsNone(profile.email_verified_at)
+
     @override_settings(CSRF_TRUSTED_ORIGINS=["https://trusted-frontend.example"])
     @patch("api.account_views.send_verification_email")
     def test_registration_is_json_only_and_csrf_protected(self, mock_send):
@@ -1542,6 +1811,63 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         self.assertEqual(order.status, OnsiteOrder.STATUS_PENDING)
         self.assertEqual(order.amount_total_cents, 2000)
 
+    @patch("api.views._is_allowed_checkout_origin", return_value=True)
+    @patch("api.views._stripe_config_ok", return_value=True)
+    @patch("api.views._verify_turnstile_token", return_value=True)
+    @patch("api.views.stripe.PaymentIntent.create")
+    def test_onsite_intent_returns_server_confirmed_pricing_summary(
+        self,
+        mock_intent_create,
+        _mock_turnstile,
+        _mock_cfg,
+        _mock_origin,
+    ):
+        CatalogProduct.objects.create(
+            product_ref="legacy-product-id",
+            variant_ref="legacy-variant-id",
+            handle="chain-block",
+            title="Chain Block",
+            price_amount="10.00",
+            currency_code="EUR",
+            is_active=True,
+        )
+        CatalogProduct.objects.create(
+            product_ref="legacy-product-id-2",
+            variant_ref="legacy-variant-id-2",
+            handle="rope-sling",
+            title="Rope Sling",
+            price_amount="2.50",
+            currency_code="EUR",
+            is_active=True,
+        )
+
+        mock_intent_create.return_value = {
+            "id": "pi_123",
+            "client_secret": "pi_123_secret_abc",
+        }
+
+        response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps(
+                {
+                    "checkoutRef": "onsite_server_summary",
+                    "customer": {"name": "Jane Doe", "email": "jane@example.com"},
+                    "items": [
+                        {"variantId": "legacy-variant-id", "quantity": 1},
+                        {"variantId": "legacy-variant-id-2", "quantity": 1},
+                    ],
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["amountTotalCents"], 1250)
+        self.assertEqual(body["lineItems"][0]["title"], "Chain Block")
+        self.assertEqual(body["lineItems"][1]["title"], "Rope Sling")
+        self.assertIn("latest pricing", body["priceRefreshNotice"])
+
     def test_onsite_status_not_found(self):
         response = self.client.get("/api/payments/onsite-status/?checkoutRef=x1&statusToken=tok_1")
         self.assertEqual(response.status_code, 404)
@@ -1579,6 +1905,187 @@ class OnsiteCheckoutTests(BaseApiTestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json().get("error"), "Bot verification failed")
+
+
+class AccountOrderAndAddressTests(BaseApiTestCase):
+    def setUp(self):
+        super().setUp()
+        self.user_model = get_user_model()
+        self.user = self.user_model.objects.create_user(
+            username="shopper",
+            email="shopper@example.com",
+            password="testpass123",
+        )
+        self.other_user = self.user_model.objects.create_user(
+            username="other-shopper",
+            email="other@example.com",
+            password="testpass123",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @patch("api.views._is_allowed_checkout_origin", return_value=True)
+    @patch("api.views._stripe_config_ok", return_value=True)
+    @patch("api.views._verify_turnstile_token", return_value=True)
+    @patch("api.views.stripe.PaymentIntent.create")
+    def test_authenticated_checkout_associates_order_and_snapshots_address(
+        self,
+        mock_intent_create,
+        _mock_turnstile,
+        _mock_cfg,
+        _mock_origin,
+    ):
+        CatalogProduct.objects.create(
+            product_ref="legacy-product-id",
+            variant_ref="legacy-variant-id",
+            handle="chain-block",
+            title="Chain Block",
+            price_amount="10.00",
+            currency_code="EUR",
+            is_active=True,
+        )
+        mock_intent_create.return_value = {
+            "id": "pi_auth1",
+            "client_secret": "pi_auth1_secret",
+        }
+
+        response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps(
+                {
+                    "checkoutRef": "auth_checkout_1",
+                    "customer": {"name": "Jane Doe", "email": "jane@example.com"},
+                    "shipping": {
+                        "name": "Jane Doe",
+                        "phone": "+353871234567",
+                        "addressLine1": "1 Main St",
+                        "addressLine2": "",
+                        "city": "Dublin",
+                        "county": "Dublin",
+                        "postcode": "D01",
+                        "countryCode": "IE",
+                    },
+                    "items": [{"variantId": "legacy-variant-id", "quantity": 1}],
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        order = OnsiteOrder.objects.get(checkout_ref="auth_checkout_1")
+        self.assertEqual(order.user, self.user)
+        self.assertEqual(order.customer_name, "Jane Doe")
+        self.assertEqual(order.shipping_name, "Jane Doe")
+        self.assertEqual(order.shipping_phone, "+353871234567")
+        self.assertEqual(order.shipping_address_line_1, "1 Main St")
+        self.assertEqual(order.shipping_city, "Dublin")
+        self.assertEqual(order.shipping_postcode, "D01")
+        self.assertEqual(order.shipping_country_code, "IE")
+
+    def test_account_orders_only_returns_authenticated_user_orders(self):
+        OnsiteOrder.objects.create(
+            checkout_ref="order_for_user",
+            status_token="tok_user",
+            status=OnsiteOrder.STATUS_PENDING,
+            amount_total_cents=1000,
+            currency="EUR",
+            customer_name="Jane",
+            customer_email="jane@example.com",
+            user=self.user,
+        )
+        OnsiteOrder.objects.create(
+            checkout_ref="order_for_other_user",
+            status_token="tok_other",
+            status=OnsiteOrder.STATUS_PENDING,
+            amount_total_cents=2000,
+            currency="EUR",
+            customer_name="John",
+            customer_email="john@example.com",
+            user=self.other_user,
+        )
+
+        response = self.client.get("/api/account/orders/")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body), 1)
+        self.assertEqual(body[0]["checkoutRef"], "order_for_user")
+
+    def test_account_order_detail_requires_ownership(self):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="owned_order",
+            status_token="tok_owned",
+            status=OnsiteOrder.STATUS_PENDING,
+            amount_total_cents=1000,
+            currency="EUR",
+            customer_name="Jane",
+            customer_email="jane@example.com",
+            user=self.user,
+        )
+
+        response = self.client.get(f"/api/account/orders/{order.checkout_ref}/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["checkoutRef"], "owned_order")
+
+        other_response = self.client.get("/api/account/orders/order_for_other_user/")
+        self.assertEqual(other_response.status_code, 404)
+
+    def test_account_addresses_create_and_list_for_authenticated_user(self):
+        response = self.client.post(
+            "/api/account/addresses/",
+            data={
+                "label": "Home",
+                "recipientName": "Jane Doe",
+                "recipientPhone": "+353871234567",
+                "addressLine1": "1 Main Street",
+                "addressLine2": "",
+                "city": "Dublin",
+                "county": "Dublin",
+                "postcode": "D01",
+                "countryCode": "IE",
+                "isDefaultShipping": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        address = SavedAddress.objects.get(pk=response.json()["id"])
+        self.assertEqual(address.commerce_profile.user, self.user)
+        self.assertTrue(address.is_default_shipping)
+
+        list_response = self.client.get("/api/account/addresses/")
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(len(list_response.json()), 1)
+
+    def test_account_address_update_and_delete_are_scoped_to_the_user(self):
+        commerce_profile = CommerceCustomerProfile.objects.create(user=self.user)
+        address = SavedAddress.objects.create(
+            commerce_profile=commerce_profile,
+            label="Work",
+            recipient_name="Jane Doe",
+            recipient_phone="",
+            address_line_1="2 Main Street",
+            city="Dublin",
+            postcode="D02",
+            country_code="IE",
+            is_default_shipping=True,
+        )
+
+        update_response = self.client.patch(
+            f"/api/account/addresses/{address.id}/",
+            data={"label": "Office", "recipientName": "Jane Smith"},
+            format="json",
+        )
+        self.assertEqual(update_response.status_code, 200)
+        address.refresh_from_db()
+        self.assertEqual(address.label, "Office")
+        self.assertEqual(address.recipient_name, "Jane Smith")
+
+        delete_response = self.client.delete(f"/api/account/addresses/{address.id}/")
+        self.assertEqual(delete_response.status_code, 200)
+        address.refresh_from_db()
+        self.assertTrue(address.is_deleted)
 
 
 class StripeWebhookTests(BaseApiTestCase):

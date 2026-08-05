@@ -433,6 +433,7 @@ class AccountBootstrapSerializer(serializers.Serializer):
     username = serializers.CharField()
     email = serializers.EmailField(allow_blank=True)
     full_name = serializers.CharField(allow_blank=True)
+    phone = serializers.CharField(allow_blank=True, required=False)
     email_verified = serializers.BooleanField()
     capabilities = AccountCapabilitiesSerializer()
 
@@ -442,6 +443,14 @@ class CommerceRegistrationSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True, min_length=12, max_length=128)
     first_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
     last_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    recipient_name = serializers.CharField(max_length=150, required=False, allow_blank=True)
+    recipient_phone = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    address_line_1 = serializers.CharField(max_length=200, required=False, allow_blank=True)
+    address_line_2 = serializers.CharField(max_length=200, required=False, allow_blank=True)
+    city = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    county = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    postcode = serializers.CharField(max_length=40, required=False, allow_blank=True)
+    country_code = serializers.CharField(max_length=2, required=False, allow_blank=True)
     accept_terms = serializers.BooleanField()
     accept_privacy = serializers.BooleanField()
     turnstile_token = serializers.CharField(
@@ -494,9 +503,37 @@ class VerifyEmailSerializer(serializers.Serializer):
     token = serializers.CharField(max_length=256, trim_whitespace=True)
 
 
+class PasswordResetCompleteSerializer(serializers.Serializer):
+    token = serializers.CharField(max_length=256, trim_whitespace=True)
+    new_password = serializers.CharField(write_only=True, min_length=12, max_length=128)
+
+    def validate_new_password(self, value):
+        user = get_user_model()(email="")
+        try:
+            validate_password(value, user=user)
+        except DjangoValidationError as error:
+            raise serializers.ValidationError(list(error.messages)) from error
+        return value
+
+
 class PortalChangePasswordSerializer(serializers.Serializer):
     current_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
     new_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
+
+
+class AccountChangePasswordSerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
+    new_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
+
+
+class AccountDisableSerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=500)
+
+
+class AccountDeleteSerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
+    confirm = serializers.BooleanField()
 
 
 class UserProfileAssignmentSerializer(serializers.ModelSerializer):

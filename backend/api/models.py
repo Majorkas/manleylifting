@@ -61,11 +61,26 @@ class OnsiteOrder(models.Model):
     checkout_ref = models.CharField(max_length=100, unique=True)
     status_token = models.CharField(max_length=128, default="", db_index=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    user = models.ForeignKey(
+        "auth.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="onsite_orders",
+    )
     line_items = models.JSONField(default=list, blank=True)
     amount_total_cents = models.PositiveIntegerField(default=0)
     currency = models.CharField(max_length=8, default="EUR")
     customer_name = models.CharField(max_length=150, blank=True, default="")
     customer_email = models.EmailField(blank=True, default="")
+    shipping_name = models.CharField(max_length=150, blank=True, default="")
+    shipping_phone = models.CharField(max_length=50, blank=True, default="")
+    shipping_address_line_1 = models.CharField(max_length=200, blank=True, default="")
+    shipping_address_line_2 = models.CharField(max_length=200, blank=True, default="")
+    shipping_city = models.CharField(max_length=120, blank=True, default="")
+    shipping_county = models.CharField(max_length=120, blank=True, default="")
+    shipping_postcode = models.CharField(max_length=40, blank=True, default="")
+    shipping_country_code = models.CharField(max_length=2, blank=True, default="")
     payment_intent_id = models.CharField(max_length=128, blank=True, default="", db_index=True)
     payment_client_secret = models.CharField(max_length=255, blank=True, default="")
     paid_at = models.DateTimeField(null=True, blank=True)
@@ -235,6 +250,35 @@ class CommerceCustomerProfile(models.Model):
             and verified_email
             and current_email == verified_email
         )
+
+
+class SavedAddress(models.Model):
+    commerce_profile = models.ForeignKey(
+        CommerceCustomerProfile,
+        on_delete=models.CASCADE,
+        related_name="saved_addresses",
+    )
+    label = models.CharField(max_length=80, blank=True, default="")
+    recipient_name = models.CharField(max_length=150, blank=True, default="")
+    recipient_phone = models.CharField(max_length=50, blank=True, default="")
+    address_line_1 = models.CharField(max_length=200, blank=True, default="")
+    address_line_2 = models.CharField(max_length=200, blank=True, default="")
+    city = models.CharField(max_length=120, blank=True, default="")
+    county = models.CharField(max_length=120, blank=True, default="")
+    postcode = models.CharField(max_length=40, blank=True, default="")
+    country_code = models.CharField(max_length=2, blank=True, default="")
+    is_default_shipping = models.BooleanField(default=False)
+    is_default_billing = models.BooleanField(default=False)
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-is_default_shipping", "-created_at", "id"]
+
+    def __str__(self):
+        return self.label or f"Address {self.id}"
 
 
 class AccountSecurityState(models.Model):

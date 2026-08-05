@@ -1,10 +1,22 @@
 from django.urls import path
 
+from .account_reset_views import (
+    PasswordResetCompleteView,
+    PasswordResetRequestView,
+)
 from .account_views import (
+    AccountAddressesView,
+    AccountOrdersView,
     CommerceRegistrationView,
     ResendVerificationView,
     VerifyEmailView,
     account_bootstrap,
+    account_change_email_complete,
+    account_change_email_request,
+    account_change_password,
+    account_delete,
+    account_disable,
+    account_logout_all,
 )
 from .auth_views import PortalTokenObtainPairView, PortalTokenRefreshView
 from .portal_views import (
@@ -48,6 +60,10 @@ from .views import (
 
 urlpatterns = [
     path("account/bootstrap/", account_bootstrap, name="account_bootstrap"),
+    path("account/orders/", AccountOrdersView.as_view(), name="account_orders"),
+    path("account/orders/<str:checkout_ref>/", AccountOrdersView.as_view(), name="account_order_detail"),
+    path("account/addresses/", AccountAddressesView.as_view(), name="account_addresses"),
+    path("account/addresses/<int:address_id>/", AccountAddressesView.as_view(), name="account_address_detail"),
     path("account/register/", CommerceRegistrationView.as_view(), name="account_register"),
     path("account/verify-email/", VerifyEmailView.as_view(), name="account_verify_email"),
     path(
@@ -55,6 +71,18 @@ urlpatterns = [
         ResendVerificationView.as_view(),
         name="account_resend_verification",
     ),
+    path("account/password-reset/", PasswordResetRequestView.as_view(), name="account_password_reset_request"),
+    path(
+        "account/password-reset/complete/",
+        PasswordResetCompleteView.as_view(),
+        name="account_password_reset_complete",
+    ),
+    path("account/change-password/", account_change_password, name="account_change_password"),
+    path("account/change-email/", account_change_email_request, name="account_change_email_request"),
+    path("account/change-email/complete/", account_change_email_complete, name="account_change_email_complete"),
+    path("account/disable/", account_disable, name="account_disable"),
+    path("account/delete/", account_delete, name="account_delete"),
+    path("account/logout-all/", account_logout_all, name="account_logout_all"),
     path("auth/token/", PortalTokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("auth/token/refresh/", PortalTokenRefreshView.as_view(), name="token_refresh"),
     path("auth/logout/", portal_logout),

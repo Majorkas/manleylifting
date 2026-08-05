@@ -74,3 +74,35 @@ def send_verification_email(*, recipient_email, raw_token):
             "If you did not request this account, you can ignore this email."
         ),
     )
+
+
+def send_password_reset_email(*, recipient_email, raw_token):
+    reset_url = (
+        f"{settings.ACCOUNT_FRONTEND_URL.rstrip('/')}/account/reset-password"
+        f"#token={quote(raw_token, safe='')}"
+    )
+    send_transactional_email(
+        recipient_email=recipient_email,
+        subject="Reset your Manley Lifting password",
+        text_body=(
+            "Use the link below to reset your Manley Lifting password:\n\n"
+            f"{reset_url}\n\n"
+            "If you did not request this change, you can ignore this email."
+        ),
+    )
+
+
+def send_email_change_email(*, recipient_email, raw_token):
+    change_url = (
+        f"{settings.ACCOUNT_FRONTEND_URL.rstrip('/')}/account/change-email"
+        f"#token={quote(raw_token, safe='')}"
+    )
+    send_transactional_email(
+        recipient_email=recipient_email,
+        subject="Confirm your Manley Lifting email change",
+        text_body=(
+            "Use the link below to confirm your new Manley Lifting email address:\n\n"
+            f"{change_url}\n\n"
+            "If you did not request this change, you can ignore this email."
+        ),
+    )

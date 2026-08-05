@@ -360,6 +360,7 @@ REST_FRAMEWORK = {
         "account.register": "5/hour",
         "account.verify": "20/hour",
         "account.resend": "5/hour",
+        "account.reset": "5/hour",
         "account.email": "3/hour",
         "portal.read": "300/hour",
         "portal.write": "120/hour",
