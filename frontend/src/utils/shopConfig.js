@@ -15,7 +15,7 @@ export const shopConfig = {
   currencyCode: 'EUR',
 }
 
-const CART_STORAGE_KEY = 'manley-shop-cart-v2'
+export const CART_STORAGE_KEY = 'manley-shop-cart-v2'
 const PENDING_CHECKOUT_KEY = 'manley-shop-pending-checkout-v1'
 const COMPLETED_CHECKOUT_KEY = 'manley-shop-completed-checkout-v1'
 const PENDING_CHECKOUT_MAX_AGE_MS = 2 * 60 * 60 * 1000
@@ -364,6 +364,8 @@ export async function createOnsitePaymentIntent(items, checkoutRef, customer, op
     paymentIntentId: String(body.paymentIntentId || ''),
     amountTotalCents: Number(body.amountTotalCents || 0),
     currency: String(body.currency || shopConfig.currencyCode),
+    lineItems: Array.isArray(body.lineItems) ? body.lineItems : [],
+    priceRefreshNotice: String(body.priceRefreshNotice || ''),
   }
 }
 
@@ -420,6 +422,14 @@ export async function getOnsiteOrderSummary(checkoutRef, statusToken) {
     currency: String(body.currency || shopConfig.currencyCode),
     paidAt: body.paidAt || null,
     createdAt: body.createdAt || null,
+    shippingName: String(body.shippingName || ''),
+    shippingPhone: String(body.shippingPhone || ''),
+    shippingAddressLine1: String(body.shippingAddressLine1 || ''),
+    shippingAddressLine2: String(body.shippingAddressLine2 || ''),
+    shippingCity: String(body.shippingCity || ''),
+    shippingCounty: String(body.shippingCounty || ''),
+    shippingPostcode: String(body.shippingPostcode || ''),
+    shippingCountryCode: String(body.shippingCountryCode || ''),
   }
 }
 
@@ -433,16 +443,24 @@ export function buildProductPath(handle) {
 
 function normalizeCartItems(items) {
   return (items || [])
-    .map((item) => ({
-      handle: String(item.handle || ''),
-      title: String(item.title || ''),
-      variantId: String(item.variantId || ''),
-      price: Number(item.price || 0),
-      currency: String(item.currency || shopConfig.currencyCode),
-      imageUrl: String(item.imageUrl || ''),
-      quantity: Number(item.quantity || 1),
-    }))
-    .filter((item) => item.handle && item.variantId && item.quantity > 0)
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => {
+      const parsedPrice = Number(item.price)
+      const parsedQuantity = Number(item.quantity)
+      const safePrice = Number.isFinite(parsedPrice) && parsedPrice > 0 ? parsedPrice : 0
+      const safeQuantity = Number.isFinite(parsedQuantity) && parsedQuantity > 0 ? Math.min(99, Math.floor(parsedQuantity)) : 0
+
+      return {
+        handle: String(item.handle || ''),
+        title: String(item.title || ''),
+        variantId: String(item.variantId || ''),
+        price: safePrice,
+        currency: String(item.currency || shopConfig.currencyCode),
+        imageUrl: String(item.imageUrl || ''),
+        quantity: safeQuantity,
+      }
+    })
+    .filter((item) => item.handle && item.variantId && item.quantity > 0 && item.price > 0)
 }
 
 export function loadCartItems() {

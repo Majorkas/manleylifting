@@ -71,6 +71,7 @@ export default function AccountLoginPage() {
         </button>
       </form>
       <div className="mt-5 flex flex-wrap justify-between gap-3 text-sm">
+        <Link className="font-semibold text-[#123A7A]" to="/account/reset-password">Forgot password?</Link>
         <Link className="font-semibold text-[#123A7A]" to="/account/resend-verification">Resend verification</Link>
         <Link className="font-semibold text-[#123A7A]" to="/contact">Need help?</Link>
       </div>

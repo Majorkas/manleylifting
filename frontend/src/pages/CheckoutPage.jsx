@@ -4,6 +4,7 @@ import { loadStripe } from '@stripe/stripe-js'
 import { Link, useNavigate } from 'react-router-dom'
 import ShopPageLayout from '../components/ShopPageLayout'
 import { useCart } from '../context/CartContext'
+import { getAccountAddresses, getAccountBootstrap, registerCommerceAccount } from '../utils/portalApi'
 import {
   clearPendingCheckout,
   createOnsitePaymentIntent,
@@ -135,11 +136,29 @@ export default function CheckoutPage() {
   const [statusMessage, setStatusMessage] = useState('')
   const [customerName, setCustomerName] = useState('')
   const [customerEmail, setCustomerEmail] = useState('')
+  const [checkoutAccountState, setCheckoutAccountState] = useState('checking')
+  const [showGuestPrompt, setShowGuestPrompt] = useState(true)
+  const [showAccountChoice, setShowAccountChoice] = useState(true)
+  const [customerPhone, setCustomerPhone] = useState('')
+  const [selectedAddressId, setSelectedAddressId] = useState('')
+  const [savedAddresses, setSavedAddresses] = useState([])
+  const [showOneOffAddressForm, setShowOneOffAddressForm] = useState(false)
+  const [addressLine1, setAddressLine1] = useState('')
+  const [addressLine2, setAddressLine2] = useState('')
+  const [addressCity, setAddressCity] = useState('')
+  const [addressCounty, setAddressCounty] = useState('')
+  const [addressPostcode, setAddressPostcode] = useState('')
+  const [addressCountryCode, setAddressCountryCode] = useState('IE')
+  const [createAccountForCheckout, setCreateAccountForCheckout] = useState(false)
+  const [accountPassword, setAccountPassword] = useState('')
+  const [accountConfirmPassword, setAccountConfirmPassword] = useState('')
   const [clientSecret, setClientSecret] = useState('')
   const [checkoutRef, setCheckoutRef] = useState('')
   const [statusToken, setStatusToken] = useState('')
   const [amountTotalCents, setAmountTotalCents] = useState(0)
   const [checkoutCurrency, setCheckoutCurrency] = useState('EUR')
+  const [serverLineItems, setServerLineItems] = useState([])
+  const [priceRefreshNotice, setPriceRefreshNotice] = useState('')
   const [isPaymentElementReady, setIsPaymentElementReady] = useState(false)
   const [paymentElementLoadIssue, setPaymentElementLoadIssue] = useState('')
   const [isAwaitingPaymentConfirmation, setIsAwaitingPaymentConfirmation] = useState(false)
@@ -157,6 +176,73 @@ export default function CheckoutPage() {
       })),
     [cartItems],
   )
+
+  const selectedAddress =
+    savedAddresses.find((address) => String(address.id) === String(selectedAddressId)) ||
+    (savedAddresses.length === 1 ? savedAddresses[0] : null)
+  const shouldShowSavedAddressExperience = checkoutAccountState === 'signed-in'
+
+  useEffect(() => {
+    if (!savedAddresses.length) return
+    if (selectedAddressId) return
+
+    const fallbackAddress = savedAddresses.find((address) => address.isDefaultShipping) || savedAddresses[0]
+    if (fallbackAddress) {
+      setSelectedAddressId(String(fallbackAddress.id))
+    }
+  }, [savedAddresses, selectedAddressId])
+
+  useEffect(() => {
+    let cancelled = false
+
+    getAccountBootstrap()
+      .then((account) => {
+        if (cancelled) return
+        const nextName = String(account?.fullName || '').trim()
+        const nextEmail = String(account?.email || '').trim()
+        const nextPhone = String(account?.phone || '').trim()
+        setCustomerName((current) => current || nextName)
+        setCustomerEmail((current) => current || nextEmail)
+        setCustomerPhone((current) => current || nextPhone)
+        setCheckoutAccountState('signed-in')
+        setShowGuestPrompt(false)
+        setShowAccountChoice(false)
+        setShowOneOffAddressForm(true)
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCheckoutAccountState('guest')
+          setShowGuestPrompt(true)
+          setShowAccountChoice(true)
+          setShowOneOffAddressForm(false)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    getAccountAddresses()
+      .then((result) => {
+        if (!cancelled) {
+          setSavedAddresses(result)
+          const defaultAddress = result.find((address) => address.isDefaultShipping)
+          if (defaultAddress) {
+            setSelectedAddressId(String(defaultAddress.id))
+          }
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSavedAddresses([])
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   useEffect(() => {
     const pending = loadPendingCheckout()
@@ -322,6 +408,20 @@ export default function CheckoutPage() {
     }
   }, [])
 
+  function splitCustomerName(fullName) {
+    const trimmed = String(fullName || '').trim()
+    if (!trimmed) return { firstName: '', lastName: '' }
+
+    const parts = trimmed.split(/\s+/).filter(Boolean)
+    if (parts.length === 0) return { firstName: '', lastName: '' }
+    if (parts.length === 1) return { firstName: parts[0], lastName: '' }
+
+    return {
+      firstName: parts[0],
+      lastName: parts.slice(1).join(' '),
+    }
+  }
+
   async function handlePreparePayment() {
     if (checkoutItems.length === 0) return
 
@@ -354,6 +454,90 @@ export default function CheckoutPage() {
 
     try {
       const nextCheckoutRef = generateCheckoutRef()
+      const shipping = selectedAddress
+        ? {
+            name: selectedAddress.recipientName,
+            phone: selectedAddress.recipientPhone,
+            addressLine1: selectedAddress.addressLine1,
+            addressLine2: selectedAddress.addressLine2,
+            city: selectedAddress.city,
+            county: selectedAddress.county,
+            postcode: selectedAddress.postcode,
+            countryCode: selectedAddress.countryCode,
+          }
+        : {
+            name: customerName,
+            phone: customerPhone,
+            addressLine1: addressLine1,
+            addressLine2: addressLine2,
+            city: addressCity,
+            county: addressCounty,
+            postcode: addressPostcode,
+            countryCode: addressCountryCode,
+          }
+
+      if (checkoutAccountState !== 'signed-in') {
+        try {
+          const guestOffer = {
+            email: customerEmail.trim(),
+            fullName: customerName.trim(),
+          }
+          if (typeof window !== 'undefined') {
+            window.localStorage.setItem('manley-guest-checkout-offer', JSON.stringify(guestOffer))
+            if (createAccountForCheckout) {
+              window.localStorage.setItem('manley-recent-account-address', JSON.stringify({
+                label: 'Checkout address',
+                recipientName: customerName.trim(),
+                recipientPhone: customerPhone.trim(),
+                addressLine1: addressLine1.trim(),
+                addressLine2: addressLine2.trim(),
+                city: addressCity.trim(),
+                county: addressCounty.trim(),
+                postcode: addressPostcode.trim(),
+                countryCode: addressCountryCode.trim(),
+                isDefaultShipping: true,
+                isDefaultBilling: false,
+              }))
+            }
+          }
+        } catch {
+          // Ignore storage failures and keep checkout moving.
+        }
+      }
+
+      if (createAccountForCheckout && checkoutAccountState !== 'signed-in') {
+        if (!accountPassword.trim() || !accountConfirmPassword.trim()) {
+          setErrorMessage('Choose a password for your new account before continuing.')
+          setIsSubmitting(false)
+          return
+        }
+
+        if (accountPassword !== accountConfirmPassword) {
+          setErrorMessage('The account passwords do not match. Enter the same password in both fields.')
+          setIsSubmitting(false)
+          return
+        }
+
+        const { firstName, lastName } = splitCustomerName(customerName)
+        await registerCommerceAccount({
+          email: customerEmail.trim(),
+          password: accountPassword,
+          firstName,
+          lastName,
+          recipientName: customerName.trim(),
+          recipientPhone: customerPhone.trim(),
+          addressLine1: addressLine1.trim(),
+          addressLine2: addressLine2.trim(),
+          city: addressCity.trim(),
+          county: addressCounty.trim(),
+          postcode: addressPostcode.trim(),
+          countryCode: addressCountryCode.trim(),
+          acceptTerms: true,
+          acceptPrivacy: true,
+          turnstileToken,
+        })
+      }
+
       const checkout = await createOnsitePaymentIntent(
         checkoutItems,
         nextCheckoutRef,
@@ -362,7 +546,8 @@ export default function CheckoutPage() {
           email: customerEmail,
         },
         {
-        antiBotToken: turnstileToken,
+          antiBotToken: turnstileToken,
+          shipping,
         },
       )
       const nextStatusToken = checkout.statusToken
@@ -376,6 +561,8 @@ export default function CheckoutPage() {
       setClientSecret(nextClientSecret)
       setAmountTotalCents(checkout.amountTotalCents)
       setCheckoutCurrency(checkout.currency || 'EUR')
+      setServerLineItems(Array.isArray(checkout.lineItems) ? checkout.lineItems : [])
+      setPriceRefreshNotice(String(checkout.priceRefreshNotice || '').trim())
       setIsPaymentElementReady(false)
       setPaymentElementLoadIssue('')
 
@@ -417,12 +604,17 @@ export default function CheckoutPage() {
   return (
     <ShopPageLayout>
       <main className="mx-auto w-full max-w-7xl px-6 py-16">
-        <div className="mb-10">
-          <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">Checkout</p>
-          <h1 className="mt-2 text-4xl font-extrabold text-[#123A7A] md:text-5xl">Checkout</h1>
-          <p className="mt-4 max-w-3xl text-slate-600">
-            Complete your payment securely on this page without leaving the site.
-          </p>
+        <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">Checkout</p>
+            <h1 className="mt-2 text-4xl font-extrabold text-[#123A7A] md:text-5xl">Checkout</h1>
+            <p className="mt-3 max-w-3xl text-sm text-slate-600 md:text-base">
+              Complete your payment securely on this page without leaving the site.
+            </p>
+          </div>
+          <div className="rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-semibold text-slate-700">
+            Fast, secure, tracked delivery
+          </div>
         </div>
 
         {statusMessage && (
@@ -441,40 +633,292 @@ export default function CheckoutPage() {
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-xl font-bold text-[#123A7A]">Customer Details</h2>
 
-            <form className="mt-6 space-y-5">
-              <div>
-                <label className="mb-2 block text-sm font-semibold text-slate-700">Full Name</label>
-                <input
-                  type="text"
+            {checkoutAccountState === 'checking' && (
+              <div className="mb-5 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                Checking your account status…
+              </div>
+            )}
+
+            {checkoutAccountState === 'guest' && showAccountChoice && (
+              <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-5">
+                <p className="text-sm font-semibold uppercase tracking-[0.16em] text-amber-900">Sign in to your account</p>
+                <h3 className="mt-2 text-xl font-bold text-amber-950">Choose how you’d like to continue</h3>
+                <p className="mt-2 text-sm text-amber-800">
+                  Sign in to use your saved addresses and order history, register for a new account, or continue as a guest.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Link to="/account/login?redirect=/checkout" className="rounded-md bg-[#123A7A] px-3 py-2 text-sm font-semibold text-white">
+                    Log in
+                  </Link>
+                  <Link to="/account/register" className="rounded-md border border-amber-300 px-3 py-2 text-sm font-semibold text-amber-900">
+                    Register
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowGuestPrompt(false)
+                      setShowAccountChoice(false)
+                      setShowOneOffAddressForm(true)
+                    }}
+                    className="rounded-md border border-amber-300 px-3 py-2 text-sm font-semibold text-amber-900"
+                  >
+                    Continue as guest
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {checkoutAccountState === 'signed-in' && (
+              <div className="mb-5 rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+                Signed in as <span className="font-semibold text-emerald-900">{customerName || 'your account'}</span>. Your saved addresses and order history will be available after checkout.
+              </div>
+            )}
+
+            {(!showAccountChoice || checkoutAccountState === 'signed-in') && (
+              <form className="mt-2 space-y-5">
+                <div>
+                  <label htmlFor="checkout-full-name" className="mb-2 block text-sm font-semibold text-slate-700">
+                    Full Name
+                  </label>
+                  <input
+                    id="checkout-full-name"
+                    type="text"
                     value={customerName}
                     onChange={(event) => setCustomerName(event.target.value)}
-                  placeholder="John Smith"
-                  className="w-full rounded-md border border-slate-300 px-4 py-3 text-slate-900 outline-none transition focus:border-[#123A7A] focus:ring-2 focus:ring-[#123A7A]/20"
-                />
-              </div>
-
-              <div className="grid gap-5 md:grid-cols-2">
-                <div>
-                  <label className="mb-2 block text-sm font-semibold text-slate-700">Email</label>
-                  <input
-                    type="email"
-                    value={customerEmail}
-                    onChange={(event) => setCustomerEmail(event.target.value)}
-                    placeholder="john@example.com"
+                    placeholder="John Smith"
                     className="w-full rounded-md border border-slate-300 px-4 py-3 text-slate-900 outline-none transition focus:border-[#123A7A] focus:ring-2 focus:ring-[#123A7A]/20"
                   />
                 </div>
 
-                <div>
-                  <label className="mb-2 block text-sm font-semibold text-slate-700">Phone</label>
-                  <input
-                    type="tel"
-                    placeholder="+353..."
-                    className="w-full rounded-md border border-slate-300 px-4 py-3 text-slate-900 outline-none transition focus:border-[#123A7A] focus:ring-2 focus:ring-[#123A7A]/20"
-                  />
+                <div className="grid gap-5 md:grid-cols-2">
+                  <div>
+                    <label htmlFor="checkout-email" className="mb-2 block text-sm font-semibold text-slate-700">
+                      Email
+                    </label>
+                    <input
+                      id="checkout-email"
+                      type="email"
+                      value={customerEmail}
+                      onChange={(event) => setCustomerEmail(event.target.value)}
+                      placeholder="john@example.com"
+                      className="w-full rounded-md border border-slate-300 px-4 py-3 text-slate-900 outline-none transition focus:border-[#123A7A] focus:ring-2 focus:ring-[#123A7A]/20"
+                    />
+                  </div>
+
+                  <div>
+                    <label htmlFor="checkout-phone" className="mb-2 block text-sm font-semibold text-slate-700">
+                      Phone
+                    </label>
+                    <input
+                      id="checkout-phone"
+                      type="tel"
+                      value={customerPhone}
+                      onChange={(event) => setCustomerPhone(event.target.value)}
+                      placeholder="+353..."
+                      className="w-full rounded-md border border-slate-300 px-4 py-3 text-slate-900 outline-none transition focus:border-[#123A7A] focus:ring-2 focus:ring-[#123A7A]/20"
+                    />
+                  </div>
                 </div>
-              </div>
-            </form>
+
+                {shouldShowSavedAddressExperience && (
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-900" data-testid="delivery-address-heading">Delivery address</p>
+                        <p className="mt-1 text-sm text-slate-600">
+                          {selectedAddress
+                            ? 'Your default delivery address is ready for this order.'
+                            : 'Add a delivery address for this order.'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowOneOffAddressForm(true)}
+                        aria-pressed={showOneOffAddressForm}
+                        className={`rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition ${
+                          showOneOffAddressForm
+                            ? 'border-[#123A7A] bg-[#123A7A] text-white shadow-sm'
+                            : 'border-slate-300 bg-white text-slate-700 hover:border-[#123A7A] hover:text-[#123A7A]'
+                        }`}
+                      >
+                        Change address
+                      </button>
+                    </div>
+
+                    {selectedAddress ? (
+                      <div className="mt-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-semibold text-slate-900">
+                              {selectedAddress.label || 'Default saved address'}
+                            </p>
+                            <p className="mt-1 text-sm text-slate-700">
+                              {selectedAddress.recipientName || 'Recipient'}
+                            </p>
+                            <p className="text-sm text-slate-700" data-testid="selected-address-line">
+                              {selectedAddress.addressLine1}
+                              {selectedAddress.addressLine2 ? `, ${selectedAddress.addressLine2}` : ''}
+                            </p>
+                            <p className="text-sm text-slate-700">
+                              {selectedAddress.city}, {selectedAddress.postcode}
+                            </p>
+                          </div>
+                          <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
+                            Default
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-4 rounded-lg border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-600">
+                        No saved address selected yet. You can still use a new address for this order.
+                      </div>
+                    )}
+
+                    {showOneOffAddressForm && (
+                      <div className="mt-4 space-y-3 rounded-lg border border-slate-200 bg-white p-4">
+                        <label htmlFor="saved-address-select" className="block text-sm font-semibold text-slate-700">
+                          Saved address
+                        </label>
+                        <select
+                          id="saved-address-select"
+                          value={selectedAddressId}
+                          onChange={(event) => {
+                            const nextValue = event.target.value
+                            setSelectedAddressId(nextValue)
+                            setShowOneOffAddressForm(!nextValue)
+                          }}
+                          className="w-full rounded-md border border-slate-300 px-4 py-3 text-slate-900 outline-none transition focus:border-[#123A7A] focus:ring-2 focus:ring-[#123A7A]/20"
+                        >
+                          <option value="">Use a new address</option>
+                          {savedAddresses.map((address) => (
+                            <option key={address.id} value={address.id}>
+                              {address.label || 'Saved address'} — {address.city || 'Address'}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {showOneOffAddressForm && (
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                      <p className="text-sm font-semibold text-slate-900">Address details</p>
+                      <div className="mt-3 grid gap-4 md:grid-cols-2">
+                        <label htmlFor="checkout-address-line-1" className="text-sm font-medium text-slate-700">
+                          <span className="mb-1 block">Address line 1</span>
+                          <input
+                            id="checkout-address-line-1"
+                            type="text"
+                            value={addressLine1}
+                            onChange={(event) => setAddressLine1(event.target.value)}
+                            className="w-full rounded-md border border-slate-300 px-3 py-2"
+                            placeholder="1 Main Street"
+                          />
+                        </label>
+                        <label htmlFor="checkout-address-line-2" className="text-sm font-medium text-slate-700">
+                          <span className="mb-1 block">Address line 2</span>
+                          <input
+                            id="checkout-address-line-2"
+                            type="text"
+                            value={addressLine2}
+                            onChange={(event) => setAddressLine2(event.target.value)}
+                            className="w-full rounded-md border border-slate-300 px-3 py-2"
+                            placeholder="Apartment, unit, etc."
+                          />
+                        </label>
+                        <label htmlFor="checkout-address-city" className="text-sm font-medium text-slate-700">
+                          <span className="mb-1 block">Town or city</span>
+                          <input
+                            id="checkout-address-city"
+                            type="text"
+                            value={addressCity}
+                            onChange={(event) => setAddressCity(event.target.value)}
+                            className="w-full rounded-md border border-slate-300 px-3 py-2"
+                            placeholder="City"
+                          />
+                        </label>
+                        <label htmlFor="checkout-address-county" className="text-sm font-medium text-slate-700">
+                          <span className="mb-1 block">County</span>
+                          <input
+                            id="checkout-address-county"
+                            type="text"
+                            value={addressCounty}
+                            onChange={(event) => setAddressCounty(event.target.value)}
+                            className="w-full rounded-md border border-slate-300 px-3 py-2"
+                            placeholder="County"
+                          />
+                        </label>
+                        <label htmlFor="checkout-address-postcode" className="text-sm font-medium text-slate-700">
+                          <span className="mb-1 block">Postcode</span>
+                          <input
+                            id="checkout-address-postcode"
+                            type="text"
+                            value={addressPostcode}
+                            onChange={(event) => setAddressPostcode(event.target.value)}
+                            className="w-full rounded-md border border-slate-300 px-3 py-2"
+                            placeholder="Postcode"
+                          />
+                        </label>
+                        <label htmlFor="checkout-address-country-code" className="text-sm font-medium text-slate-700">
+                          <span className="mb-1 block">Country code</span>
+                          <input
+                            id="checkout-address-country-code"
+                            type="text"
+                            value={addressCountryCode}
+                            onChange={(event) => setAddressCountryCode(event.target.value)}
+                            className="w-full rounded-md border border-slate-300 px-3 py-2"
+                            placeholder="IE"
+                          />
+                        </label>
+                      </div>
+
+                      <label className="mt-4 flex items-center gap-2 text-sm text-slate-700">
+                        <input
+                          id="create-account-for-checkout"
+                          type="checkbox"
+                          checked={createAccountForCheckout}
+                          onChange={(event) => setCreateAccountForCheckout(event.target.checked)}
+                          aria-label="Create an account"
+                        />
+                        Create an account
+                      </label>
+
+                      {createAccountForCheckout && (
+                        <div className="mt-4 space-y-3 rounded-lg border border-slate-200 bg-white p-4">
+                          <p className="text-sm text-slate-600">
+                            We’ll create the account with this email address and send a verification link to activate it.
+                          </p>
+
+                          <label htmlFor="checkout-account-password" className="block text-sm font-medium text-slate-700">
+                            <span className="mb-1 block">Password</span>
+                            <input
+                              id="checkout-account-password"
+                              type="password"
+                              value={accountPassword}
+                              onChange={(event) => setAccountPassword(event.target.value)}
+                              className="w-full rounded-md border border-slate-300 px-3 py-2"
+                              placeholder="Choose a password"
+                            />
+                          </label>
+
+                          <label htmlFor="checkout-account-confirm-password" className="block text-sm font-medium text-slate-700">
+                            <span className="mb-1 block">Confirm password</span>
+                            <input
+                              id="checkout-account-confirm-password"
+                              type="password"
+                              value={accountConfirmPassword}
+                              onChange={(event) => setAccountConfirmPassword(event.target.value)}
+                              className="w-full rounded-md border border-slate-300 px-3 py-2"
+                              placeholder="Confirm your password"
+                            />
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  )}
+              </form>
+            )}
           </section>
 
           <aside className="rounded-2xl border border-slate-200 bg-[#f8fafc] p-6 shadow-sm">
@@ -513,10 +957,43 @@ export default function CheckoutPage() {
             </div>
 
             <div className="mt-6 border-t border-slate-200 pt-6">
-              <div className="flex items-center justify-between">
-                <span className="text-base font-bold text-[#123A7A]">Total</span>
-                <span className="text-xl font-extrabold text-[#C61F2A]">{formatCurrency(subtotal, checkoutCurrency)}</span>
+              <div className="rounded-lg border border-slate-200 bg-white p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Server-confirmed summary</p>
+                    <p className="mt-1 text-sm text-slate-600">
+                      {amountTotalCents > 0 ? 'We verified the current order total before checkout.' : 'We will confirm the final total once the server prepares payment.'}
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
+                    Verified
+                  </span>
+                </div>
+                {priceRefreshNotice && (
+                  <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                    {priceRefreshNotice}
+                  </p>
+                )}
               </div>
+
+              <div className="mt-4 flex items-center justify-between">
+                <span className="text-base font-bold text-[#123A7A]">Total</span>
+                <span className="text-xl font-extrabold text-[#C61F2A]">{formatCurrency(amountTotalCents / 100, checkoutCurrency)}</span>
+              </div>
+
+              {serverLineItems.length > 0 && (
+                <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Price breakdown</p>
+                  <div className="mt-3 space-y-2 text-sm text-slate-700">
+                    {serverLineItems.map((line) => (
+                      <div key={`${line.title}-${line.quantity}`} className="flex items-center justify-between gap-3">
+                        <span>{line.title} × {line.quantity}</span>
+                        <span className="font-semibold text-slate-900">{formatCurrency((line.lineTotalCents || 0) / 100, checkoutCurrency)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="mt-8 space-y-3">
                 {turnstileSiteKey && (

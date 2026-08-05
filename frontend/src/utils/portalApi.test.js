@@ -1,14 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   clearPortalSession,
+  createAccountAddress,
   createPortalEquipment,
   createStaffAssignment,
+  deleteAccountAddress,
+  getAccountAddresses,
   getAccountBootstrap,
+  getAccountOrders,
   getPortalMe,
   portalLogin,
   registerCommerceAccount,
   resendCommerceVerification,
   savePortalAccessToken,
+  updateAccountAddress,
   updatePortalCustomer,
   verifyCommerceEmail,
 } from './portalApi'
@@ -161,6 +166,91 @@ describe('portalApi error messaging', () => {
         canAccessPortal: false,
       },
     })
+  })
+
+  it('loads account orders and addresses through the authenticated account API', async () => {
+    savePortalAccessToken('test-access-token')
+    fetch
+      .mockResolvedValueOnce(mockJsonResponse(200, [{
+        checkoutRef: 'chk_123',
+        status: 'paid',
+        customerName: 'Customer Example',
+        customerEmail: 'customer@example.com',
+        lineItems: [{ name: 'Rope sling', quantity: 1 }],
+        amountTotalCents: 15000,
+        currency: 'GBP',
+        createdAt: '2024-01-01T00:00:00Z',
+      }]))
+      .mockResolvedValueOnce(mockJsonResponse(200, [{
+        id: 7,
+        label: 'Home',
+        recipientName: 'Customer Example',
+        recipientPhone: '07123456789',
+        addressLine1: '1 Main Street',
+        addressLine2: 'Unit 2',
+        city: 'Leeds',
+        county: 'West Yorkshire',
+        postcode: 'LS1 1AA',
+        countryCode: 'GB',
+        isDefaultShipping: true,
+        isDefaultBilling: false,
+      }]))
+
+    await expect(getAccountOrders()).resolves.toEqual([expect.objectContaining({ checkoutRef: 'chk_123' })])
+    await expect(getAccountAddresses()).resolves.toEqual([expect.objectContaining({ id: 7, label: 'Home' })])
+  })
+
+  it('submits a new address through the secured account API', async () => {
+    savePortalAccessToken('test-access-token')
+    fetch.mockResolvedValueOnce(mockJsonResponse(201, {
+      id: 9,
+      label: 'Work',
+      recipientName: 'Customer Example',
+      addressLine1: '2 Other Street',
+      city: 'Manchester',
+      postcode: 'M1 1AA',
+      countryCode: 'GB',
+      isDefaultShipping: false,
+      isDefaultBilling: false,
+    }))
+
+    await createAccountAddress({
+      label: 'Work',
+      recipientName: 'Customer Example',
+      addressLine1: '2 Other Street',
+      city: 'Manchester',
+      postcode: 'M1 1AA',
+      countryCode: 'GB',
+    })
+
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/account/addresses/'),
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('"label":"Work"'),
+      }),
+    )
+  })
+
+  it('updates and removes addresses through the secured account API', async () => {
+    savePortalAccessToken('test-access-token')
+    fetch
+      .mockResolvedValueOnce(mockJsonResponse(200, { id: 7, label: 'Home' }))
+      .mockResolvedValueOnce(mockJsonResponse(200, { ok: true }))
+
+    await updateAccountAddress(7, { label: 'Home' })
+    await deleteAccountAddress(7)
+
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining('/account/addresses/7/'),
+      expect.objectContaining({ method: 'PATCH', body: expect.stringContaining('"label":"Home"') }),
+    )
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      expect.stringContaining('/account/addresses/7/'),
+      expect.objectContaining({ method: 'DELETE' }),
+    )
   })
 
   it('shows username suggestion when backend provides one', async () => {

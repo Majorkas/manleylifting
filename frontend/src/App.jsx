@@ -5,28 +5,41 @@ import LegalPage from './components/LegalPage'
 import HomePage from './pages/HomePage'
 import PortalDashboardPage from './pages/PortalDashboardPage'
 import PortalLoginPage from './pages/PortalLoginPage'
-import StoreWorkInProgressPage from './pages/StoreWorkInProgressPage'
+import CartPage from './pages/CartPage'
+import ShopCollectionPage from './pages/ShopCollectionPage'
+import ShopPage from './pages/ShopPage'
+import ShopProductPage from './pages/ShopProductPage'
+import CheckoutPage from './pages/CheckoutPage'
+import OrderConfirmedPage from './pages/OrderConfirmedPage'
 import AccountLoginPage from './pages/AccountLoginPage'
+import AccountAddressesPage from './pages/AccountAddressesPage'
 import AccountOverviewPage from './pages/AccountOverviewPage'
+import AccountOrdersPage from './pages/AccountOrdersPage'
 import AccountRegisterPage from './pages/AccountRegisterPage'
 import AccountResendVerificationPage from './pages/AccountResendVerificationPage'
+import AccountResetPasswordPage from './pages/AccountResetPasswordPage'
 import AccountVerifyEmailPage from './pages/AccountVerifyEmailPage'
+import AccountChangeEmailPage from './pages/AccountChangeEmailPage'
 
 export default function App() {
   return (
     <Routes>
       <Route path="/" element={<HomePage />} />
-      <Route path="/shop" element={<StoreWorkInProgressPage />} />
-      <Route path="/shop/collections/:handle" element={<StoreWorkInProgressPage />} />
-      <Route path="/shop/products/:handle" element={<StoreWorkInProgressPage />} />
-      <Route path="/cart" element={<StoreWorkInProgressPage />} />
-      <Route path="/checkout" element={<StoreWorkInProgressPage />} />
-      <Route path="/order-confirmed" element={<StoreWorkInProgressPage />} />
+      <Route path="/shop" element={<ShopPage />} />
+      <Route path="/shop/collections/:handle" element={<ShopCollectionPage />} />
+      <Route path="/shop/products/:handle" element={<ShopProductPage />} />
+      <Route path="/cart" element={<CartPage />} />
+      <Route path="/checkout" element={<CheckoutPage />} />
+      <Route path="/order-confirmed" element={<OrderConfirmedPage />} />
       <Route path="/account" element={<AccountOverviewPage />} />
+      <Route path="/account/orders" element={<AccountOrdersPage />} />
+      <Route path="/account/addresses" element={<AccountAddressesPage />} />
       <Route path="/account/login" element={<AccountLoginPage />} />
       <Route path="/account/register" element={<AccountRegisterPage />} />
       <Route path="/account/verify-email" element={<AccountVerifyEmailPage />} />
       <Route path="/account/resend-verification" element={<AccountResendVerificationPage />} />
+      <Route path="/account/reset-password" element={<AccountResetPasswordPage />} />
+      <Route path="/account/change-email" element={<AccountChangeEmailPage />} />
       <Route path="/portal" element={<PortalDashboardPage />} />
       <Route path="/portal/login" element={<PortalLoginPage />} />
       <Route path="/contact" element={<ContactPage />} />

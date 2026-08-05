@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Building2, LogOut, ShieldCheck, ShoppingBag } from 'lucide-react'
+import { Building2, LogOut, MapPin, Package2, ShieldCheck, ShoppingBag } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import AccountLayout from '../components/AccountLayout'
-import { getAccountBootstrap, portalLogout } from '../utils/portalApi'
+import { changeAccountPassword, deleteAccount, disableAccount, getAccountBootstrap, logoutAllAccountSessions, portalLogout, requestAccountEmailChange } from '../utils/portalApi'
 import usePageMeta from '../utils/usePageMeta'
 
 export default function AccountOverviewPage() {
@@ -10,6 +10,13 @@ export default function AccountOverviewPage() {
   const navigate = useNavigate()
   const [account, setAccount] = useState(null)
   const [errorMessage, setErrorMessage] = useState('')
+  const [passwordForm, setPasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' })
+  const [passwordStatus, setPasswordStatus] = useState({ type: '', message: '' })
+  const [emailForm, setEmailForm] = useState({ currentPassword: '', newEmail: '' })
+  const [emailStatus, setEmailStatus] = useState({ type: '', message: '' })
+  const [sessionStatus, setSessionStatus] = useState({ type: '', message: '' })
+  const [accountAction, setAccountAction] = useState({ type: '', currentPassword: '', confirmDelete: false })
+  const [accountActionStatus, setAccountActionStatus] = useState({ type: '', message: '' })
 
   useEffect(() => {
     let cancelled = false
@@ -35,6 +42,88 @@ export default function AccountOverviewPage() {
     navigate('/account/login', { replace: true })
   }
 
+  async function handlePasswordChange(event) {
+    event.preventDefault()
+    setPasswordStatus({ type: '', message: '' })
+
+    if (!passwordForm.currentPassword || !passwordForm.newPassword || !passwordForm.confirmPassword) {
+      setPasswordStatus({ type: 'error', message: 'Complete every password field before continuing.' })
+      return
+    }
+
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      setPasswordStatus({ type: 'error', message: 'The new passwords do not match.' })
+      return
+    }
+
+    try {
+      await changeAccountPassword({
+        currentPassword: passwordForm.currentPassword,
+        newPassword: passwordForm.newPassword,
+      })
+      setPasswordStatus({ type: 'success', message: 'Your password was updated. Please sign in again with the new password if you are using this browser elsewhere.' })
+      setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' })
+    } catch (error) {
+      setPasswordStatus({ type: 'error', message: String(error?.message || 'Unable to update your password right now.') })
+    }
+  }
+
+  async function handleEmailChange(event) {
+    event.preventDefault()
+    setEmailStatus({ type: '', message: '' })
+
+    if (!emailForm.currentPassword || !emailForm.newEmail) {
+      setEmailStatus({ type: 'error', message: 'Enter your current password and the new email address.' })
+      return
+    }
+
+    try {
+      await requestAccountEmailChange({ currentPassword: emailForm.currentPassword, newEmail: emailForm.newEmail })
+      setEmailStatus({ type: 'success', message: 'We sent a confirmation email to the new address. Open it to complete the change.' })
+      setEmailForm({ currentPassword: '', newEmail: '' })
+    } catch (error) {
+      setEmailStatus({ type: 'error', message: String(error?.message || 'Unable to start the email change right now.') })
+    }
+  }
+
+  async function handleLogoutAllSessions() {
+    try {
+      await logoutAllAccountSessions()
+      setSessionStatus({ type: 'success', message: 'You have been signed out of every active session.' })
+    } catch (error) {
+      setSessionStatus({ type: 'error', message: String(error?.message || 'Unable to sign out of all sessions right now.') })
+    }
+  }
+
+  async function handleDisableAccount(event) {
+    event.preventDefault()
+    setAccountActionStatus({ type: '', message: '' })
+    try {
+      await disableAccount({ currentPassword: accountAction.currentPassword, reason: 'User disabled from account overview' })
+      setAccountActionStatus({ type: 'success', message: 'Your account has been disabled. You can sign in again only after an administrator re-enables it.' })
+      setAccountAction((current) => ({ ...current, currentPassword: '' }))
+    } catch (error) {
+      setAccountActionStatus({ type: 'error', message: String(error?.message || 'Unable to disable your account right now.') })
+    }
+  }
+
+  async function handleDeleteAccount(event) {
+    event.preventDefault()
+    setAccountActionStatus({ type: '', message: '' })
+    if (!accountAction.confirmDelete) {
+      setAccountActionStatus({ type: 'error', message: 'Please confirm that you want to permanently delete your account.' })
+      return
+    }
+    try {
+      await deleteAccount({ currentPassword: accountAction.currentPassword, confirm: true })
+      setAccountActionStatus({ type: 'success', message: 'Your account has been permanently deleted.' })
+      await portalLogout()
+      navigate('/account/login', { replace: true })
+    } catch (error) {
+      setAccountActionStatus({ type: 'error', message: String(error?.message || 'Unable to delete your account right now.') })
+    }
+  }
+
   return (
     <AccountLayout
       eyebrow="My Account"
@@ -53,19 +142,111 @@ export default function AccountOverviewPage() {
             </div>
           </div>
 
-          <div className="mt-6 space-y-3">
+          <div className="mt-6 grid gap-3 md:grid-cols-2">
             {account.capabilities.canShop && (
-              <Link className="flex items-center justify-between rounded-md border border-slate-200 px-4 py-4 text-[#123A7A] transition hover:border-[#123A7A]" to="/shop">
-                <span className="flex items-center gap-3 font-bold"><ShoppingBag size={20} aria-hidden="true" />Shop</span>
-                <span aria-hidden="true">&rarr;</span>
-              </Link>
+              <>
+                <Link className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-4 text-[#123A7A] shadow-sm transition hover:border-[#123A7A] hover:shadow-md" to="/account/orders">
+                  <span className="flex items-center gap-3 font-bold"><Package2 size={20} aria-hidden="true" />Orders</span>
+                  <span aria-hidden="true">&rarr;</span>
+                </Link>
+                <Link className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-4 text-[#123A7A] shadow-sm transition hover:border-[#123A7A] hover:shadow-md" to="/account/addresses">
+                  <span className="flex items-center gap-3 font-bold"><MapPin size={20} aria-hidden="true" />Saved addresses</span>
+                  <span aria-hidden="true">&rarr;</span>
+                </Link>
+                <Link className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-4 text-[#123A7A] shadow-sm transition hover:border-[#123A7A] hover:shadow-md" to="/shop">
+                  <span className="flex items-center gap-3 font-bold"><ShoppingBag size={20} aria-hidden="true" />Shop</span>
+                  <span aria-hidden="true">&rarr;</span>
+                </Link>
+              </>
             )}
             {account.capabilities.canAccessPortal && (
-              <Link className="flex items-center justify-between rounded-md border border-slate-200 px-4 py-4 text-[#123A7A] transition hover:border-[#123A7A]" to="/portal">
+              <Link className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-4 text-[#123A7A] shadow-sm transition hover:border-[#123A7A] hover:shadow-md" to="/portal">
                 <span className="flex items-center gap-3 font-bold"><Building2 size={20} aria-hidden="true" />Equipment portal</span>
                 <span aria-hidden="true">&rarr;</span>
               </Link>
             )}
+          </div>
+
+          <div className="mt-8 rounded-lg border border-slate-200 bg-slate-50 p-5">
+            <h3 className="text-lg font-bold text-slate-900">Security controls</h3>
+            <p className="mt-2 text-sm text-slate-600">Update your password or sign out from every active browser session tied to this account.</p>
+
+            <form className="mt-4 space-y-3" onSubmit={handlePasswordChange}>
+              <div className="grid gap-3 md:grid-cols-3">
+                <label className="block text-sm font-semibold text-slate-700">
+                  <span className="mb-1 block">Current password</span>
+                  <input className="w-full rounded-md border border-slate-300 px-3 py-2.5 outline-none focus:border-[#123A7A]" type="password" value={passwordForm.currentPassword} onChange={(event) => setPasswordForm((current) => ({ ...current, currentPassword: event.target.value }))} autoComplete="current-password" />
+                </label>
+                <label className="block text-sm font-semibold text-slate-700">
+                  <span className="mb-1 block">New password</span>
+                  <input className="w-full rounded-md border border-slate-300 px-3 py-2.5 outline-none focus:border-[#123A7A]" type="password" value={passwordForm.newPassword} onChange={(event) => setPasswordForm((current) => ({ ...current, newPassword: event.target.value }))} autoComplete="new-password" />
+                </label>
+                <label className="block text-sm font-semibold text-slate-700">
+                  <span className="mb-1 block">Confirm password</span>
+                  <input className="w-full rounded-md border border-slate-300 px-3 py-2.5 outline-none focus:border-[#123A7A]" type="password" value={passwordForm.confirmPassword} onChange={(event) => setPasswordForm((current) => ({ ...current, confirmPassword: event.target.value }))} autoComplete="new-password" />
+                </label>
+              </div>
+              {passwordStatus.message && (
+                <p className={passwordStatus.type === 'error' ? 'text-sm text-red-700' : 'text-sm text-emerald-700'}>{passwordStatus.message}</p>
+              )}
+              <button className="rounded-md bg-[#123A7A] px-4 py-2.5 font-semibold text-white" type="submit">Update password</button>
+            </form>
+
+            <form className="mt-5 space-y-3 rounded-md border border-slate-200 bg-white p-4" onSubmit={handleEmailChange}>
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <p className="font-semibold text-slate-900">Change email address</p>
+                  <p className="text-sm text-slate-600">We’ll send a confirmation link to the new address before the change is applied.</p>
+                </div>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="block text-sm font-semibold text-slate-700">
+                  <span className="mb-1 block">Current password</span>
+                  <input className="w-full rounded-md border border-slate-300 px-3 py-2.5 outline-none focus:border-[#123A7A]" type="password" value={emailForm.currentPassword} onChange={(event) => setEmailForm((current) => ({ ...current, currentPassword: event.target.value }))} autoComplete="current-password" />
+                </label>
+                <label className="block text-sm font-semibold text-slate-700">
+                  <span className="mb-1 block">New email</span>
+                  <input className="w-full rounded-md border border-slate-300 px-3 py-2.5 outline-none focus:border-[#123A7A]" type="email" value={emailForm.newEmail} onChange={(event) => setEmailForm((current) => ({ ...current, newEmail: event.target.value }))} autoComplete="email" />
+                </label>
+              </div>
+              {emailStatus.message && (
+                <p className={emailStatus.type === 'error' ? 'text-sm text-red-700' : 'text-sm text-emerald-700'}>{emailStatus.message}</p>
+              )}
+              <button className="rounded-md bg-[#123A7A] px-4 py-2.5 font-semibold text-white" type="submit">Send confirmation</button>
+            </form>
+
+            <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-md border border-slate-200 bg-white px-4 py-3">
+              <div>
+                <p className="font-semibold text-slate-900">Sign out everywhere</p>
+                <p className="text-sm text-slate-600">Revokes every active session on this account.</p>
+              </div>
+              <button className="rounded-md border border-slate-300 px-4 py-2.5 font-semibold text-slate-700 hover:bg-slate-50" type="button" onClick={handleLogoutAllSessions}>Sign out all devices</button>
+            </div>
+            {sessionStatus.message && (
+              <p className={sessionStatus.type === 'error' ? 'mt-3 text-sm text-red-700' : 'mt-3 text-sm text-emerald-700'}>{sessionStatus.message}</p>
+            )}
+
+            <div className="mt-5 rounded-md border border-red-200 bg-red-50 p-4">
+              <h4 className="font-semibold text-red-900">Account management</h4>
+              <p className="mt-1 text-sm text-red-700">Disable your account temporarily or permanently delete it. These actions require your current password.</p>
+              <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+                <label className="block text-sm font-semibold text-slate-700">
+                  <span className="mb-1 block">Current password</span>
+                  <input className="w-full rounded-md border border-slate-300 bg-white px-3 py-2.5 outline-none focus:border-[#123A7A]" type="password" value={accountAction.currentPassword} onChange={(event) => setAccountAction((current) => ({ ...current, currentPassword: event.target.value }))} autoComplete="current-password" />
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  <button className="rounded-md border border-red-300 bg-white px-3 py-2.5 font-semibold text-red-700" type="button" onClick={handleDisableAccount}>Disable account</button>
+                  <button className="rounded-md bg-red-700 px-3 py-2.5 font-semibold text-white" type="button" onClick={handleDeleteAccount}>Delete account</button>
+                </div>
+              </div>
+              <label className="mt-3 flex items-center gap-2 text-sm text-red-700">
+                <input type="checkbox" checked={accountAction.confirmDelete} onChange={(event) => setAccountAction((current) => ({ ...current, confirmDelete: event.target.checked }))} />
+                I understand that deleting my account is permanent.
+              </label>
+              {accountActionStatus.message && (
+                <p className={accountActionStatus.type === 'error' ? 'mt-3 text-sm text-red-700' : 'mt-3 text-sm text-emerald-700'}>{accountActionStatus.message}</p>
+              )}
+            </div>
           </div>
 
           <button className="mt-7 flex items-center gap-2 rounded-md border border-slate-300 px-4 py-2.5 font-semibold text-slate-700 hover:bg-slate-50" type="button" onClick={signOut}>

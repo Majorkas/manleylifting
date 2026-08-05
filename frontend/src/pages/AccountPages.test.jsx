@@ -5,7 +5,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AccountLoginPage from './AccountLoginPage'
 import AccountRegisterPage from './AccountRegisterPage'
 import AccountVerifyEmailPage from './AccountVerifyEmailPage'
+import AccountAddressesPage from './AccountAddressesPage'
 import {
+  deleteAccountAddress,
+  getAccountAddresses,
   getAccountBootstrap,
   portalLogin,
   registerCommerceAccount,
@@ -21,6 +24,8 @@ vi.mock('../components/TurnstileWidget', () => ({
 }))
 
 vi.mock('../utils/portalApi', () => ({
+  deleteAccountAddress: vi.fn(),
+  getAccountAddresses: vi.fn(),
   getAccountBootstrap: vi.fn(),
   portalLogin: vi.fn(),
   registerCommerceAccount: vi.fn(),
@@ -90,5 +95,79 @@ describe('account lifecycle pages', () => {
       'customer@example.com',
       'A-Strong-Commerce-Password-123!',
     )
+  })
+
+  it('shows a recently saved checkout address immediately from local storage', async () => {
+    window.localStorage.setItem('manley-recent-account-address', JSON.stringify({
+      label: 'Checkout address',
+      recipientName: 'Guest User',
+      recipientPhone: '+353871234567',
+      addressLine1: '10 Harbour Road',
+      addressLine2: 'Apartment 2',
+      city: 'Cork',
+      county: 'Cork',
+      postcode: 'T12 3AB',
+      countryCode: 'IE',
+      isDefaultShipping: true,
+      isDefaultBilling: false,
+    }))
+    getAccountAddresses.mockResolvedValue([])
+
+    render(<MemoryRouter><AccountAddressesPage /></MemoryRouter>)
+
+    expect(await screen.findByText('Checkout address')).toBeInTheDocument()
+    expect(screen.getByText(/10 Harbour Road/i)).toBeInTheDocument()
+  })
+
+  it('shows inline validation feedback and default-shipping badges for saved addresses', async () => {
+    const user = userEvent.setup()
+    getAccountAddresses.mockResolvedValue([
+      {
+        id: 7,
+        label: 'Home',
+        recipientName: 'Customer Example',
+        addressLine1: '1 Main Street',
+        city: 'Leeds',
+        postcode: 'LS1 1AA',
+        countryCode: 'GB',
+        isDefaultShipping: true,
+        isDefaultBilling: false,
+      },
+    ])
+
+    render(<MemoryRouter><AccountAddressesPage /></MemoryRouter>)
+
+    expect(await screen.findByText('Default shipping')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Save address' }))
+
+    expect(await screen.findByText(/Please complete the required fields/i)).toBeInTheDocument()
+  })
+
+  it('asks for confirmation before removing an address and shows a success toast', async () => {
+    const user = userEvent.setup()
+    deleteAccountAddress.mockResolvedValue({ ok: true })
+    getAccountAddresses.mockResolvedValue([
+      {
+        id: 7,
+        label: 'Home',
+        recipientName: 'Customer Example',
+        addressLine1: '1 Main Street',
+        city: 'Leeds',
+        postcode: 'LS1 1AA',
+        countryCode: 'GB',
+        isDefaultShipping: true,
+        isDefaultBilling: false,
+      },
+    ])
+
+    render(<MemoryRouter><AccountAddressesPage /></MemoryRouter>)
+
+    await user.click(await screen.findByRole('button', { name: 'Remove' }))
+
+    expect(screen.getByText(/Remove this address/i)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Confirm remove' }))
+
+    expect(deleteAccountAddress).toHaveBeenCalledWith(7)
+    expect(await screen.findByText('Address removed.')).toBeInTheDocument()
   })
 })

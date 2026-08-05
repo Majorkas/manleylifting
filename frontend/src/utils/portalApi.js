@@ -489,6 +489,14 @@ export async function registerCommerceAccount(payload) {
     password: String(payload?.password || ''),
     first_name: String(payload?.firstName || '').trim(),
     last_name: String(payload?.lastName || '').trim(),
+    recipient_name: String(payload?.recipientName || payload?.recipient_name || '').trim(),
+    recipient_phone: String(payload?.recipientPhone || payload?.recipient_phone || '').trim(),
+    address_line_1: String(payload?.addressLine1 || payload?.address_line_1 || '').trim(),
+    address_line_2: String(payload?.addressLine2 || payload?.address_line_2 || '').trim(),
+    city: String(payload?.city || '').trim(),
+    county: String(payload?.county || '').trim(),
+    postcode: String(payload?.postcode || '').trim(),
+    country_code: String(payload?.countryCode || payload?.country_code || '').trim(),
     accept_terms: Boolean(payload?.acceptTerms),
     accept_privacy: Boolean(payload?.acceptPrivacy),
     turnstile_token: String(payload?.turnstileToken || ''),
@@ -505,6 +513,20 @@ export async function resendCommerceVerification(email, turnstileToken = '') {
   return publicAccountPost('/account/resend-verification/', {
     email: String(email || '').trim(),
     turnstile_token: String(turnstileToken || ''),
+  })
+}
+
+export async function requestCommercePasswordReset(email, turnstileToken = '') {
+  return publicAccountPost('/account/password-reset/', {
+    email: String(email || '').trim(),
+    turnstile_token: String(turnstileToken || ''),
+  })
+}
+
+export async function completeCommercePasswordReset(token, newPassword) {
+  return publicAccountPost('/account/password-reset/complete/', {
+    token: String(token || '').trim(),
+    new_password: String(newPassword || ''),
   })
 }
 
@@ -552,6 +574,7 @@ export async function getAccountBootstrap() {
     username: String(body?.username || ''),
     email: String(body?.email || ''),
     fullName: String(body?.full_name || ''),
+    phone: String(body?.phone || ''),
     emailVerified: Boolean(body?.email_verified),
     capabilities: {
       canShop: Boolean(body?.capabilities?.can_shop),
@@ -559,6 +582,82 @@ export async function getAccountBootstrap() {
       canAccessPortal: Boolean(body?.capabilities?.can_access_portal),
     },
   }
+}
+
+export async function getAccountOrders() {
+  const response = await authFetch('/account/orders/')
+  const body = await parseResponse(response, '/account/orders/')
+  return Array.isArray(body) ? body.map((order) => ({
+    checkoutRef: String(order?.checkoutRef || ''),
+    status: String(order?.status || ''),
+    customerName: String(order?.customerName || ''),
+    customerEmail: String(order?.customerEmail || ''),
+    lineItems: Array.isArray(order?.lineItems) ? order.lineItems : [],
+    amountTotalCents: Number(order?.amountTotalCents || 0),
+    currency: String(order?.currency || ''),
+    paidAt: String(order?.paidAt || ''),
+    createdAt: String(order?.createdAt || ''),
+  })) : []
+}
+
+export async function getAccountAddresses() {
+  const response = await authFetch('/account/addresses/')
+  const body = await parseResponse(response, '/account/addresses/')
+  return Array.isArray(body) ? body.map((address) => ({
+    id: Number(address?.id || 0),
+    label: String(address?.label || ''),
+    recipientName: String(address?.recipientName || ''),
+    recipientPhone: String(address?.recipientPhone || ''),
+    addressLine1: String(address?.addressLine1 || ''),
+    addressLine2: String(address?.addressLine2 || ''),
+    city: String(address?.city || ''),
+    county: String(address?.county || ''),
+    postcode: String(address?.postcode || ''),
+    countryCode: String(address?.countryCode || ''),
+    isDefaultShipping: Boolean(address?.isDefaultShipping),
+    isDefaultBilling: Boolean(address?.isDefaultBilling),
+  })) : []
+}
+
+function buildAccountAddressPayload(payload) {
+  return {
+    label: String(payload?.label || '').trim(),
+    recipientName: String(payload?.recipientName || '').trim(),
+    recipientPhone: String(payload?.recipientPhone || '').trim(),
+    addressLine1: String(payload?.addressLine1 || '').trim(),
+    addressLine2: String(payload?.addressLine2 || '').trim(),
+    city: String(payload?.city || '').trim(),
+    county: String(payload?.county || '').trim(),
+    postcode: String(payload?.postcode || '').trim(),
+    countryCode: String(payload?.countryCode || '').trim(),
+    isDefaultShipping: Boolean(payload?.isDefaultShipping),
+    isDefaultBilling: Boolean(payload?.isDefaultBilling),
+  }
+}
+
+export async function createAccountAddress(payload) {
+  const response = await authFetch('/account/addresses/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(buildAccountAddressPayload(payload)),
+  })
+  return parseResponse(response, '/account/addresses/')
+}
+
+export async function updateAccountAddress(addressId, payload) {
+  const response = await authFetch(`/account/addresses/${encodeURIComponent(String(addressId))}/`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(buildAccountAddressPayload(payload)),
+  })
+  return parseResponse(response, `/account/addresses/${encodeURIComponent(String(addressId))}/`)
+}
+
+export async function deleteAccountAddress(addressId) {
+  const response = await authFetch(`/account/addresses/${encodeURIComponent(String(addressId))}/`, {
+    method: 'DELETE',
+  })
+  return parseResponse(response, `/account/addresses/${encodeURIComponent(String(addressId))}/`)
 }
 
 export async function changePortalPassword(payload) {
@@ -569,6 +668,86 @@ export async function changePortalPassword(payload) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(payload),
+  })
+  return parseResponse(response, path)
+}
+
+export async function changeAccountPassword(payload) {
+  const path = '/account/change-password/'
+  const response = await authFetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      current_password: payload?.currentPassword ?? payload?.current_password,
+      new_password: payload?.newPassword ?? payload?.new_password,
+    }),
+  })
+  return parseResponse(response, path)
+}
+
+export async function requestAccountEmailChange(payload) {
+  const path = '/account/change-email/'
+  const response = await authFetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      current_password: payload?.currentPassword ?? payload?.current_password,
+      email: payload?.newEmail ?? payload?.email,
+    }),
+  })
+  return parseResponse(response, path)
+}
+
+export async function completeAccountEmailChange(token) {
+  const path = '/account/change-email/complete/'
+  const response = await publicAccountPost(path, {
+    token: String(token || '').trim(),
+  })
+  return parseResponse(response, path)
+}
+
+export async function logoutAllAccountSessions() {
+  const path = '/account/logout-all/'
+  const response = await authFetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
+  })
+  return parseResponse(response, path)
+}
+
+export async function disableAccount(payload) {
+  const path = '/account/disable/'
+  const response = await authFetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      current_password: payload?.currentPassword ?? payload?.current_password,
+      reason: payload?.reason ?? '',
+    }),
+  })
+  return parseResponse(response, path)
+}
+
+export async function deleteAccount(payload) {
+  const path = '/account/delete/'
+  const response = await authFetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      current_password: payload?.currentPassword ?? payload?.current_password,
+      confirm: Boolean(payload?.confirm),
+    }),
   })
   return parseResponse(response, path)
 }

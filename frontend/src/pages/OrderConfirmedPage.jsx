@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { registerCommerceAccount } from '../utils/portalApi'
 import ShopPageLayout from '../components/ShopPageLayout'
 import {
   clearCompletedCheckout,
@@ -20,9 +21,23 @@ export default function OrderConfirmedPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
   const [order, setOrder] = useState(null)
+  const [guestOffer, setGuestOffer] = useState(null)
+  const [registeringGuest, setRegisteringGuest] = useState(false)
+  const [registerGuestMessage, setRegisterGuestMessage] = useState('')
+  const [guestPassword, setGuestPassword] = useState('')
+  const [guestConfirmPassword, setGuestConfirmPassword] = useState('')
 
   useEffect(() => {
     let cancelled = false
+
+    try {
+      const rawOffer = window.localStorage.getItem('manley-guest-checkout-offer')
+      if (rawOffer) {
+        setGuestOffer(JSON.parse(rawOffer))
+      }
+    } catch {
+      setGuestOffer(null)
+    }
 
     async function loadOrder() {
       const completed = loadCompletedCheckout()
@@ -53,12 +68,56 @@ export default function OrderConfirmedPage() {
     }
   }, [])
 
+  async function handleRegisterGuestAccount() {
+    if (!guestOffer?.email) return
+
+    if (guestPassword.length < 12) {
+      setRegisterGuestMessage('Choose a password with at least 12 characters.')
+      return
+    }
+
+    if (guestPassword !== guestConfirmPassword) {
+      setRegisterGuestMessage('Passwords do not match. Enter the same password twice.')
+      return
+    }
+
+    setRegisteringGuest(true)
+    setRegisterGuestMessage('')
+
+    try {
+      await registerCommerceAccount({
+        email: guestOffer.email,
+        password: guestPassword,
+        firstName: guestOffer.fullName?.split(' ')[0] || '',
+        lastName: guestOffer.fullName?.split(' ').slice(1).join(' ') || '',
+        acceptTerms: true,
+        acceptPrivacy: true,
+      })
+      setRegisterGuestMessage('Thanks! We have sent a verification email to your address so you can activate your account.')
+      setGuestPassword('')
+      setGuestConfirmPassword('')
+      window.localStorage.removeItem('manley-guest-checkout-offer')
+      setGuestOffer(null)
+    } catch (error) {
+      setRegisterGuestMessage(String(error?.message || 'We could not create the account right now.'))
+    } finally {
+      setRegisteringGuest(false)
+    }
+  }
+
   return (
     <ShopPageLayout>
       <main className="mx-auto w-full max-w-5xl px-6 py-16">
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm md:p-8">
-          <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">Order Confirmed</p>
-          <h1 className="mt-2 text-4xl font-extrabold text-[#123A7A] md:text-5xl">Thank You</h1>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">Order Confirmed</p>
+              <h1 className="mt-2 text-4xl font-extrabold text-[#123A7A] md:text-5xl">Thank You</h1>
+            </div>
+            <div className="rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700">
+              Payment received • Order tracked
+            </div>
+          </div>
 
           {isLoading && <p className="mt-5 text-slate-600">Loading your order details...</p>}
 
@@ -78,6 +137,22 @@ export default function OrderConfirmedPage() {
                   <span className="font-semibold text-slate-700">Order Status</span>
                   <span className="font-bold uppercase tracking-wide text-emerald-700">{order.status}</span>
                 </div>
+
+                {(order.shippingName || order.shippingAddressLine1 || order.shippingCity || order.shippingPostcode) && (
+                  <div className="mt-4 rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-700">
+                    <p className="font-semibold text-slate-900">Delivery details</p>
+                    <p className="mt-2">{order.shippingName || order.customerName || 'Delivery address'}</p>
+                    {order.shippingAddressLine1 && <p>{order.shippingAddressLine1}</p>}
+                    {order.shippingAddressLine2 && <p>{order.shippingAddressLine2}</p>}
+                    <p>
+                      {[order.shippingCity, order.shippingCounty].filter(Boolean).join(', ')}
+                      {order.shippingCity || order.shippingCounty ? ' ' : ''}
+                      {order.shippingPostcode || ''}
+                    </p>
+                    {order.shippingCountryCode && <p>{order.shippingCountryCode}</p>}
+                    {order.shippingPhone && <p className="mt-2 text-slate-600">Phone: {order.shippingPhone}</p>}
+                  </div>
+                )}
 
                 <div className="mt-3 space-y-3">
                   {order.lineItems.map((item, index) => (
@@ -102,6 +177,60 @@ export default function OrderConfirmedPage() {
                   </span>
                 </div>
               </div>
+
+              {guestOffer && (
+                <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-sm font-semibold text-slate-900">Create your account for faster future orders</p>
+                  <p className="mt-2 text-sm text-slate-600">
+                    We can set up an account for <span className="font-semibold text-slate-900">{guestOffer.email}</span> so you can review orders and save addresses next time.
+                  </p>
+                  {registerGuestMessage && (
+                    <p className="mt-3 text-sm text-emerald-700">{registerGuestMessage}</p>
+                  )}
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    <label className="text-sm font-medium text-slate-700">
+                      <span className="mb-1 block">Password</span>
+                      <input
+                        type="password"
+                        value={guestPassword}
+                        onChange={(event) => setGuestPassword(event.target.value)}
+                        className="w-full rounded-md border border-slate-300 px-3 py-2"
+                        placeholder="At least 12 characters"
+                      />
+                    </label>
+                    <label className="text-sm font-medium text-slate-700">
+                      <span className="mb-1 block">Confirm password</span>
+                      <input
+                        type="password"
+                        value={guestConfirmPassword}
+                        onChange={(event) => setGuestConfirmPassword(event.target.value)}
+                        className="w-full rounded-md border border-slate-300 px-3 py-2"
+                        placeholder="Repeat password"
+                      />
+                    </label>
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      onClick={handleRegisterGuestAccount}
+                      disabled={registeringGuest}
+                      className="rounded-md bg-[#123A7A] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      {registeringGuest ? 'Creating account…' : 'Create account'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        window.localStorage.removeItem('manley-guest-checkout-offer')
+                        setGuestOffer(null)
+                      }}
+                      className="rounded-md border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700"
+                    >
+                      Skip for now
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="mt-8 flex flex-wrap gap-3">
                 <Link
