@@ -107,7 +107,14 @@ export default function AccountOrdersPage() {
                   <ReceiptText size={16} className="text-slate-500" aria-hidden="true" />
                   <span>{order.lineItems?.length ? `${order.lineItems.length} item${order.lineItems.length === 1 ? '' : 's'}` : 'Item details available in your confirmation email'}</span>
                 </div>
-                <div className="text-slate-500">Shipping to {order.customerName || 'your saved address'} • Updates and tracking sent by email</div>
+                <div className="text-slate-500">
+                  {[
+                    order.shippingName,
+                    order.shippingAddressLine1,
+                    [order.shippingCity, order.shippingCounty, order.shippingPostcode].filter(Boolean).join(', '),
+                    order.shippingCountryCode,
+                  ].filter(Boolean).join(' • ') || `Shipping to ${order.customerName || 'your saved address'} • Updates and tracking sent by email`}
+                </div>
               </div>
             </article>
           ))}

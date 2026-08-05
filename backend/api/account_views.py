@@ -317,6 +317,14 @@ class AccountOrdersView(APIView):
             "currency",
             "paid_at",
             "created_at",
+            "shipping_name",
+            "shipping_phone",
+            "shipping_address_line_1",
+            "shipping_address_line_2",
+            "shipping_city",
+            "shipping_county",
+            "shipping_postcode",
+            "shipping_country_code",
         )
         payload = []
         for order in orders:
@@ -332,6 +340,14 @@ class AccountOrdersView(APIView):
                     "currency": order["currency"],
                     "paidAt": order["paid_at"].isoformat() if order["paid_at"] else None,
                     "createdAt": order["created_at"].isoformat() if order["created_at"] else None,
+                    "shippingName": order["shipping_name"],
+                    "shippingPhone": order["shipping_phone"],
+                    "shippingAddressLine1": order["shipping_address_line_1"],
+                    "shippingAddressLine2": order["shipping_address_line_2"],
+                    "shippingCity": order["shipping_city"],
+                    "shippingCounty": order["shipping_county"],
+                    "shippingPostcode": order["shipping_postcode"],
+                    "shippingCountryCode": order["shipping_country_code"],
                 }
             )
         return Response(payload)
@@ -348,6 +364,14 @@ class AccountOrdersView(APIView):
             "currency": order.currency,
             "paidAt": order.paid_at.isoformat() if order.paid_at else None,
             "createdAt": order.created_at.isoformat() if order.created_at else None,
+            "shippingName": order.shipping_name,
+            "shippingPhone": order.shipping_phone,
+            "shippingAddressLine1": order.shipping_address_line_1,
+            "shippingAddressLine2": order.shipping_address_line_2,
+            "shippingCity": order.shipping_city,
+            "shippingCounty": order.shipping_county,
+            "shippingPostcode": order.shipping_postcode,
+            "shippingCountryCode": order.shipping_country_code,
         }
 
     def _has_verified_commerce_access(self, user):

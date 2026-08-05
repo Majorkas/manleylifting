@@ -627,6 +627,14 @@ export async function getAccountOrders() {
     currency: String(order?.currency || ''),
     paidAt: String(order?.paidAt || ''),
     createdAt: String(order?.createdAt || ''),
+    shippingName: String(order?.shippingName || ''),
+    shippingPhone: String(order?.shippingPhone || ''),
+    shippingAddressLine1: String(order?.shippingAddressLine1 || ''),
+    shippingAddressLine2: String(order?.shippingAddressLine2 || ''),
+    shippingCity: String(order?.shippingCity || ''),
+    shippingCounty: String(order?.shippingCounty || ''),
+    shippingPostcode: String(order?.shippingPostcode || ''),
+    shippingCountryCode: String(order?.shippingCountryCode || ''),
   })) : []
 }
 

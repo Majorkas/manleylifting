@@ -2289,6 +2289,38 @@ class AccountOrderAndAddressTests(BaseApiTestCase):
         other_response = self.client.get("/api/account/orders/order_for_other_user/")
         self.assertEqual(other_response.status_code, 404)
 
+    def test_account_orders_include_shipping_snapshot(self):
+        OnsiteOrder.objects.create(
+            checkout_ref="owned_order_with_shipping",
+            status_token="tok_owned_shipping",
+            status=OnsiteOrder.STATUS_PENDING,
+            amount_total_cents=1500,
+            currency="EUR",
+            customer_name="Jane",
+            customer_email="jane@example.com",
+            user=self.user,
+            shipping_name="Jane Doe",
+            shipping_phone="+353871234567",
+            shipping_address_line_1="1 Main Street",
+            shipping_address_line_2="Apartment 2",
+            shipping_city="Dublin",
+            shipping_county="Dublin",
+            shipping_postcode="D01",
+            shipping_country_code="IE",
+        )
+
+        response = self.client.get("/api/account/orders/")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body), 1)
+        self.assertEqual(body[0]["shippingName"], "Jane Doe")
+        self.assertEqual(body[0]["shippingPhone"], "+353871234567")
+        self.assertEqual(body[0]["shippingAddressLine1"], "1 Main Street")
+        self.assertEqual(body[0]["shippingCity"], "Dublin")
+        self.assertEqual(body[0]["shippingPostcode"], "D01")
+        self.assertEqual(body[0]["shippingCountryCode"], "IE")
+
     def test_account_order_detail_by_number_requires_ownership(self):
         order = OnsiteOrder.objects.create(
             checkout_ref="owned_order_number",

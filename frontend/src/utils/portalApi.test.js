@@ -181,6 +181,12 @@ describe('portalApi error messaging', () => {
         amountTotalCents: 15000,
         currency: 'GBP',
         createdAt: '2024-01-01T00:00:00Z',
+        shippingName: 'Customer Example',
+        shippingPhone: '07123456789',
+        shippingAddressLine1: '1 Main Street',
+        shippingCity: 'Leeds',
+        shippingPostcode: 'LS1 1AA',
+        shippingCountryCode: 'GB',
       }]))
       .mockResolvedValueOnce(mockJsonResponse(200, [{
         id: 7,
@@ -197,7 +203,14 @@ describe('portalApi error messaging', () => {
         isDefaultBilling: false,
       }]))
 
-    await expect(getAccountOrders()).resolves.toEqual([expect.objectContaining({ checkoutRef: 'chk_123' })])
+    await expect(getAccountOrders()).resolves.toEqual([expect.objectContaining({
+      checkoutRef: 'chk_123',
+      shippingName: 'Customer Example',
+      shippingAddressLine1: '1 Main Street',
+      shippingCity: 'Leeds',
+      shippingPostcode: 'LS1 1AA',
+      shippingCountryCode: 'GB',
+    })])
     await expect(getAccountAddresses()).resolves.toEqual([expect.objectContaining({ id: 7, label: 'Home' })])
   })
 
