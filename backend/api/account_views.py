@@ -290,13 +290,18 @@ class ResendVerificationView(APIView):
 class AccountOrdersView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, checkout_ref=None):
+    def get(self, request, checkout_ref=None, order_number=None):
         if not self._has_verified_commerce_access(request.user):
             return Response({"detail": "Account access is not available yet."}, status=status.HTTP_403_FORBIDDEN)
 
         queryset = OnsiteOrder.objects.filter(user=request.user).order_by("-created_at")
         if checkout_ref is not None:
             order = queryset.filter(checkout_ref=checkout_ref).first()
+            if order is None:
+                return Response({"detail": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(self._serialize_order(order))
+        if order_number is not None:
+            order = queryset.filter(order_number=order_number).first()
             if order is None:
                 return Response({"detail": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
             return Response(self._serialize_order(order))

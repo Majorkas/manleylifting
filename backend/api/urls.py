@@ -68,6 +68,7 @@ urlpatterns = [
     path("account/bootstrap/", account_bootstrap, name="account_bootstrap"),
     path("account/orders/", AccountOrdersView.as_view(), name="account_orders"),
     path("account/orders/<str:checkout_ref>/", AccountOrdersView.as_view(), name="account_order_detail"),
+    path("account/orders/by-number/<str:order_number>/", AccountOrdersView.as_view(), name="account_order_detail_by_number"),
     path("account/addresses/", AccountAddressesView.as_view(), name="account_addresses"),
     path("account/addresses/<int:address_id>/", AccountAddressesView.as_view(), name="account_address_detail"),
     path("account/register/", CommerceRegistrationView.as_view(), name="account_register"),

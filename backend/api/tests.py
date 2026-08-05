@@ -2289,6 +2289,27 @@ class AccountOrderAndAddressTests(BaseApiTestCase):
         other_response = self.client.get("/api/account/orders/order_for_other_user/")
         self.assertEqual(other_response.status_code, 404)
 
+    def test_account_order_detail_by_number_requires_ownership(self):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="owned_order_number",
+            status_token="tok_owned_number",
+            status=OnsiteOrder.STATUS_PENDING,
+            amount_total_cents=1200,
+            currency="EUR",
+            customer_name="Jane",
+            customer_email="jane@example.com",
+            user=self.user,
+            order_number="MNL-260805-OWNED",
+        )
+
+        response = self.client.get("/api/account/orders/by-number/MNL-260805-OWNED/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["orderNumber"], "MNL-260805-OWNED")
+
+        other_response = self.client.get("/api/account/orders/by-number/MNL-260805-OTHER/")
+        self.assertEqual(other_response.status_code, 404)
+
     def test_account_addresses_create_and_list_for_authenticated_user(self):
         response = self.client.post(
             "/api/account/addresses/",
