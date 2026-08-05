@@ -1,6 +1,8 @@
+import secrets
 import uuid
 
 from django.db import models
+from django.utils import timezone
 
 
 class PendingCheckout(models.Model):
@@ -59,6 +61,7 @@ class OnsiteOrder(models.Model):
     ]
 
     checkout_ref = models.CharField(max_length=100, unique=True)
+    order_number = models.CharField(max_length=32, unique=True, blank=True, default="", db_index=True)
     status_token = models.CharField(max_length=128, default="", db_index=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
     user = models.ForeignKey(
@@ -89,6 +92,21 @@ class OnsiteOrder(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+    def save(self, *args, **kwargs):
+        if not self.order_number:
+            self.order_number = self._generate_order_number()
+        super().save(*args, **kwargs)
+
+    def _generate_order_number(self):
+        prefix = "MNL"
+        for _ in range(10):
+            stamp = timezone.now().strftime("%y%m%d")
+            suffix = secrets.token_hex(3).upper()
+            candidate = f"{prefix}-{stamp}-{suffix}"
+            if not self.__class__.objects.filter(order_number=candidate).exists():
+                return candidate
+        return f"{prefix}-{timezone.now().strftime('%y%m%d')}-{secrets.token_hex(4).upper()}"
 
     def __str__(self):
         return f"{self.checkout_ref} ({self.status})"

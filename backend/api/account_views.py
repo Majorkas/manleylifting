@@ -303,6 +303,7 @@ class AccountOrdersView(APIView):
 
         orders = queryset.values(
             "checkout_ref",
+            "order_number",
             "status",
             "customer_name",
             "customer_email",
@@ -317,6 +318,7 @@ class AccountOrdersView(APIView):
             payload.append(
                 {
                     "checkoutRef": order["checkout_ref"],
+                    "orderNumber": order["order_number"],
                     "status": order["status"],
                     "customerName": order["customer_name"],
                     "customerEmail": order["customer_email"],
@@ -332,6 +334,7 @@ class AccountOrdersView(APIView):
     def _serialize_order(self, order):
         return {
             "checkoutRef": order.checkout_ref,
+            "orderNumber": order.order_number,
             "status": order.status,
             "customerName": order.customer_name,
             "customerEmail": order.customer_email,

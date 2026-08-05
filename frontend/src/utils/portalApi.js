@@ -589,6 +589,7 @@ export async function getAccountOrders() {
   const body = await parseResponse(response, '/account/orders/')
   return Array.isArray(body) ? body.map((order) => ({
     checkoutRef: String(order?.checkoutRef || ''),
+    orderNumber: String(order?.orderNumber || ''),
     status: String(order?.status || ''),
     customerName: String(order?.customerName || ''),
     customerEmail: String(order?.customerEmail || ''),

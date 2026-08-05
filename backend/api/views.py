@@ -535,7 +535,7 @@ def onsite_checkout_intent(request):
     if getattr(forced_user, "is_authenticated", False):
       authenticated_user = forced_user
 
-  OnsiteOrder.objects.update_or_create(
+  order, _ = OnsiteOrder.objects.update_or_create(
     checkout_ref=checkout_ref,
     defaults={
       "status_token": status_token,
@@ -569,6 +569,7 @@ def onsite_checkout_intent(request):
   return JsonResponse(
     {
       "checkoutRef": checkout_ref,
+      "orderNumber": getattr(order, "order_number", ""),
       "statusToken": status_token,
       "clientSecret": client_secret,
       "paymentIntentId": payment_intent_id,
@@ -600,6 +601,7 @@ def onsite_checkout_status(request):
   return JsonResponse(
     {
       "checkoutRef": order.checkout_ref,
+      "orderNumber": order.order_number,
       "status": order.status,
       "paidAt": order.paid_at.isoformat() if order.paid_at else None,
       "amountTotalCents": order.amount_total_cents,
@@ -628,6 +630,7 @@ def onsite_order_summary(request):
   return JsonResponse(
     {
       "checkoutRef": order.checkout_ref,
+      "orderNumber": order.order_number,
       "status": order.status,
       "customerName": order.customer_name,
       "customerEmail": order.customer_email,

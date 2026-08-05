@@ -1964,6 +1964,43 @@ class OnsiteCheckoutTests(BaseApiTestCase):
     @patch("api.views._stripe_config_ok", return_value=True)
     @patch("api.views._verify_turnstile_token", return_value=True)
     @patch("api.views.stripe.PaymentIntent.create")
+    def test_onsite_intent_assigns_order_number(self, mock_intent_create, _mock_turnstile, _mock_cfg, _mock_origin):
+        CatalogProduct.objects.create(
+            product_ref="legacy-product-id",
+            variant_ref="legacy-variant-id",
+            handle="chain-block",
+            title="Chain Block",
+            price_amount="10.00",
+            currency_code="EUR",
+            is_active=True,
+        )
+        mock_intent_create.return_value = {
+            "id": "pi_456",
+            "client_secret": "pi_456_secret_abc",
+        }
+
+        response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps(
+                {
+                    "checkoutRef": "onsite_order_number",
+                    "customer": {"name": "Jane Doe", "email": "jane@example.com"},
+                    "items": [{"variantId": "legacy-variant-id", "quantity": 1}],
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["orderNumber"].startswith("MNL-"))
+        order = OnsiteOrder.objects.get(checkout_ref="onsite_order_number")
+        self.assertEqual(body["orderNumber"], order.order_number)
+
+    @patch("api.views._is_allowed_checkout_origin", return_value=True)
+    @patch("api.views._stripe_config_ok", return_value=True)
+    @patch("api.views._verify_turnstile_token", return_value=True)
+    @patch("api.views.stripe.PaymentIntent.create")
     def test_onsite_intent_returns_server_confirmed_pricing_summary(
         self,
         mock_intent_create,

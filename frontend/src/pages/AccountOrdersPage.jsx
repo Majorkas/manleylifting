@@ -92,7 +92,7 @@ export default function AccountOrdersPage() {
                 <div>
                   <div className="flex items-center gap-2">
                     <Package2 size={18} className="text-[#123A7A]" aria-hidden="true" />
-                    <p className="font-semibold text-slate-900">{order.checkoutRef}</p>
+                    <p className="font-semibold text-slate-900">{order.orderNumber || order.checkoutRef}</p>
                   </div>
                   <p className="mt-1 text-sm text-slate-600">Placed {formatDate(order.createdAt)}</p>
                 </div>
