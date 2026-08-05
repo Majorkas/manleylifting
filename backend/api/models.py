@@ -289,6 +289,10 @@ class AccountSecurityState(models.Model):
     )
     session_generation = models.PositiveBigIntegerField(default=0)
     sessions_revoked_at = models.DateTimeField(null=True, blank=True)
+    mfa_enabled = models.BooleanField(default=False)
+    mfa_secret = models.CharField(max_length=64, blank=True, default="")
+    mfa_pending_secret = models.CharField(max_length=64, blank=True, default="")
+    mfa_recovery_codes = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

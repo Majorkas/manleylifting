@@ -702,10 +702,75 @@ export async function requestAccountEmailChange(payload) {
   return parseResponse(response, path)
 }
 
+export async function setupAccountMfa(payload) {
+  const path = '/account/mfa/setup/'
+  const response = await authFetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      current_password: payload?.currentPassword ?? payload?.current_password,
+    }),
+  })
+  return parseResponse(response, path)
+}
+
+export async function verifyAccountMfa(code) {
+  const path = '/account/mfa/verify/'
+  const response = await authFetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ code: String(code || '').trim() }),
+  })
+  return parseResponse(response, path)
+}
+
 export async function completeAccountEmailChange(token) {
   const path = '/account/change-email/complete/'
   const response = await publicAccountPost(path, {
     token: String(token || '').trim(),
+  })
+  return parseResponse(response, path)
+}
+
+export async function getAccountSecurityEvents() {
+  const response = await authFetch('/account/security-events/')
+  const body = await parseResponse(response, '/account/security-events/')
+  return Array.isArray(body) ? body.map((event) => ({
+    action: String(event?.action || ''),
+    targetType: String(event?.targetType || ''),
+    targetId: String(event?.targetId || ''),
+    details: event?.details || {},
+    createdAt: String(event?.createdAt || ''),
+  })) : []
+}
+
+export async function getAccountSessions() {
+  const response = await authFetch('/account/sessions/')
+  const body = await parseResponse(response, '/account/sessions/')
+  return Array.isArray(body) ? body.map((session) => ({
+    id: String(session?.id || ''),
+    createdAt: String(session?.createdAt || ''),
+    lastSeenAt: String(session?.lastSeenAt || ''),
+    expiresAt: String(session?.expiresAt || ''),
+    revokedAt: String(session?.revokedAt || ''),
+    isCurrentSession: Boolean(session?.isCurrentSession),
+    isActive: Boolean(session?.isActive),
+    isRevoked: Boolean(session?.isRevoked),
+  })) : []
+}
+
+export async function revokeAccountSession(sessionId) {
+  const path = `/account/sessions/${encodeURIComponent(String(sessionId))}/revoke/`
+  const response = await authFetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({}),
   })
   return parseResponse(response, path)
 }

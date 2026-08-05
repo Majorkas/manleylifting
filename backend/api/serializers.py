@@ -1,4 +1,9 @@
 from datetime import timedelta
+import base64
+import hashlib
+import hmac
+import struct
+import time
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -25,7 +30,7 @@ from .auth_sessions import (
     token_has_current_session_generation,
 )
 from .auth_backends import resolve_login_user
-from .models import AccountSession, Certificate, Company, Equipment, InspectionReport, ReportImage, ReportRevision, Site, UserProfile
+from .models import AccountSecurityState, AccountSession, Certificate, Company, Equipment, InspectionReport, ReportImage, ReportRevision, Site, UserProfile
 
 REPORT_CHECKLIST_ALLOWED_STATUSES = {
     "good_order",
@@ -435,6 +440,12 @@ class AccountBootstrapSerializer(serializers.Serializer):
     full_name = serializers.CharField(allow_blank=True)
     phone = serializers.CharField(allow_blank=True, required=False)
     email_verified = serializers.BooleanField()
+    mfa_enabled = serializers.BooleanField(required=False)
+    mfa_setup_in_progress = serializers.BooleanField(required=False)
+    mfa_recovery_codes = serializers.ListField(
+        child=serializers.CharField(),
+        required=False,
+    )
     capabilities = AccountCapabilitiesSerializer()
 
 
@@ -524,6 +535,10 @@ class PortalChangePasswordSerializer(serializers.Serializer):
 class AccountChangePasswordSerializer(serializers.Serializer):
     current_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
     new_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
+
+
+class AccountMfaSetupSerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
 
 
 class AccountDisableSerializer(serializers.Serializer):
@@ -624,7 +639,20 @@ class PortalCustomerUpdateSerializer(serializers.Serializer):
         return attrs
 
 
+def _totp_code(secret, timestamp=None):
+    if timestamp is None:
+        timestamp = int(time.time()) // 30
+    key = base64.b32decode(secret.upper() + '=' * ((8 - len(secret) % 8) % 8))
+    counter = struct.pack('>Q', timestamp)
+    digest = hmac.new(key, counter, hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    binary = struct.unpack('>I', digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return str(binary % 1000000).zfill(6)
+
+
 class PortalTokenObtainPairSerializer(TokenObtainPairSerializer):
+    mfa_code = serializers.CharField(required=False, allow_blank=True, write_only=True, max_length=16)
+
     default_error_messages = {
         "no_active_account": "Invalid credentials",
     }
@@ -675,6 +703,14 @@ class PortalTokenObtainPairSerializer(TokenObtainPairSerializer):
         if not user.is_active:
             raise serializers.ValidationError({"detail": "Account is disabled"})
 
+        security_state = AccountSecurityState.objects.filter(user=user).first()
+        mfa_code = str(attrs.get("mfa_code") or "").strip()
+        if security_state and security_state.mfa_enabled:
+            if not mfa_code:
+                raise serializers.ValidationError({"detail": "Multi-factor authentication code is required"})
+            if not self._is_valid_mfa_code(security_state, mfa_code):
+                raise serializers.ValidationError({"detail": "Invalid multi-factor authentication code"})
+
         cache.delete(failure_key)
 
         with transaction.atomic():
@@ -684,6 +720,16 @@ class PortalTokenObtainPairSerializer(TokenObtainPairSerializer):
             data["refresh"] = str(refresh_token)
             data["access"] = str(refresh_token.access_token)
             return data
+
+    def _is_valid_mfa_code(self, security_state, code):
+        if not security_state.mfa_secret:
+            return False
+        expected = _totp_code(security_state.mfa_secret)
+        if code == expected:
+            return True
+        if code in (security_state.mfa_recovery_codes or []):
+            return True
+        return False
 
 
 class PortalTokenRefreshSerializer(TokenRefreshSerializer):

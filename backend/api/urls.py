@@ -17,6 +17,11 @@ from .account_views import (
     account_delete,
     account_disable,
     account_logout_all,
+    account_mfa_setup,
+    account_mfa_verify,
+    account_revoke_session,
+    account_security_events,
+    account_sessions,
 )
 from .auth_views import PortalTokenObtainPairView, PortalTokenRefreshView
 from .portal_views import (
@@ -82,6 +87,11 @@ urlpatterns = [
     path("account/change-email/complete/", account_change_email_complete, name="account_change_email_complete"),
     path("account/disable/", account_disable, name="account_disable"),
     path("account/delete/", account_delete, name="account_delete"),
+    path("account/mfa/setup/", account_mfa_setup, name="account_mfa_setup"),
+    path("account/mfa/verify/", account_mfa_verify, name="account_mfa_verify"),
+    path("account/security-events/", account_security_events, name="account_security_events"),
+    path("account/sessions/", account_sessions, name="account_sessions"),
+    path("account/sessions/<str:session_id>/revoke/", account_revoke_session, name="account_revoke_session"),
     path("account/logout-all/", account_logout_all, name="account_logout_all"),
     path("auth/token/", PortalTokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("auth/token/refresh/", PortalTokenRefreshView.as_view(), name="token_refresh"),

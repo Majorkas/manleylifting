@@ -1,4 +1,7 @@
+import base64
 import secrets
+import time
+from uuid import UUID
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -21,8 +24,8 @@ from rest_framework.views import APIView
 from .account_emails import send_email_change_email, send_verification_email
 from .account_tokens import consume_account_action_token, issue_account_action_token
 from .audit import log_portal_audit_event
-from .auth_sessions import revoke_user_sessions
-from .models import AccountActionToken, CommerceCustomerProfile, OnsiteOrder, SavedAddress, UserProfile
+from .auth_sessions import SESSION_ID_CLAIM, revoke_account_session, revoke_user_sessions
+from .models import AccountActionToken, AccountSecurityState, AccountSession, AuditLog, CommerceCustomerProfile, OnsiteOrder, SavedAddress, UserProfile
 from .request_security import client_ip
 from .serializers import (
     AccountBootstrapSerializer,
@@ -30,6 +33,7 @@ from .serializers import (
     AccountDeleteSerializer,
     AccountDisableSerializer,
     AccountEmailSerializer,
+    AccountMfaSetupSerializer,
     CommerceRegistrationSerializer,
     VerifyEmailSerializer,
 )
@@ -70,6 +74,25 @@ def _issue_verification(*, user):
 
 def _new_commerce_username():
     return f"commerce_{secrets.token_hex(12)}"
+
+
+def generate_totp_secret():
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").strip("=")
+
+
+def generate_totp_code(secret):
+    if not secret:
+        return ""
+    counter = int(time.time()) // 30
+    key = base64.b32decode(secret.upper() + '=' * ((8 - len(secret) % 8) % 8))
+    import hashlib
+    import hmac
+    import struct
+
+    digest = hmac.new(key, struct.pack('>Q', counter), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    binary = struct.unpack('>I', digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return str(binary % 1000000).zfill(6)
 
 
 @method_decorator(csrf_protect, name="dispatch")
@@ -268,6 +291,9 @@ class AccountOrdersView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, checkout_ref=None):
+        if not self._has_verified_commerce_access(request.user):
+            return Response({"detail": "Account access is not available yet."}, status=status.HTTP_403_FORBIDDEN)
+
         queryset = OnsiteOrder.objects.filter(user=request.user).order_by("-created_at")
         if checkout_ref is not None:
             order = queryset.filter(checkout_ref=checkout_ref).first()
@@ -316,11 +342,21 @@ class AccountOrdersView(APIView):
             "createdAt": order.created_at.isoformat() if order.created_at else None,
         }
 
+    def _has_verified_commerce_access(self, user):
+        profile = CommerceCustomerProfile.objects.filter(user=user).first()
+        if profile is None:
+            return True
+        if profile.disabled_at is not None or profile.anonymized_at is not None:
+            return False
+        return bool(profile.has_verified_email())
+
 
 class AccountAddressesView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, address_id=None):
+        if not self._has_verified_commerce_access(request.user):
+            return Response({"detail": "Account access is not available yet."}, status=status.HTTP_403_FORBIDDEN)
         profile = self._get_profile(request.user)
         if address_id is not None:
             address = profile.saved_addresses.filter(pk=address_id, is_deleted=False).first()
@@ -333,6 +369,9 @@ class AccountAddressesView(APIView):
         return Response(payload)
 
     def post(self, request):
+        if not self._has_verified_commerce_access(request.user):
+            return Response({"detail": "Account access is not available yet."}, status=status.HTTP_403_FORBIDDEN)
+
         profile = self._get_profile(request.user)
 
         label = str(request.data.get("label") or "").strip()
@@ -426,6 +465,16 @@ class AccountAddressesView(APIView):
             return CommerceCustomerProfile.objects.create(user=user)
         return profile
 
+    def _has_verified_commerce_access(self, user):
+        profile = CommerceCustomerProfile.objects.filter(user=user).first()
+        if profile is None:
+            return True
+        if profile.disabled_at is not None or profile.anonymized_at is not None:
+            return False
+        if profile.has_verified_email():
+            return True
+        return profile.saved_addresses.filter(is_deleted=False).exists()
+
     def _serialize_address(self, address):
         return {
             "id": address.id,
@@ -476,6 +525,133 @@ def account_change_password(request):
         request.user.set_password(new_password)
         request.user.save(update_fields=["password"])
 
+    log_portal_audit_event(
+        request=request,
+        action="account.password_change",
+        target_type="account",
+        target_id=str(request.user.pk),
+        details={"changed": True},
+    )
+    return Response({"ok": True})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
+def account_mfa_setup(request):
+    serializer = AccountMfaSetupSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    payload = serializer.validated_data
+
+    if not request.user.check_password(payload["current_password"]):
+        return Response({"detail": "Current password is incorrect"}, status=status.HTTP_400_BAD_REQUEST)
+
+    security_state, _ = AccountSecurityState.objects.get_or_create(user=request.user)
+    if security_state.mfa_enabled:
+        return Response({"setupInProgress": False, "enabled": True})
+
+    secret = generate_totp_secret()
+    security_state.mfa_pending_secret = secret
+    security_state.mfa_enabled = False
+    security_state.mfa_secret = ""
+    security_state.mfa_recovery_codes = []
+    security_state.save(update_fields=["mfa_pending_secret", "mfa_enabled", "mfa_secret", "mfa_recovery_codes", "updated_at"])
+
+    return Response({"setupInProgress": True, "secret": secret, "recoveryCodes": []})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
+def account_mfa_verify(request):
+    code = str(request.data.get("code") or "").strip()
+    if not code:
+        return Response({"detail": "Verification code is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    security_state = AccountSecurityState.objects.filter(user=request.user).first()
+    if security_state is None:
+        return Response({"detail": "MFA setup is not available"}, status=status.HTTP_400_BAD_REQUEST)
+    if not security_state.mfa_pending_secret:
+        return Response({"detail": "MFA setup is not available"}, status=status.HTTP_400_BAD_REQUEST)
+    if generate_totp_code(security_state.mfa_pending_secret) != code:
+        return Response({"detail": "Invalid verification code"}, status=status.HTTP_400_BAD_REQUEST)
+
+    recovery_codes = [f"recovery-{secrets.token_hex(3).upper()}" for _ in range(6)]
+    security_state.mfa_enabled = True
+    security_state.mfa_secret = security_state.mfa_pending_secret
+    security_state.mfa_pending_secret = ""
+    security_state.mfa_recovery_codes = recovery_codes
+    security_state.save(update_fields=["mfa_enabled", "mfa_secret", "mfa_pending_secret", "mfa_recovery_codes", "updated_at"])
+
+    return Response({"ok": True, "recoveryCodes": recovery_codes})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
+def account_security_events(request):
+    events = (
+        AuditLog.objects.filter(actor=request.user)
+        .filter(action__in=["account.password_change", "account.logout_all", "account.disable", "account.delete", "account.email_change_request"])
+        .order_by("-created_at")[:10]
+        .values("action", "target_type", "target_id", "details", "created_at")
+    )
+    payload = []
+    for event in events:
+        payload.append(
+            {
+                "action": event["action"],
+                "targetType": event["target_type"],
+                "targetId": event["target_id"],
+                "details": event["details"],
+                "createdAt": event["created_at"].isoformat() if event["created_at"] else None,
+            }
+        )
+    return Response(payload)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
+def account_sessions(request):
+    current_session_id = None
+    auth = getattr(request, "auth", None)
+    if auth is not None:
+        current_session_id = str(auth.get(SESSION_ID_CLAIM) or "")
+
+    queryset = AccountSession.objects.filter(user=request.user).order_by("-created_at")
+    payload = []
+    for session in queryset:
+        session_id = str(session.pk)
+        payload.append(
+            {
+                "id": session_id,
+                "createdAt": session.created_at.isoformat() if session.created_at else None,
+                "lastSeenAt": session.last_seen_at.isoformat() if session.last_seen_at else None,
+                "expiresAt": session.expires_at.isoformat() if session.expires_at else None,
+                "revokedAt": session.revoked_at.isoformat() if session.revoked_at else None,
+                "isCurrentSession": session_id == current_session_id,
+                "isActive": session.revoked_at is None and session.expires_at > timezone.now(),
+                "isRevoked": session.revoked_at is not None,
+            }
+        )
+    return Response(payload)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
+def account_revoke_session(request, session_id):
+    try:
+        session_uuid = UUID(str(session_id))
+    except (TypeError, ValueError, AttributeError):
+        return Response({"detail": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    session = AccountSession.objects.filter(user=request.user, pk=session_uuid).first()
+    if session is None:
+        return Response({"detail": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    revoke_account_session(session_id=session_uuid, user=request.user)
     return Response({"ok": True})
 
 
@@ -484,6 +660,13 @@ def account_change_password(request):
 @throttle_classes([PortalMethodRateThrottle])
 def account_logout_all(request):
     revoke_user_sessions(request.user)
+    log_portal_audit_event(
+        request=request,
+        action="account.logout_all",
+        target_type="account",
+        target_id=str(request.user.pk),
+        details={"revoked": True},
+    )
     return Response({"ok": True})
 
 
@@ -558,6 +741,13 @@ def account_change_email_request(request):
 
     serializer = AccountEmailSerializer(data=payload)
     serializer.is_valid(raise_exception=True)
+    if not verify_turnstile_token(
+        serializer.validated_data.get("turnstile_token"),
+        required=settings.ACCOUNT_REQUIRE_TURNSTILE,
+        secret_key=settings.ACCOUNT_TURNSTILE_SECRET_KEY,
+        remote_ip=client_ip(request),
+    ):
+        return Response({"detail": "Bot verification failed"}, status=status.HTTP_400_BAD_REQUEST)
 
     current_password = request.data.get("current_password")
     if not current_password:
@@ -570,8 +760,8 @@ def account_change_email_request(request):
         return Response({"detail": "New email must be different from the current email"}, status=status.HTTP_400_BAD_REQUEST)
 
     profile = CommerceCustomerProfile.objects.filter(user=request.user, disabled_at__isnull=True, anonymized_at__isnull=True).first()
-    if profile is None:
-        return Response({"detail": "Account is unavailable"}, status=status.HTTP_400_BAD_REQUEST)
+    if profile is None or not profile.has_verified_email():
+        return Response({"detail": "Account access is not available yet."}, status=status.HTTP_403_FORBIDDEN)
 
     with transaction.atomic():
         raw_token = issue_account_action_token(
@@ -649,6 +839,13 @@ def account_bootstrap(request):
     if commerce_profile is not None:
         phone = str(getattr(commerce_profile, "contact_phone", "") or "").strip()
 
+    security_state = AccountSecurityState.objects.filter(user_id=request.user.pk).first()
+    mfa_enabled = bool(security_state and security_state.mfa_enabled)
+    mfa_setup_in_progress = bool(security_state and security_state.mfa_pending_secret)
+    mfa_recovery_codes = []
+    if security_state and security_state.mfa_recovery_codes:
+        mfa_recovery_codes = list(security_state.mfa_recovery_codes or [])
+
     payload = {
         "username": request.user.username,
         "email": request.user.email or "",
@@ -664,5 +861,9 @@ def account_bootstrap(request):
     }
     if phone:
         payload["phone"] = phone
+    if mfa_enabled or mfa_setup_in_progress or mfa_recovery_codes:
+        payload["mfa_enabled"] = mfa_enabled
+        payload["mfa_setup_in_progress"] = mfa_setup_in_progress
+        payload["mfa_recovery_codes"] = mfa_recovery_codes
     serializer = AccountBootstrapSerializer(payload)
     return Response(serializer.data)

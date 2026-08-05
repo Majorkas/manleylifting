@@ -18,6 +18,7 @@ from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
 from rest_framework_simplejwt.tokens import RefreshToken, UntypedToken
 
 from .account_tokens import consume_account_action_token, issue_account_action_token
+from .account_views import generate_totp_code
 from .account_emails import (
     TransactionalEmailDeliveryError,
     send_password_reset_email,
@@ -498,6 +499,93 @@ class AccountSessionRevocationTests(TestCase):
         self.assertEqual(rejected_response.status_code, 403)
         self.assertEqual(accepted_response.status_code, 200)
         self.assertIn("manley_portal_refresh", accepted_response.cookies)
+
+    def test_mfa_setup_and_verification_enables_second_factor(self):
+        user = get_user_model().objects.create_user(
+            username="account-mfa-user",
+            email="account-mfa@example.com",
+            password="Strong-Password-123!",
+            is_active=True,
+        )
+        CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        setup_response = client.post(
+            "/api/account/mfa/setup/",
+            data={"current_password": "Strong-Password-123!"},
+            format="json",
+        )
+        state = AccountSecurityState.objects.get(user=user)
+        verify_response = client.post(
+            "/api/account/mfa/verify/",
+            data={"code": generate_totp_code(state.mfa_pending_secret)},
+            format="json",
+        )
+
+        self.assertEqual(setup_response.status_code, 200)
+        self.assertTrue(setup_response.json()["setupInProgress"])
+        self.assertEqual(verify_response.status_code, 200)
+        state.refresh_from_db()
+        self.assertTrue(state.mfa_enabled)
+        self.assertFalse(state.mfa_pending_secret)
+
+    def test_login_requires_mfa_code_when_second_factor_is_enabled(self):
+        user = get_user_model().objects.create_user(
+            username="account-mfa-login-user",
+            email="account-mfa-login@example.com",
+            password="Strong-Password-123!",
+            is_active=True,
+        )
+        CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        state = AccountSecurityState.objects.get(user=user)
+        state.mfa_enabled = True
+        state.mfa_pending_secret = ""
+        state.mfa_secret = "JBSWY3DPEHPK3PXP"
+        state.mfa_recovery_codes = ["abc12345"]
+        state.save(update_fields=["mfa_enabled", "mfa_pending_secret", "mfa_secret", "mfa_recovery_codes"])
+
+        client = APIClient()
+        missing_code_response = client.post(
+            "/api/auth/token/",
+            data={"username": user.username, "password": "Strong-Password-123!"},
+            format="json",
+        )
+        valid_code_response = client.post(
+            "/api/auth/token/",
+            data={"username": user.username, "password": "Strong-Password-123!", "mfa_code": generate_totp_code(state.mfa_secret)},
+            format="json",
+        )
+
+        self.assertEqual(missing_code_response.status_code, 400)
+        self.assertEqual(valid_code_response.status_code, 200)
+        self.assertIn("access", valid_code_response.json())
+
+    def test_account_security_events_lists_recent_sensitive_actions(self):
+        user = get_user_model().objects.create_user(
+            username="account-security-events-user",
+            email="account-security-events@example.com",
+            password="Strong-Password-123!",
+            is_active=True,
+        )
+        CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        password_response = client.post(
+            "/api/account/change-password/",
+            data={"current_password": "Strong-Password-123!", "new_password": "New-Strong-Password-456!"},
+            format="json",
+        )
+        logout_response = client.post("/api/account/logout-all/", data={}, format="json")
+        events_response = client.get("/api/account/security-events/", format="json")
+
+        self.assertEqual(password_response.status_code, 200)
+        self.assertEqual(logout_response.status_code, 200)
+        self.assertEqual(events_response.status_code, 200)
+        actions = [item["action"] for item in events_response.json()]
+        self.assertIn("account.password_change", actions)
+        self.assertIn("account.logout_all", actions)
 
     def test_refresh_uses_cookie_and_ignores_body_token(self):
         _, victim_refresh = self.login()
@@ -1501,6 +1589,39 @@ class CommerceRegistrationTests(TestCase):
         self.assertEqual(AccountSession.objects.filter(user=user, revoked_at__isnull=True).count(), 0)
         self.assertGreater(state.session_generation, 0)
 
+    def test_account_session_list_and_revoke_specific_session(self):
+        user = get_user_model().objects.create_user(
+            username="account-session-list-user",
+            email="account-session-list@example.com",
+            password="Strong-Password-123!",
+            is_active=True,
+        )
+        CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        current_session = AccountSession.objects.create(
+            user=user,
+            expires_at=timezone.now() + timedelta(hours=2),
+        )
+        other_session = AccountSession.objects.create(
+            user=user,
+            expires_at=timezone.now() + timedelta(hours=2),
+        )
+        self.client.force_authenticate(user=user)
+
+        list_response = self.client.get("/api/account/sessions/", format="json")
+        revoke_response = self.client.post(
+            f"/api/account/sessions/{other_session.pk}/revoke/",
+            data={},
+            format="json",
+        )
+
+        other_session.refresh_from_db()
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(len(list_response.json()), 2)
+        self.assertTrue(any(item["id"] == str(current_session.pk) for item in list_response.json()))
+        self.assertTrue(any(item["id"] == str(other_session.pk) for item in list_response.json()))
+        self.assertEqual(revoke_response.status_code, 200)
+        self.assertIsNotNone(other_session.revoked_at)
+
     def test_account_disable_marks_account_inactive_and_revokes_sessions(self):
         user = get_user_model().objects.create_user(
             username="account-disable-user",
@@ -1569,7 +1690,10 @@ class CommerceRegistrationTests(TestCase):
             password="Old-Strong-Password-123!",
             is_active=True,
         )
-        CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        profile = CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        profile.verified_email = user.email
+        profile.email_verified_at = timezone.now()
+        profile.save(update_fields=["verified_email", "email_verified_at", "updated_at"])
         self.client.force_authenticate(user=user)
 
         response = self.client.post(
@@ -1586,6 +1710,31 @@ class CommerceRegistrationTests(TestCase):
             AuditLog.objects.filter(actor=user, action="account.email_change_request", target_type="account", target_id=str(user.pk)).exists()
         )
         mock_send.assert_called_once_with(recipient_email="new-email@example.com", raw_token=ANY)
+
+    @override_settings(ACCOUNT_REQUIRE_TURNSTILE=True, ACCOUNT_TURNSTILE_SECRET_KEY="test-secret")
+    @patch("api.account_views.verify_turnstile_token", return_value=False)
+    def test_account_email_change_request_rejects_failed_turnstile(self, _mock_turnstile):
+        user = get_user_model().objects.create_user(
+            username="account-email-change-turnstile-user",
+            email="account-email-change-turnstile@example.com",
+            password="Old-Strong-Password-123!",
+            is_active=True,
+        )
+        CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            "/api/account/change-email/",
+            data={
+                "current_password": "Old-Strong-Password-123!",
+                "new_email": "new-email-turnstile@example.com",
+                "turnstile_token": "bad-token",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json().get("detail"), "Bot verification failed")
 
     def test_account_email_change_completion_updates_email_and_clears_verification(self):
         user = get_user_model().objects.create_user(
@@ -2057,6 +2206,40 @@ class AccountOrderAndAddressTests(BaseApiTestCase):
         list_response = self.client.get("/api/account/addresses/")
         self.assertEqual(list_response.status_code, 200)
         self.assertEqual(len(list_response.json()), 1)
+
+    def test_unverified_accounts_cannot_view_orders_or_manage_addresses(self):
+        CommerceCustomerProfile.objects.create(user=self.user, activation_pending=False)
+
+        orders_response = self.client.get("/api/account/orders/")
+        self.assertEqual(orders_response.status_code, 403)
+
+        addresses_response = self.client.post(
+            "/api/account/addresses/",
+            data={
+                "label": "Home",
+                "recipientName": "Jane Doe",
+                "addressLine1": "1 Main Street",
+                "city": "Dublin",
+                "postcode": "D01",
+                "countryCode": "IE",
+            },
+            format="json",
+        )
+        self.assertEqual(addresses_response.status_code, 403)
+
+    def test_email_change_requires_verified_commerce_email(self):
+        CommerceCustomerProfile.objects.create(user=self.user, activation_pending=False)
+
+        response = self.client.post(
+            "/api/account/change-email/",
+            data={
+                "current_password": "testpass123",
+                "email": "new-email@example.com",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
 
     def test_account_address_update_and_delete_are_scoped_to_the_user(self):
         commerce_profile = CommerceCustomerProfile.objects.create(user=self.user)
