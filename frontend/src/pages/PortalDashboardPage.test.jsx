@@ -152,6 +152,7 @@ describe('PortalDashboardPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     window.scrollTo = vi.fn()
+    window.localStorage.clear()
     hasPortalSession.mockReturnValue(true)
     getPortalCompanies.mockResolvedValue([])
     getPortalDashboardStats.mockResolvedValue({ overdue_count: 0, due_soon_count: 0, pending_approvals_count: 0 })
@@ -1066,7 +1067,8 @@ describe('PortalDashboardPage', () => {
     expect(await screen.findByRole('heading', { name: 'Create New Report' })).toBeInTheDocument()
 
     await user.type(screen.getByLabelText('Report Title'), 'Unsaved Draft')
-    await user.click(screen.getByRole('button', { name: 'Close' }))
+    const createReportDialog = screen.getByRole('heading', { name: 'Create New Report' }).closest('div')
+    await user.click(within(createReportDialog).getByRole('button', { name: 'Close' }))
 
     expect(screen.getByRole('heading', { name: 'Save Changes?' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Clear Changes' }))
@@ -1267,7 +1269,8 @@ describe('PortalDashboardPage', () => {
     await user.click(screen.getByRole('button', { name: 'Submit Report' }))
 
     expect(screen.queryByText("Add a finding for 'Initial Test Run' before saving this report.")).not.toBeInTheDocument()
-    expect(await screen.findByRole('heading', { name: 'Confirm Report Submission' })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Confirm Report Submission' })).toBeInTheDocument()
   })
 
   it('saves an incomplete report as a draft from the close prompt', async () => {
@@ -1316,7 +1319,8 @@ describe('PortalDashboardPage', () => {
     expect(checklistRow).not.toBeNull()
     await user.selectOptions(within(checklistRow).getByRole('combobox'), 'attention_required')
 
-    await user.click(screen.getByRole('button', { name: 'Close' }))
+    const createReportDialog = screen.getByRole('heading', { name: 'Create New Report' }).closest('div')
+    await user.click(within(createReportDialog).getByRole('button', { name: 'Close' }))
     expect(await screen.findByRole('heading', { name: 'Save Changes?' })).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Save as Draft' }))
@@ -1467,7 +1471,8 @@ describe('PortalDashboardPage', () => {
     await user.type(screen.getByLabelText('Report Title'), 'Submitted Inspection')
     await user.click(screen.getByRole('button', { name: 'Submit Report' }))
 
-    expect(await screen.findByRole('heading', { name: 'Confirm Report Submission' })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Confirm Report Submission' })).toBeInTheDocument()
     const confirmationCheckboxes = screen.getAllByRole('checkbox')
     for (const checkbox of confirmationCheckboxes) {
       await user.click(checkbox)
@@ -1524,7 +1529,8 @@ describe('PortalDashboardPage', () => {
     await user.type(screen.getByLabelText('Report Title'), 'Submission Confirmation Required')
     await user.click(screen.getByRole('button', { name: 'Submit Report' }))
 
-    expect(await screen.findByRole('heading', { name: 'Confirm Report Submission' })).toBeInTheDocument()
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Confirm Report Submission' })).toBeInTheDocument()
     const confirmSubmitButton = screen.getByRole('button', { name: 'Confirm and Submit' })
     expect(confirmSubmitButton).toBeDisabled()
     expect(createEquipmentReport).not.toHaveBeenCalled()

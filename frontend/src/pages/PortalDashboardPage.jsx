@@ -2823,6 +2823,8 @@ export default function PortalDashboardPage() {
           status: 'draft',
         },
       })
+      setShowReportSubmissionConfirmModal(false)
+      setReportSubmissionConfirmChecks(REPORT_SUBMISSION_CONFIRMATION_ITEMS.map(() => false))
       return true
     } catch {
       return false
@@ -4083,17 +4085,22 @@ export default function PortalDashboardPage() {
 
     const normalizedChecklistItems = normalizeReportChecklistItems(reportForm.checklist_items)
     const checklistImageUploads = flattenChecklistImageUploads(reportForm.checklistImageFilesByLabel)
-    const hasConfirmedSubmissionChecks = reportSubmissionConfirmChecks.every(Boolean)
+    const hasConfirmedSubmissionChecks = Array.isArray(reportSubmissionConfirmChecks)
+      && reportSubmissionConfirmChecks.length === REPORT_SUBMISSION_CONFIRMATION_ITEMS.length
+      && reportSubmissionConfirmChecks.every(Boolean)
+
     if (!isEditingReport) {
       const missingChecklistDetails = getMissingChecklistDetailsError(normalizedChecklistItems)
       if (missingChecklistDetails) {
         const message = `Add a ${missingChecklistDetails.field} for '${missingChecklistDetails.label}' before saving this report.`
         setCreateReportError(message)
+        setShowReportSubmissionConfirmModal(false)
         return
       }
 
       if (!hasConfirmedSubmissionChecks) {
         setCreateReportError('')
+        setReportSubmissionConfirmChecks(REPORT_SUBMISSION_CONFIRMATION_ITEMS.map(() => false))
         setShowReportSubmissionConfirmModal(true)
         return
       }
@@ -4143,6 +4150,7 @@ export default function PortalDashboardPage() {
     if (creatingReport || savingReportEdit) return
     if (!reportSubmissionConfirmChecks.every(Boolean)) return
     setShowReportSubmissionConfirmModal(false)
+    setCreateReportError('')
     void handleCreateReport()
   }
 

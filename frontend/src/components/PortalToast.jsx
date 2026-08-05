@@ -13,9 +13,10 @@ export default function PortalToast({ toast, onClose }) {
           <button
             type="button"
             onClick={onClose}
+            aria-label="Dismiss success toast"
             className="rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-600 hover:border-[#123A7A] hover:text-[#123A7A]"
           >
-            Close
+            Dismiss
           </button>
         </div>
 
