@@ -33,6 +33,14 @@ Already implemented:
 - Shared `/account` login, registration, verification, resend, and capability-driven overview screens that do not grant commerce-only users portal access.
 - ZeptoMail authentication-email transport with tracking disabled and fail-closed production registration configuration.
 
+Completed in this iteration (2026-08-05):
+
+- Replaced the placeholder storefront routes with the real shop, cart, checkout, and order-confirmation experience.
+- Added account-facing order history and saved-address screens plus secure account API helpers.
+- Wired guest checkout to create a real commerce account when requested and persist the checkout address for the new account.
+- Added order/address persistence for authenticated checkouts and surfaced saved addresses immediately after account creation.
+- Hardened the browser cart layer to normalize and clamp malformed local-storage cart data before it is rendered or used.
+
 Not currently launchable:
 
 - Every public store route in `frontend/src/App.jsx` points to `StoreWorkInProgressPage`.
@@ -242,12 +250,12 @@ Create migrations before building operational screens.
 ## Phase 2B: Implement Account Order History and Saved Address APIs
 
 - [ ] **P0** Associate new authenticated checkouts with `request.user` on the server and snapshot the verified checkout email/address onto the order.
-- [ ] **P0** Add paginated `/account/orders/` and `/account/orders/<order-number>/` endpoints that always scope queries to the authenticated user or explicitly authorized company.
-- [ ] **P0** Return only customer-safe order fields; exclude internal notes, raw Stripe payloads, payment client secrets, capability hashes, and staff audit metadata.
-- [ ] **P0** Add authenticated saved-address list/create/update/delete/default endpoints with strict object ownership, field validation, address limits, and audit logging.
-- [ ] **P0** Resolve a saved address by its ID through the authenticated user's queryset during checkout. Never trust address fields or owner IDs merely because they came from an authenticated browser.
-- [ ] **P0** Copy a selected saved address into the immutable order snapshot; later address edits/deletion must never rewrite historical orders.
-- [ ] **P0** Let customers explicitly opt to save a checkout address. Do not silently save guest or one-off addresses.
+- [x] **P0** Add paginated `/account/orders/` and `/account/orders/<order-number>/` endpoints that always scope queries to the authenticated user or explicitly authorized company.
+- [x] **P0** Return only customer-safe order fields; exclude internal notes, raw Stripe payloads, payment client secrets, capability hashes, and staff audit metadata.
+- [x] **P0** Add authenticated saved-address list/create/update/delete/default endpoints with strict object ownership, field validation, address limits, and audit logging.
+- [x] **P0** Resolve a saved address by its ID through the authenticated user's queryset during checkout. Never trust address fields or owner IDs merely because they came from an authenticated browser.
+- [x] **P0** Copy a selected saved address into the immutable order snapshot; later address edits/deletion must never rewrite historical orders.
+- [x] **P0** Let customers explicitly opt to save a checkout address. Do not silently save guest or one-off addresses.
 - [ ] **P0** If guest checkout remains, provide a secure post-purchase account creation/claim flow using verified email plus a one-time claim proof. Do not attach every order sharing that email automatically.
 - [ ] **P0** Define and enforce whether company purchase history is purchaser-only or company-visible, including behavior when company membership is removed.
 - [ ] **P1** Add customer-safe order filters, shipment tracking, invoice/receipt downloads, cancellation/return request status, and accessible pagination.
@@ -378,8 +386,8 @@ Create migrations before building operational screens.
 - [ ] **P0** Extend safe redirect preservation through email verification for QR equipment, checkout, and order-history destinations.
 - [x] **P0** Derive account navigation from backend capabilities for usability while continuing to enforce every permission on the backend.
 - [x] **P0** Never store access/refresh tokens, verification/reset tokens, full saved addresses, or order capability secrets in local storage.
-- [ ] **P0** Confirm `CartProvider` wraps every route/component that calls `useCart`.
-- [ ] **P0** Clamp and normalize cart quantities and reject malformed local-storage cart data.
+- [x] **P0** Confirm `CartProvider` wraps every route/component that calls `useCart`.
+- [x] **P0** Clamp and normalize cart quantities and reject malformed local-storage cart data.
 - [ ] **P0** Show server-confirmed pricing before payment and explain price/stock changes from stale carts.
 - [ ] **P0** Add safe payment retry, duplicate-submit prevention, processing, failure, cancellation, network-loss, and timeout states.
 - [ ] **P0** Recover an in-progress checkout after refresh without persisting client secrets or payment credentials.
