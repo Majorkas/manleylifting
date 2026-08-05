@@ -18,6 +18,7 @@ export const shopConfig = {
 export const CART_STORAGE_KEY = 'manley-shop-cart-v2'
 const PENDING_CHECKOUT_KEY = 'manley-shop-pending-checkout-v1'
 const COMPLETED_CHECKOUT_KEY = 'manley-shop-completed-checkout-v1'
+const PENDING_ORDER_CLAIM_KEY = 'manley-shop-pending-order-claim-v1'
 const PENDING_CHECKOUT_MAX_AGE_MS = 2 * 60 * 60 * 1000
 
 function apiUrl(path) {
@@ -196,6 +197,48 @@ export function clearPendingCheckout() {
   window.localStorage.removeItem(PENDING_CHECKOUT_KEY)
 }
 
+export function savePendingOrderClaim(orderNumber, claimToken, checkoutRef = '', statusToken = '') {
+  if (typeof window === 'undefined') return
+  const normalizedOrderNumber = String(orderNumber || '').trim()
+  const normalizedClaimToken = String(claimToken || '').trim()
+  if (!normalizedOrderNumber || !normalizedClaimToken) return
+
+  const payload = {
+    orderNumber: normalizedOrderNumber,
+    claimToken: normalizedClaimToken,
+    checkoutRef: String(checkoutRef || '').trim(),
+    statusToken: String(statusToken || '').trim(),
+    createdAt: safeNowIso(),
+  }
+
+  window.localStorage.setItem(PENDING_ORDER_CLAIM_KEY, JSON.stringify(payload))
+}
+
+export function loadPendingOrderClaim() {
+  if (typeof window === 'undefined') return null
+
+  try {
+    const raw = window.localStorage.getItem(PENDING_ORDER_CLAIM_KEY)
+    if (!raw) return null
+
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed.orderNumber !== 'string' || !parsed.orderNumber || typeof parsed.claimToken !== 'string' || !parsed.claimToken) {
+      window.localStorage.removeItem(PENDING_ORDER_CLAIM_KEY)
+      return null
+    }
+
+    return parsed
+  } catch {
+    window.localStorage.removeItem(PENDING_ORDER_CLAIM_KEY)
+    return null
+  }
+}
+
+export function clearPendingOrderClaim() {
+  if (typeof window === 'undefined') return
+  window.localStorage.removeItem(PENDING_ORDER_CLAIM_KEY)
+}
+
 export function saveCompletedCheckout(checkoutRef, statusToken) {
   if (typeof window === 'undefined') return
   if (!checkoutRef || !statusToken) return
@@ -362,6 +405,8 @@ export async function createOnsitePaymentIntent(items, checkoutRef, customer, op
     statusToken: String(body.statusToken || ''),
     clientSecret: String(body.clientSecret || ''),
     paymentIntentId: String(body.paymentIntentId || ''),
+    orderNumber: String(body.orderNumber || ''),
+    claimToken: String(body.claimToken || ''),
     amountTotalCents: Number(body.amountTotalCents || 0),
     currency: String(body.currency || shopConfig.currencyCode),
     lineItems: Array.isArray(body.lineItems) ? body.lineItems : [],

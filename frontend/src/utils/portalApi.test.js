@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  claimGuestOrder,
   clearPortalSession,
   createAccountAddress,
   createPortalEquipment,
@@ -198,6 +199,27 @@ describe('portalApi error messaging', () => {
 
     await expect(getAccountOrders()).resolves.toEqual([expect.objectContaining({ checkoutRef: 'chk_123' })])
     await expect(getAccountAddresses()).resolves.toEqual([expect.objectContaining({ id: 7, label: 'Home' })])
+  })
+
+  it('submits guest-order claims through the secured account API', async () => {
+    savePortalAccessToken('test-access-token')
+    fetch.mockResolvedValueOnce(mockJsonResponse(200, { ok: true, orderNumber: 'MNL-260805-ABC123' }))
+
+    await expect(claimGuestOrder('MNL-260805-ABC123', 'claim-token-123')).resolves.toEqual({
+      ok: true,
+      orderNumber: 'MNL-260805-ABC123',
+    })
+
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/account/claim-order/'),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          orderNumber: 'MNL-260805-ABC123',
+          claimToken: 'claim-token-123',
+        }),
+      }),
+    )
   })
 
   it('submits a new address through the secured account API', async () => {

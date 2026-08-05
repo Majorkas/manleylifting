@@ -484,23 +484,35 @@ async function publicAccountPost(path, payload) {
 }
 
 export async function registerCommerceAccount(payload) {
-  return publicAccountPost('/account/register/', {
+  const body = {
     email: String(payload?.email || '').trim(),
     password: String(payload?.password || ''),
     first_name: String(payload?.firstName || '').trim(),
     last_name: String(payload?.lastName || '').trim(),
-    recipient_name: String(payload?.recipientName || payload?.recipient_name || '').trim(),
-    recipient_phone: String(payload?.recipientPhone || payload?.recipient_phone || '').trim(),
-    address_line_1: String(payload?.addressLine1 || payload?.address_line_1 || '').trim(),
-    address_line_2: String(payload?.addressLine2 || payload?.address_line_2 || '').trim(),
-    city: String(payload?.city || '').trim(),
-    county: String(payload?.county || '').trim(),
-    postcode: String(payload?.postcode || '').trim(),
-    country_code: String(payload?.countryCode || payload?.country_code || '').trim(),
     accept_terms: Boolean(payload?.acceptTerms),
     accept_privacy: Boolean(payload?.acceptPrivacy),
     turnstile_token: String(payload?.turnstileToken || ''),
-  })
+  }
+
+  const recipientName = String(payload?.recipientName || payload?.recipient_name || '').trim()
+  const recipientPhone = String(payload?.recipientPhone || payload?.recipient_phone || '').trim()
+  const addressLine1 = String(payload?.addressLine1 || payload?.address_line_1 || '').trim()
+  const addressLine2 = String(payload?.addressLine2 || payload?.address_line_2 || '').trim()
+  const city = String(payload?.city || '').trim()
+  const county = String(payload?.county || '').trim()
+  const postcode = String(payload?.postcode || '').trim()
+  const countryCode = String(payload?.countryCode || payload?.country_code || '').trim()
+
+  if (recipientName) body.recipient_name = recipientName
+  if (recipientPhone) body.recipient_phone = recipientPhone
+  if (addressLine1) body.address_line_1 = addressLine1
+  if (addressLine2) body.address_line_2 = addressLine2
+  if (city) body.city = city
+  if (county) body.county = county
+  if (postcode) body.postcode = postcode
+  if (countryCode) body.country_code = countryCode
+
+  return publicAccountPost('/account/register/', body)
 }
 
 export async function verifyCommerceEmail(token) {
@@ -570,11 +582,13 @@ export async function getAccountBootstrap() {
   const path = '/account/bootstrap/'
   const response = await authFetch(path)
   const body = await parseResponse(response, path)
+  const phone = String(body?.phone || '').trim()
+
   return {
     username: String(body?.username || ''),
     email: String(body?.email || ''),
     fullName: String(body?.full_name || ''),
-    phone: String(body?.phone || ''),
+    ...(phone ? { phone } : {}),
     emailVerified: Boolean(body?.email_verified),
     capabilities: {
       canShop: Boolean(body?.capabilities?.can_shop),
@@ -582,6 +596,21 @@ export async function getAccountBootstrap() {
       canAccessPortal: Boolean(body?.capabilities?.can_access_portal),
     },
   }
+}
+
+export async function claimGuestOrder(orderNumber, claimToken) {
+  const path = '/account/claim-order/'
+  const response = await authFetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      orderNumber: String(orderNumber || '').trim(),
+      claimToken: String(claimToken || '').trim(),
+    }),
+  })
+  return parseResponse(response, path)
 }
 
 export async function getAccountOrders() {

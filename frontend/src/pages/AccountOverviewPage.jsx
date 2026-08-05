@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { Building2, LogOut, MapPin, Package2, ShieldCheck, ShoppingBag } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import AccountLayout from '../components/AccountLayout'
-import { changeAccountPassword, deleteAccount, disableAccount, getAccountBootstrap, getAccountSecurityEvents, getAccountSessions, logoutAllAccountSessions, portalLogout, requestAccountEmailChange, revokeAccountSession, setupAccountMfa, verifyAccountMfa } from '../utils/portalApi'
+import { changeAccountPassword, claimGuestOrder, deleteAccount, disableAccount, getAccountBootstrap, getAccountSecurityEvents, getAccountSessions, logoutAllAccountSessions, portalLogout, requestAccountEmailChange, revokeAccountSession, setupAccountMfa, verifyAccountMfa } from '../utils/portalApi'
+import { clearPendingOrderClaim, loadPendingOrderClaim } from '../utils/shopConfig'
 import usePageMeta from '../utils/usePageMeta'
 
 export default function AccountOverviewPage() {
@@ -35,6 +36,16 @@ export default function AccountOverviewPage() {
             inProgress: Boolean(bootstrap?.mfaSetupInProgress),
             recoveryCodes: Array.isArray(bootstrap?.mfaRecoveryCodes) ? bootstrap.mfaRecoveryCodes : [],
           }))
+
+          const pendingClaim = loadPendingOrderClaim()
+          if (bootstrap?.emailVerified && pendingClaim?.orderNumber && pendingClaim?.claimToken) {
+            try {
+              await claimGuestOrder(pendingClaim.orderNumber, pendingClaim.claimToken)
+              clearPendingOrderClaim()
+            } catch {
+              // Keep the claim available for a later retry if the account is not yet fully verified.
+            }
+          }
         }
       } catch (error) {
         if (cancelled) return

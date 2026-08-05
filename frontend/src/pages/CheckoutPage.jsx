@@ -14,6 +14,7 @@ import {
   saveCompletedCheckout,
   loadPendingCheckout,
   savePendingCheckout,
+  savePendingOrderClaim,
   shopRoutes,
 } from '../utils/shopConfig'
 import usePageMeta from '../utils/usePageMeta'
@@ -555,6 +556,10 @@ export default function CheckoutPage() {
 
       if (!nextClientSecret) throw new Error('No payment client secret returned from server')
       if (!nextStatusToken) throw new Error('No status token returned from server')
+
+      if (checkout.claimToken) {
+        savePendingOrderClaim(checkout.orderNumber, checkout.claimToken, checkout.checkoutRef || nextCheckoutRef, nextStatusToken)
+      }
 
       setCheckoutRef(checkout.checkoutRef || nextCheckoutRef)
       setStatusToken(nextStatusToken)
