@@ -569,6 +569,7 @@ def account_claim_order(request):
         target_type="order",
         target_id=str(order.order_number),
         details={"order_number": order.order_number},
+        actor=request.user,
     )
     return Response({"ok": True, "orderNumber": order.order_number})
 
@@ -638,6 +639,13 @@ def account_mfa_setup(request):
     security_state.mfa_recovery_codes = []
     security_state.save(update_fields=["mfa_pending_secret", "mfa_enabled", "mfa_secret", "mfa_recovery_codes", "updated_at"])
 
+    log_portal_audit_event(
+        request=request,
+        action="account.mfa_setup",
+        target_type="account",
+        target_id=str(request.user.pk),
+        details={"started": True},
+    )
     return Response({"setupInProgress": True, "secret": secret, "recoveryCodes": []})
 
 
@@ -664,6 +672,13 @@ def account_mfa_verify(request):
     security_state.mfa_recovery_codes = recovery_codes
     security_state.save(update_fields=["mfa_enabled", "mfa_secret", "mfa_pending_secret", "mfa_recovery_codes", "updated_at"])
 
+    log_portal_audit_event(
+        request=request,
+        action="account.mfa_verify",
+        target_type="account",
+        target_id=str(request.user.pk),
+        details={"enabled": True},
+    )
     return Response({"ok": True, "recoveryCodes": recovery_codes})
 
 
@@ -673,7 +688,17 @@ def account_mfa_verify(request):
 def account_security_events(request):
     events = (
         AuditLog.objects.filter(actor=request.user)
-        .filter(action__in=["account.password_change", "account.logout_all", "account.disable", "account.delete", "account.email_change_request"])
+        .filter(action__in=[
+            "account.password_change",
+            "account.logout_all",
+            "account.disable",
+            "account.delete",
+            "account.email_change_request",
+            "account.password_reset",
+            "account.mfa_setup",
+            "account.mfa_verify",
+            "account.claim_order",
+        ])
         .order_by("-created_at")[:10]
         .values("action", "target_type", "target_id", "details", "created_at")
     )
