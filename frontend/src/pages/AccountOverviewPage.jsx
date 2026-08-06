@@ -23,6 +23,8 @@ export default function AccountOverviewPage() {
   const [sessionStatus, setSessionStatus] = useState({ type: '', message: '' })
   const [accountAction, setAccountAction] = useState({ type: '', currentPassword: '', confirmDelete: false })
   const [accountActionStatus, setAccountActionStatus] = useState({ type: '', message: '' })
+  const canShop = Boolean(account?.capabilities?.canShop)
+  const canAccessPortal = Boolean(account?.capabilities?.canAccessPortal)
 
   useEffect(() => {
     let cancelled = false
@@ -224,8 +226,8 @@ export default function AccountOverviewPage() {
   return (
     <AccountLayout
       eyebrow="My Account"
-      title={account?.fullName || 'Account overview'}
-      intro={account ? account.email : 'Loading your account securely...'}
+      title={account?.fullName || 'Account profile'}
+      intro={account ? (canAccessPortal ? 'Choose the portal or ecommerce account area that fits this profile.' : 'Manage your ecommerce account profile, orders, addresses, and security.') : 'Loading your account securely...'}
     >
       {errorMessage && <div role="alert" className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{errorMessage}</div>}
       {!account && !errorMessage && <p className="text-slate-600">Loading...</p>}
@@ -239,8 +241,53 @@ export default function AccountOverviewPage() {
             </div>
           </div>
 
+          <div className="mt-6 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <p className="text-sm font-semibold uppercase tracking-[0.14em] text-[#C61F2A]">Account options</p>
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {canAccessPortal ? (
+                <>
+                  <Link className="flex items-center justify-between rounded-md border border-slate-200 bg-slate-50 px-4 py-4 text-[#123A7A] shadow-sm transition hover:border-[#123A7A] hover:shadow-md" to="/portal">
+                    <span className="flex items-center gap-3 font-bold"><Building2 size={20} aria-hidden="true" />Open portal</span>
+                    <span aria-hidden="true">&rarr;</span>
+                  </Link>
+                  <Link className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-4 text-[#123A7A] shadow-sm transition hover:border-[#123A7A] hover:shadow-md" to="/account/orders">
+                    <span className="flex items-center gap-3 font-bold"><Package2 size={20} aria-hidden="true" />Store orders</span>
+                    <span aria-hidden="true">&rarr;</span>
+                  </Link>
+                  {canShop && (
+                    <Link className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-4 text-[#123A7A] shadow-sm transition hover:border-[#123A7A] hover:shadow-md" to="/shop">
+                      <span className="flex items-center gap-3 font-bold"><ShoppingBag size={20} aria-hidden="true" />Shop</span>
+                      <span aria-hidden="true">&rarr;</span>
+                    </Link>
+                  )}
+                </>
+              ) : (
+                <>
+                  <Link className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-4 text-[#123A7A] shadow-sm transition hover:border-[#123A7A] hover:shadow-md" to="/account/orders">
+                    <span className="flex items-center gap-3 font-bold"><Package2 size={20} aria-hidden="true" />Orders</span>
+                    <span aria-hidden="true">&rarr;</span>
+                  </Link>
+                  <Link className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-4 text-[#123A7A] shadow-sm transition hover:border-[#123A7A] hover:shadow-md" to="/account/addresses">
+                    <span className="flex items-center gap-3 font-bold"><MapPin size={20} aria-hidden="true" />Saved addresses</span>
+                    <span aria-hidden="true">&rarr;</span>
+                  </Link>
+                  <a className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-4 text-[#123A7A] shadow-sm transition hover:border-[#123A7A] hover:shadow-md" href="#security">
+                    <span className="flex items-center gap-3 font-bold"><ShieldCheck size={20} aria-hidden="true" />Security</span>
+                    <span aria-hidden="true">&rarr;</span>
+                  </a>
+                  {canShop && (
+                    <Link className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-4 text-[#123A7A] shadow-sm transition hover:border-[#123A7A] hover:shadow-md" to="/shop">
+                      <span className="flex items-center gap-3 font-bold"><ShoppingBag size={20} aria-hidden="true" />Shop</span>
+                      <span aria-hidden="true">&rarr;</span>
+                    </Link>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+
           <div className="mt-6 grid gap-3 md:grid-cols-2">
-            {account.capabilities.canShop && (
+            {canShop && !canAccessPortal && (
               <>
                 <Link className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-4 text-[#123A7A] shadow-sm transition hover:border-[#123A7A] hover:shadow-md" to="/account/orders">
                   <span className="flex items-center gap-3 font-bold"><Package2 size={20} aria-hidden="true" />Orders</span>
@@ -256,15 +303,13 @@ export default function AccountOverviewPage() {
                 </Link>
               </>
             )}
-            {account.capabilities.canAccessPortal && (
-              <Link className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-4 text-[#123A7A] shadow-sm transition hover:border-[#123A7A] hover:shadow-md" to="/portal">
-                <span className="flex items-center gap-3 font-bold"><Building2 size={20} aria-hidden="true" />Equipment portal</span>
-                <span aria-hidden="true">&rarr;</span>
-              </Link>
-            )}
+            <Link className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-4 text-[#123A7A] shadow-sm transition hover:border-[#123A7A] hover:shadow-md" to="/account/change-email">
+              <span className="flex items-center gap-3 font-bold"><ShieldCheck size={20} aria-hidden="true" />Email & security</span>
+              <span aria-hidden="true">&rarr;</span>
+            </Link>
           </div>
 
-          <div className="mt-8 rounded-lg border border-slate-200 bg-slate-50 p-5">
+            <div id="security" className="mt-8 rounded-lg border border-slate-200 bg-slate-50 p-5">
             <h3 className="text-lg font-bold text-slate-900">Security controls</h3>
             <p className="mt-2 text-sm text-slate-600">Update your password or sign out from every active browser session tied to this account.</p>
 

@@ -97,6 +97,30 @@ describe('account lifecycle pages', () => {
     )
   })
 
+  it('lands portal-linked users on the generic account home by default', async () => {
+    const user = userEvent.setup()
+    portalLogin.mockResolvedValue({ access: 'access-token' })
+    getAccountBootstrap.mockResolvedValue({
+      capabilities: { canShop: true, canViewOrders: true, canAccessPortal: true },
+    })
+    render(
+      <MemoryRouter initialEntries={['/account/login']}>
+        <Routes>
+          <Route path="/account/login" element={<AccountLoginPage />} />
+          <Route path="/account" element={<div>Account Home</div>} />
+          <Route path="/portal" element={<div>Portal Home</div>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    await user.type(screen.getByLabelText('Email or portal username'), 'customer@example.com')
+    await user.type(screen.getByLabelText('Password'), 'A-Strong-Commerce-Password-123!')
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
+
+    expect(await screen.findByText('Account Home')).toBeInTheDocument()
+    expect(screen.queryByText('Portal Home')).not.toBeInTheDocument()
+  })
+
   it('shows a recently saved checkout address immediately from local storage', async () => {
     window.localStorage.setItem('manley-recent-account-address', JSON.stringify({
       label: 'Checkout address',

@@ -103,6 +103,7 @@ This redesign must stay security-first.
 - Keep routing decisions server-backed or capability-backed, not inferred from client state alone.
 - Preserve safe return URLs through login and recovery flows.
 - Ensure unauthenticated users only see a login path, not a mixed portal/store landing page.
+- [x] Build the generic account home landing so login returns to `/account` and portal-linked users see portal-first choices while ecommerce-only users see ecommerce account options.
 
 **Acceptance gate:** a logged-in user lands in the right account experience based on profile and capabilities, and unsafe redirects are still blocked.
 

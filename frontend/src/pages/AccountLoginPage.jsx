@@ -31,9 +31,9 @@ export default function AccountLoginPage() {
     setErrorMessage('')
     try {
       await portalLogin(identifier.trim(), password)
-      const account = await getAccountBootstrap()
+      await getAccountBootstrap()
       const requestedRedirect = safeRedirect(location.search)
-      const defaultRedirect = account.capabilities.canShop ? '/account' : '/portal'
+      const defaultRedirect = '/account'
       navigate(requestedRedirect || defaultRedirect, { replace: true })
     } catch (error) {
       setErrorMessage(String(error?.message || 'Sign in failed. Please try again.'))
