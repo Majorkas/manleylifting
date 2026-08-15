@@ -343,6 +343,7 @@ Create migrations before building operational screens.
 - [ ] **P0** Add a protected staff order list/detail workflow, either in hardened Django admin or the portal.
 - [ ] **P0** Show customer, address, items, pricing, payment state, fulfillment state, and audit history.
 - [ ] **P0** Add controlled transitions for processing, packed, shipped, delivered, canceled, and returned.
+- [ ] **P0** Provide staff-facing options to change order status from the order detail workflow, with role-based permissions and validation of legal transitions.
 - [ ] **P0** Generate a printable picking/packing document without exposing unnecessary PII.
 - [ ] **P0** Record carrier, tracking number/link, shipping date, and fulfillment actor.
 - [ ] **P0** Implement server-side Stripe full and partial refunds with owner-only permission, confirmation, reason, and audit logging.
@@ -363,6 +364,7 @@ Create migrations before building operational screens.
 - [x] **P0** Keep verification emails on ZeptoMail as part of the shared authentication-email delivery path.
 - [ ] **P0** Add password-reset, email-change confirmation, and security-change notification emails with idempotent delivery behavior.
 - [ ] **P0** Send idempotent customer emails for payment received/order confirmed, shipped, canceled, and refunded.
+- [ ] **P0** Send an order-status notification email to the purchaser whenever order status changes (for example: processing, packed, shipped, delivered, canceled, returned, refunded), with duplicate-send protection.
 - [ ] **P0** Send staff notifications for paid orders and operational exceptions.
 - [ ] **P0** Include order number, item summary, totals, support details, and delivery information; never include status tokens or payment secrets.
 - [ ] **P0** Track email delivery attempts and retry transient failures without sending duplicates.
@@ -396,6 +398,7 @@ Create migrations before building operational screens.
 - [ ] **P0** For authenticated customers, prefer account-scoped order history over reusable capability URLs.
 - [ ] **P1** Add clear loading, empty, unavailable, out-of-stock, and error states to every store route.
 - [ ] **P1** Add accessible focus management, error summaries, labels, keyboard behavior, and screen-reader announcements to checkout/cart dialogs.
+- [ ] **P1** Verify the store frontend uses TanStack Query for caching like the portal; if any store data fetching still bypasses TanStack, migrate it so store queries, mutations, invalidation, and refetching follow the same pattern.
 - [ ] **P1** Add a real 404 route and safe recovery links.
 - [ ] **P1** Add product/collection metadata, canonical URLs, Product/Breadcrumb JSON-LD, sitemap, and robots configuration.
 - [ ] **P2** Add search, sorting, and filters after the core catalog size justifies them.

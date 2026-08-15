@@ -1,6 +1,6 @@
 # Account Access Redesign Roadmap
 
-This roadmap covers the account-shell redesign only. It is intentionally separate from `STORE_PRODUCTION_ROADMAP.md` so the account work can move independently without duplicating store launch work.
+This roadmap covers the account-shell redesign only. It is intentionally separate from `docs/store-production-roadmap.md` so the account work can move independently without duplicating store launch work.
 
 ## Goal
 
@@ -88,65 +88,67 @@ This redesign must stay security-first.
 
 ## Phase 1: Finalize the Account Shell Contract
 
-- Define the exact account landing rules for portal-linked versus ecommerce-only users.
-- Define the URL structure for the account shell and portal customer view so they stay separate but coherent.
-- Define which actions remain in the ecommerce shell and which actions are surfaced inside portal customer views.
-- Define how the app should behave when a user has both portal access and ecommerce access.
-- Confirm which redirects must be preserved across login, verify-email, reset-password, and change-email completion.
+- [x] Finalized the account shell contract for generic `/account` landing, portal-first choices for portal-linked users, ecommerce-only shell routes for other users, and safe redirect handling through login and recovery flows.
+- [x] Portal-linked users land in the portal-first experience, while ecommerce-only users stay in the tabbed account shell.
+- [x] `/account` remains the generic account entry point, with `/account/orders`, `/account/addresses`, `/account/security`, and `/portal` kept as separate but coherent destinations.
+- [x] Customer-safe store orders are surfaced in the portal customer view, while ecommerce-specific account actions stay in the ecommerce shell unless explicitly linked.
+- [x] Safe return URLs are preserved through login, verify-email, reset-password, and change-email completion.
 
 **Acceptance gate:** the account shell contract is written down and there is no overlap with the store roadmap beyond customer-safe store order visibility.
 
 ## Phase 2: Build the Generic Account Home Router
 
-- Replace any ambiguous account landing with a single generic account home decision point.
-- Use backend capability flags to choose portal-first versus ecommerce-only routing.
-- Keep routing decisions server-backed or capability-backed, not inferred from client state alone.
-- Preserve safe return URLs through login and recovery flows.
-- Ensure unauthenticated users only see a login path, not a mixed portal/store landing page.
+- [x] Replace any ambiguous account landing with a single generic account home decision point.
+- [x] Use backend capability flags to choose portal-first versus ecommerce-only routing.
+- [x] Keep routing decisions server-backed or capability-backed, not inferred from client state alone.
+- [x] Preserve safe return URLs through login and recovery flows.
+- [x] Ensure unauthenticated users only see a login path, not a mixed portal/store landing page.
 - [x] Build the generic account home landing so login returns to `/account` and portal-linked users see portal-first choices while ecommerce-only users see ecommerce account options.
 
 **Acceptance gate:** a logged-in user lands in the right account experience based on profile and capabilities, and unsafe redirects are still blocked.
 
 ## Phase 3: Rework the Ecommerce Account Shell
 
-- Turn the ecommerce account area into a clearer shell with tabs for:
+- [x] Turn the ecommerce account area into a clearer shell with tabs for:
   - Orders
   - Addresses
   - Security
-- Reuse the current order history and address management screens rather than rebuilding them.
-- Split security controls into a dedicated section so they are not buried in the overview.
-- Keep recovery, email change, password change, MFA, and session management in the security area.
-- Keep customer-safe order details in the account shell and avoid duplicating portal-only views.
+- [x] Reuse the current order history and address management screens rather than rebuilding them.
+- [x] Split security controls into a dedicated section so they are not buried in the overview.
+- [x] Keep recovery, email change, password change, MFA, and session management in the security area.
+- [x] Keep customer-safe order details in the account shell and avoid duplicating portal-only views.
+- [x] Split the ecommerce account shell into tabbed orders, addresses, and security routes, with security moved out of the overview.
 
 **Acceptance gate:** ecommerce-only users can manage orders, addresses, and security from one clear shell without seeing portal data.
 
 ## Phase 4: Add Portal Customer Store Visibility
 
-- Add a customer-facing store orders section inside the portal-linked experience.
-- Reuse the existing ecommerce order data source rather than creating a second order history implementation.
-- Keep the portal customer section read-only unless a specific customer action is required.
-- Preserve portal capability checks so staff/owner tools stay separate.
-- Ensure the portal customer view only shows customer-safe store data.
+- [x] Add a customer-facing store orders section inside the portal-linked experience.
+- [x] Reuse the existing ecommerce order data source rather than creating a second order history implementation.
+- [x] Keep the portal customer section read-only unless a specific customer action is required.
+- [x] Preserve portal capability checks so staff/owner tools stay separate.
+- [x] Ensure the portal customer view only shows customer-safe store data.
 
 **Acceptance gate:** portal-linked customer accounts can see store orders from the portal experience without leaking staff/owner data or creating duplicate order screens.
 
 ## Phase 5: Tighten Account Security UX
 
-- Ensure security-sensitive actions continue to require current-password or step-up authentication.
-- Keep session revocation and logout-all visible in the account security area.
-- Keep security notifications and security event history visible in the account shell.
-- Confirm account disable/delete flows remain explicit and audited.
-- Confirm recovery and resend flows remain generic enough to avoid account enumeration.
+- [x] Surface recent security activity and active sessions in the account shell.
+- [x] Ensure security-sensitive actions continue to require current-password or step-up authentication.
+- [x] Keep session revocation and logout-all visible in the account security area.
+- [x] Keep security notifications and security event history visible in the account shell.
+- [x] Confirm account disable/delete flows remain explicit and audited.
+- [x] Confirm recovery and resend flows remain generic enough to avoid account enumeration.
 
 **Acceptance gate:** all sensitive account actions remain auditable, authenticated, and non-enumerating.
 
 ## Phase 6: Validation and Regression Coverage
 
-- Add frontend tests for the account landing router.
-- Add frontend tests for portal-linked versus ecommerce-only rendering.
-- Add frontend tests for the ecommerce account tabs and portal customer section.
-- Add backend tests for the capability-driven routing decisions if any server-side route helpers are introduced.
-- Confirm the redesign does not regress existing account recovery, sessions, MFA, or order history flows.
+- [x] Add frontend tests for the account landing router.
+- [x] Add frontend tests for portal-linked versus ecommerce-only rendering.
+- [x] Add frontend tests for the ecommerce account tabs and portal customer section.
+- [x] Add backend tests for the capability-driven routing decisions if any server-side route helpers are introduced.
+- [x] Confirm the redesign does not regress existing account recovery, sessions, MFA, or order history flows.
 
 **Acceptance gate:** the redesign is covered by tests that prove the right shell is shown for the right account type and the existing secure flows still pass.
 
@@ -160,6 +162,6 @@ This redesign must stay security-first.
 
 ## Relationship To Existing Roadmaps
 
-- `STORE_PRODUCTION_ROADMAP.md` remains the source of truth for store launch work.
+- `docs/store-production-roadmap.md` remains the source of truth for store launch work.
 - This document is the source of truth for account-shell redesign and portal/ecommerce account routing.
 - If a task touches both, it should be split so the store roadmap owns the store-facing implementation and this roadmap owns the account-shell and routing decisions.

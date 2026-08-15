@@ -69,3 +69,5 @@ temp/
 # --- Logs ---
 logs/
 *.log
+
+ROADMAP.md
