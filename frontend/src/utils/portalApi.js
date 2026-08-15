@@ -42,6 +42,7 @@ const effectiveConfiguredApiBaseUrl = import.meta.env.PROD
 const apiBaseUrl = (effectiveConfiguredApiBaseUrl || defaultApiBaseUrl).replace(/\/+$/, '')
 
 const SESSION_FLAG_KEY = 'manley-portal-session-v1'
+export const SESSION_CHANGED_EVENT = 'portalSessionChanged'
 let accessTokenMemory = ''
 let refreshAccessTokenPromise = null
 let csrfSeedPromise = null
@@ -336,6 +337,7 @@ export function savePortalAccessToken(accessToken) {
   if (typeof window === 'undefined') return
   if (accessTokenMemory) {
     window.localStorage.setItem(SESSION_FLAG_KEY, '1')
+    window.dispatchEvent(new CustomEvent(SESSION_CHANGED_EVENT))
   }
 }
 
@@ -344,6 +346,7 @@ export function clearPortalSession() {
   csrfTokenMemory = ''
   if (typeof window === 'undefined') return
   window.localStorage.removeItem(SESSION_FLAG_KEY)
+  window.dispatchEvent(new CustomEvent(SESSION_CHANGED_EVENT))
   // Signal session expiry to other parts of the app
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('portalSessionExpired'))
@@ -444,9 +447,14 @@ async function authFetch(path, options = {}) {
   }
 }
 
-export async function portalLogin(username, password) {
+export async function portalLogin(username, password, mfaCode = '') {
   const path = '/auth/token/'
   const csrfToken = await getCsrfToken()
+  const trimmedMfaCode = String(mfaCode || '').trim()
+  const payload = { username, password }
+  if (trimmedMfaCode) {
+    payload.mfa_code = trimmedMfaCode
+  }
   const response = await fetch(apiUrl(path), {
     method: 'POST',
     credentials: 'include',
@@ -455,7 +463,7 @@ export async function portalLogin(username, password) {
       Accept: 'application/json',
       'X-CSRFToken': csrfToken,
     },
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify(payload),
   })
   const body = await parseResponse(response, path)
 
@@ -594,6 +602,7 @@ export async function getAccountBootstrap() {
       canShop: Boolean(body?.capabilities?.can_shop),
       canViewOrders: Boolean(body?.capabilities?.can_view_orders),
       canAccessPortal: Boolean(body?.capabilities?.can_access_portal),
+      canFulfillOrders: Boolean(body?.capabilities?.can_fulfill_orders),
     },
   }
 }
@@ -636,6 +645,107 @@ export async function getAccountOrders() {
     shippingPostcode: String(order?.shippingPostcode || ''),
     shippingCountryCode: String(order?.shippingCountryCode || ''),
   })) : []
+}
+
+export async function getPortalOrders({ bucket = 'recent', page = 1, pageSize = 3 } = {}) {
+  const params = new URLSearchParams()
+  params.set('bucket', String(bucket || 'recent'))
+  params.set('page', String(Number(page) > 0 ? Number(page) : 1))
+  params.set('page_size', String(Number(pageSize) > 0 ? Number(pageSize) : 3))
+
+  const query = params.toString()
+  const path = '/portal/orders/' + (query ? '?' + query : '')
+  const response = await authFetch(path)
+  const body = await parseResponse(response, path)
+
+  const results = Array.isArray(body?.results)
+    ? body.results.map((order) => ({
+      checkoutRef: String(order?.checkoutRef || ''),
+      orderNumber: String(order?.orderNumber || ''),
+      status: String(order?.status || ''),
+      customerName: String(order?.customerName || ''),
+      customerEmail: String(order?.customerEmail || ''),
+      lineItemCount: Number(order?.lineItemCount || 0),
+      amountTotalCents: Number(order?.amountTotalCents || 0),
+      currency: String(order?.currency || ''),
+      createdAt: String(order?.createdAt || ''),
+      paidAt: String(order?.paidAt || ''),
+      shippingName: String(order?.shippingName || ''),
+      shippingCity: String(order?.shippingCity || ''),
+      shippingPostcode: String(order?.shippingPostcode || ''),
+      shippingCountryCode: String(order?.shippingCountryCode || ''),
+    }))
+    : []
+
+  return {
+    results,
+    totalCount: Number(body?.total_count || 0),
+    page: Number(body?.page || 1),
+    pageSize: Number(body?.page_size || 3),
+    totalPages: Math.max(1, Number(body?.total_pages || 1)),
+  }
+}
+
+export async function getPortalOrderDetail(orderNumber) {
+  const normalizedOrderNumber = String(orderNumber || '').trim()
+  const path = '/portal/orders/' + encodeURIComponent(normalizedOrderNumber) + '/'
+  const response = await authFetch(path)
+  const order = await parseResponse(response, path)
+  return {
+    checkoutRef: String(order?.checkoutRef || ''),
+    orderNumber: String(order?.orderNumber || ''),
+    status: String(order?.status || ''),
+    customerName: String(order?.customerName || ''),
+    customerEmail: String(order?.customerEmail || ''),
+    lineItemCount: Number(order?.lineItemCount || 0),
+    lineItems: Array.isArray(order?.lineItems) ? order.lineItems : [],
+    amountTotalCents: Number(order?.amountTotalCents || 0),
+    currency: String(order?.currency || ''),
+    createdAt: String(order?.createdAt || ''),
+    paidAt: String(order?.paidAt || ''),
+    shippingName: String(order?.shippingName || ''),
+    shippingPhone: String(order?.shippingPhone || ''),
+    shippingAddressLine1: String(order?.shippingAddressLine1 || ''),
+    shippingAddressLine2: String(order?.shippingAddressLine2 || ''),
+    shippingCity: String(order?.shippingCity || ''),
+    shippingCounty: String(order?.shippingCounty || ''),
+    shippingPostcode: String(order?.shippingPostcode || ''),
+    shippingCountryCode: String(order?.shippingCountryCode || ''),
+  }
+}
+
+export async function updatePortalOrderStatus(orderNumber, statusValue) {
+  const normalizedOrderNumber = String(orderNumber || '').trim()
+  const path = '/portal/orders/' + encodeURIComponent(normalizedOrderNumber) + '/'
+  const response = await authFetch(path, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ status: String(statusValue || '').trim().toLowerCase() }),
+  })
+  const order = await parseResponse(response, path)
+  return {
+    checkoutRef: String(order?.checkoutRef || ''),
+    orderNumber: String(order?.orderNumber || ''),
+    status: String(order?.status || ''),
+    customerName: String(order?.customerName || ''),
+    customerEmail: String(order?.customerEmail || ''),
+    lineItemCount: Number(order?.lineItemCount || 0),
+    lineItems: Array.isArray(order?.lineItems) ? order.lineItems : [],
+    amountTotalCents: Number(order?.amountTotalCents || 0),
+    currency: String(order?.currency || ''),
+    createdAt: String(order?.createdAt || ''),
+    paidAt: String(order?.paidAt || ''),
+    shippingName: String(order?.shippingName || ''),
+    shippingPhone: String(order?.shippingPhone || ''),
+    shippingAddressLine1: String(order?.shippingAddressLine1 || ''),
+    shippingAddressLine2: String(order?.shippingAddressLine2 || ''),
+    shippingCity: String(order?.shippingCity || ''),
+    shippingCounty: String(order?.shippingCounty || ''),
+    shippingPostcode: String(order?.shippingPostcode || ''),
+    shippingCountryCode: String(order?.shippingCountryCode || ''),
+  }
 }
 
 export async function getAccountAddresses() {
@@ -696,18 +806,6 @@ export async function deleteAccountAddress(addressId) {
     method: 'DELETE',
   })
   return parseResponse(response, `/account/addresses/${encodeURIComponent(String(addressId))}/`)
-}
-
-export async function changePortalPassword(payload) {
-  const path = '/portal/me/change-password/'
-  const response = await authFetch(path, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  })
-  return parseResponse(response, path)
 }
 
 export async function changeAccountPassword(payload) {

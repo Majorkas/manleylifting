@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Eye, EyeOff, LogIn } from 'lucide-react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import AccountLayout from '../components/AccountLayout'
-import { getAccountBootstrap, portalLogin } from '../utils/portalApi'
+import { getAccountBootstrap, hasPortalSession, portalLogin } from '../utils/portalApi'
 import usePageMeta from '../utils/usePageMeta'
 
 function safeRedirect(search) {
@@ -24,18 +24,48 @@ export default function AccountLoginPage() {
   const [submitting, setSubmitting] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
 
+  useEffect(() => {
+    if (!hasPortalSession()) return undefined
+
+    let cancelled = false
+    getAccountBootstrap()
+      .then(() => {
+        if (!cancelled) navigate('/account', { replace: true })
+      })
+      .catch(() => {
+        // A failed refresh clears the session and leaves the sign-in form available.
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [navigate])
+
   async function onSubmit(event) {
     event.preventDefault()
     if (submitting) return
     setSubmitting(true)
     setErrorMessage('')
+    const normalizedIdentifier = identifier.trim()
+    const requestedRedirect = safeRedirect(location.search)
     try {
-      await portalLogin(identifier.trim(), password)
+      await portalLogin(normalizedIdentifier, password)
       await getAccountBootstrap()
-      const requestedRedirect = safeRedirect(location.search)
       const defaultRedirect = '/account'
       navigate(requestedRedirect || defaultRedirect, { replace: true })
     } catch (error) {
+      const detail = String(error?.body?.detail || error?.message || '').toLowerCase()
+      if (detail.includes('multi-factor authentication code is required')) {
+        navigate('/account/login/mfa', {
+          replace: true,
+          state: {
+            identifier: normalizedIdentifier,
+            password,
+            redirectTo: requestedRedirect || '/account',
+          },
+        })
+        return
+      }
       setErrorMessage(String(error?.message || 'Sign in failed. Please try again.'))
     } finally {
       setSubmitting(false)

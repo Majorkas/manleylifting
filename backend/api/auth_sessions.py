@@ -1,3 +1,5 @@
+import hashlib
+
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import F
@@ -9,23 +11,52 @@ from rest_framework_simplejwt.tokens import UntypedToken
 from rest_framework_simplejwt.utils import datetime_from_epoch
 
 from .models import AccountSecurityState, AccountSession
+from .request_security import client_ip
 
 
 SESSION_GENERATION_CLAIM = "session_generation"
 SESSION_ID_CLAIM = "session_id"
 
 
-def create_account_session(*, user, refresh_token):
+def _normalize_user_agent(request):
+    if request is None:
+        return ""
+    raw_value = str(request.META.get("HTTP_USER_AGENT", "") or "")
+    # Normalize user-agent to make repeated logins from the same device stable.
+    return " ".join(raw_value.split()).strip()[:512]
+
+
+def _session_device_fingerprint(*, user_agent, ip_address):
+    source = str(user_agent or "").strip().lower() or str(ip_address or "").strip().lower() or "unknown"
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def create_account_session(*, user, refresh_token, request=None):
+    session_ip = client_ip(request) if request is not None else ""
+    session_user_agent = _normalize_user_agent(request)
+    session_fingerprint = _session_device_fingerprint(
+        user_agent=session_user_agent,
+        ip_address=session_ip,
+    )
+
+    is_new_device = not AccountSession.objects.filter(
+        user=user,
+        device_fingerprint=session_fingerprint,
+    ).exists()
+
     session = AccountSession.objects.create(
         user=user,
         expires_at=datetime_from_epoch(refresh_token["exp"]),
+        ip_address=session_ip or None,
+        user_agent=session_user_agent,
+        device_fingerprint=session_fingerprint,
     )
     refresh_token[SESSION_ID_CLAIM] = str(session.pk)
     OutstandingToken.objects.filter(
         user=user,
         jti=refresh_token[api_settings.JTI_CLAIM],
     ).update(token=str(refresh_token))
-    return session
+    return session, is_new_device
 
 
 def parse_refresh_token(raw_token):

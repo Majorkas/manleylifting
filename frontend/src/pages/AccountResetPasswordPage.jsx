@@ -10,6 +10,16 @@ function tokenFromFragment() {
   return String(parameters.get('token') || '').trim()
 }
 
+function safeRedirectPath(search) {
+  const params = new URLSearchParams(String(search || ''))
+  const candidate = String(params.get('redirect') || '').trim()
+  if (!candidate.startsWith('/') || candidate.startsWith('//') || candidate.includes('\\')) return '/account'
+  const allowedRoots = ['/account', '/shop', '/cart', '/checkout', '/portal']
+  return allowedRoots.some((root) => candidate === root || candidate.startsWith(`${root}/`))
+    ? candidate
+    : '/account'
+}
+
 export default function AccountResetPasswordPage() {
   usePageMeta({ title: 'Reset Password', description: 'Reset your Manley Lifting account password.', noIndex: true })
   const location = useLocation()
@@ -22,6 +32,8 @@ export default function AccountResetPasswordPage() {
   const [message, setMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
   const [token, setToken] = useState(() => tokenFromFragment())
+  const redirectTo = safeRedirectPath(location.search)
+  const loginWithRedirect = `/account/login?redirect=${encodeURIComponent(redirectTo)}`
 
   useEffect(() => {
     setToken(tokenFromFragment())
@@ -118,7 +130,7 @@ export default function AccountResetPasswordPage() {
         </form>
       )}
       <div className="mt-5 flex flex-wrap gap-3 text-sm">
-        <Link className="font-semibold text-[#123A7A]" to="/account/login">Back to sign in</Link>
+        <Link className="font-semibold text-[#123A7A]" to={loginWithRedirect}>{isCompletionMode ? 'Sign in with new password' : 'Back to sign in'}</Link>
         <Link className="font-semibold text-[#123A7A]" to="/account/resend-verification">Resend verification</Link>
       </div>
     </AccountLayout>

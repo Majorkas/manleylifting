@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { CircleAlert, LoaderCircle, MailCheck } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import AccountLayout from '../components/AccountLayout'
 import { verifyCommerceEmail } from '../utils/portalApi'
 import usePageMeta from '../utils/usePageMeta'
@@ -10,14 +10,27 @@ function tokenFromFragment() {
   return String(parameters.get('token') || '').trim()
 }
 
+function safeRedirectPath(search) {
+  const params = new URLSearchParams(String(search || ''))
+  const candidate = String(params.get('redirect') || '').trim()
+  if (!candidate.startsWith('/') || candidate.startsWith('//') || candidate.includes('\\')) return '/account'
+  const allowedRoots = ['/account', '/shop', '/cart', '/checkout', '/portal']
+  return allowedRoots.some((root) => candidate === root || candidate.startsWith(`${root}/`))
+    ? candidate
+    : '/account'
+}
+
 export default function AccountVerifyEmailPage() {
   usePageMeta({ title: 'Verify Email', description: 'Verify your Manley Lifting account email.', noIndex: true })
+  const location = useLocation()
   const [verification] = useState(() => {
     const token = tokenFromFragment()
     return { token, initialState: token ? 'verifying' : 'missing' }
   })
   const [state, setState] = useState(verification.initialState)
   const startedRef = useRef(false)
+  const redirectTo = safeRedirectPath(location.search)
+  const loginWithRedirect = `/account/login?redirect=${encodeURIComponent(redirectTo)}`
 
   useEffect(() => {
     if (startedRef.current) return
@@ -44,7 +57,7 @@ export default function AccountVerifyEmailPage() {
       <h2 className="mt-5 text-2xl font-extrabold text-[#123A7A]">{successful ? 'Account activated' : pending ? 'Checking link' : 'Request a new link'}</h2>
       {!pending && (
         <div className="mt-7 flex flex-wrap gap-3">
-          {successful && <Link className="rounded-md bg-[#123A7A] px-4 py-2.5 font-semibold text-white" to="/account/login">Sign in</Link>}
+          {successful && <Link className="rounded-md bg-[#123A7A] px-4 py-2.5 font-semibold text-white" to={loginWithRedirect}>Sign in</Link>}
           {!successful && <Link className="rounded-md bg-[#123A7A] px-4 py-2.5 font-semibold text-white" to="/account/resend-verification">Resend verification</Link>}
           <Link className="rounded-md border border-slate-300 px-4 py-2.5 font-semibold text-[#123A7A]" to="/">Home</Link>
         </div>

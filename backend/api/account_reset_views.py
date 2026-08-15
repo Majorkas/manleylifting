@@ -12,7 +12,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from .account_emails import send_password_reset_email
+from .account_emails import send_password_reset_email, send_security_notification_email
 from .account_tokens import consume_account_action_token, issue_account_action_token
 from .audit import log_portal_audit_event
 from .auth_sessions import revoke_user_sessions
@@ -124,4 +124,12 @@ class PasswordResetCompleteView(APIView):
         user = get_user_model().objects.filter(pk=completed_user_id).first()
         if user is not None:
             log_password_reset_completion(request, user)
+            send_security_notification_email(
+                recipient_email=user.email,
+                subject="Your Manley Lifting password was changed",
+                text_body=(
+                    "Your Manley Lifting password was reset successfully.\n\n"
+                    "If you did not make this change, sign in as soon as possible and review your active sessions."
+                ),
+            )
         return Response({"ok": True})

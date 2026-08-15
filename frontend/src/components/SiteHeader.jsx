@@ -1,4 +1,7 @@
+import { useEffect, useState } from 'react'
+import { User } from 'lucide-react'
 import { Link } from 'react-router-dom'
+import { hasPortalSession, SESSION_CHANGED_EVENT } from '../utils/portalApi'
 
 export default function SiteHeader({
   navbarLogo,
@@ -11,6 +14,25 @@ export default function SiteHeader({
   cartCount = 0,
   onCartClick,
 }) {
+  const [isAuthenticated, setIsAuthenticated] = useState(() => hasPortalSession())
+
+  useEffect(() => {
+    function refreshAuthState() {
+      setIsAuthenticated(hasPortalSession())
+    }
+
+    refreshAuthState()
+    window.addEventListener(SESSION_CHANGED_EVENT, refreshAuthState)
+    window.addEventListener('portalSessionExpired', refreshAuthState)
+    window.addEventListener('storage', refreshAuthState)
+
+    return () => {
+      window.removeEventListener(SESSION_CHANGED_EVENT, refreshAuthState)
+      window.removeEventListener('portalSessionExpired', refreshAuthState)
+      window.removeEventListener('storage', refreshAuthState)
+    }
+  }, [])
+
   const items = navItems.length
     ? navItems
     : [
@@ -28,6 +50,7 @@ export default function SiteHeader({
 
   const logoVisible = isShopHeader || isScrolled || isMobileMenuOpen
   const showCartButton = isShopHeader && typeof onCartClick === 'function'
+  const accountDestination = isAuthenticated ? '/account' : '/account/login'
 
   return (
     <header className={headerClassName}>
@@ -59,6 +82,21 @@ export default function SiteHeader({
                     {item.label}
                   </a>
                 ),
+              )}
+
+              {isAuthenticated ? (
+                <Link
+                  to={accountDestination}
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-300 text-[#123A7A] transition hover:border-[#123A7A] hover:bg-[#123A7A]/5"
+                  aria-label="Open account profile"
+                  title="My account"
+                >
+                  <User size={18} aria-hidden="true" />
+                </Link>
+              ) : (
+                <Link to={accountDestination} className="nav-link">
+                  Login
+                </Link>
               )}
             </nav>
 
@@ -117,6 +155,10 @@ export default function SiteHeader({
               </a>
             ),
           )}
+
+          <Link to={accountDestination} onClick={onCloseMobileMenu}>
+            {isAuthenticated ? 'My account' : 'Login'}
+          </Link>
         </nav>
       </div>
     </header>

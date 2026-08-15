@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, Package2, ReceiptText } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import AccountLayout from '../components/AccountLayout'
+import AccountSectionTabs from '../components/AccountSectionTabs'
 import { getAccountOrders } from '../utils/portalApi'
 import usePageMeta from '../utils/usePageMeta'
 
@@ -63,16 +64,19 @@ export default function AccountOrdersPage() {
       eyebrow="Orders"
       title="Order history"
       intro="Review recent purchases and keep track of your current order status."
+      headerAction={(
+        <Link to="/account" className="inline-flex items-center gap-2 text-sm font-semibold text-[#123A7A]">
+          <ArrowLeft size={16} aria-hidden="true" /> Back to account
+        </Link>
+      )}
     >
+      <AccountSectionTabs />
       <div className="space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 shadow-sm">
           <div>
             <p className="text-sm font-semibold text-slate-900">{summary.count} order{summary.count === 1 ? '' : 's'} saved</p>
             <p className="text-sm text-slate-600">Latest purchase: {summary.count ? formatCurrency(summary.latestAmount, summary.latestCurrency) : 'No orders yet'}</p>
           </div>
-          <Link to="/account" className="inline-flex items-center gap-2 text-sm font-semibold text-[#123A7A]">
-            <ArrowLeft size={16} aria-hidden="true" /> Back to account
-          </Link>
         </div>
 
         {errorMessage && <div role="alert" className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{errorMessage}</div>}

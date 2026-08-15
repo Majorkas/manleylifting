@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { ArrowLeft, MapPin, Plus, Trash2 } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import AccountLayout from '../components/AccountLayout'
+import AccountSectionTabs from '../components/AccountSectionTabs'
 import PortalToast from '../components/PortalToast'
 import { createAccountAddress, deleteAccountAddress, getAccountAddresses, updateAccountAddress } from '../utils/portalApi'
 import usePageMeta from '../utils/usePageMeta'
@@ -91,7 +92,7 @@ export default function AccountAddressesPage() {
     getAccountAddresses()
       .then((result) => {
         if (!cancelled) {
-          setAddresses((current) => {
+          setAddresses(() => {
             const merged = Array.isArray(result) ? [...result] : []
             if (recentAddress) {
               const alreadyExists = merged.some((address) => String(address.id) === String(recentAddress.id))
@@ -224,16 +225,19 @@ export default function AccountAddressesPage() {
       eyebrow="Addresses"
       title="Saved addresses"
       intro="Keep your delivery details handy for faster checkout."
+      headerAction={(
+        <Link to="/account" className="inline-flex items-center gap-2 text-sm font-semibold text-[#123A7A]">
+          <ArrowLeft size={16} aria-hidden="true" /> Back to account
+        </Link>
+      )}
     >
+      <AccountSectionTabs />
       <div className="space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 shadow-sm">
           <div>
             <p className="text-sm font-semibold text-slate-900">{addresses.length} address{addresses.length === 1 ? '' : 'es'} saved</p>
             <p className="text-sm text-slate-600">Use these for future orders and delivery updates.</p>
           </div>
-          <Link to="/account" className="inline-flex items-center gap-2 text-sm font-semibold text-[#123A7A]">
-            <ArrowLeft size={16} aria-hidden="true" /> Back to account
-          </Link>
         </div>
 
         {errorMessage && <div role="alert" className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{errorMessage}</div>}

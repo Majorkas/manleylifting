@@ -30,6 +30,7 @@ from .auth_sessions import (
     token_has_current_session_generation,
 )
 from .auth_backends import resolve_login_user
+from .account_emails import send_security_notification_email
 from .models import AccountSecurityState, AccountSession, Certificate, Company, Equipment, InspectionReport, ReportImage, ReportRevision, Site, UserProfile
 
 REPORT_CHECKLIST_ALLOWED_STATUSES = {
@@ -432,6 +433,7 @@ class AccountCapabilitiesSerializer(serializers.Serializer):
     can_shop = serializers.BooleanField()
     can_view_orders = serializers.BooleanField()
     can_access_portal = serializers.BooleanField()
+    can_fulfill_orders = serializers.BooleanField(required=False)
 
 
 class AccountBootstrapSerializer(serializers.Serializer):
@@ -525,11 +527,6 @@ class PasswordResetCompleteSerializer(serializers.Serializer):
         except DjangoValidationError as error:
             raise serializers.ValidationError(list(error.messages)) from error
         return value
-
-
-class PortalChangePasswordSerializer(serializers.Serializer):
-    current_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
-    new_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
 
 
 class AccountChangePasswordSerializer(serializers.Serializer):
@@ -687,7 +684,7 @@ class PortalTokenObtainPairSerializer(TokenObtainPairSerializer):
                 {"detail": "Account temporarily locked due to failed login attempts. Try again in 15 minutes."}
             )
 
-        user = resolve_login_user(username)
+        user = resolve_login_user(username, require_verified_email=False)
 
         if user is None:
             get_user_model()().set_password(password)
@@ -699,6 +696,17 @@ class PortalTokenObtainPairSerializer(TokenObtainPairSerializer):
                     {"detail": "Account temporarily locked due to failed login attempts. Try again in 15 minutes."}
                 )
             raise serializers.ValidationError({"detail": "Invalid credentials"})
+
+        profile = getattr(user, "commerce_profile", None)
+        if profile is not None and not profile.has_verified_email():
+            raise serializers.ValidationError(
+                {
+                    "detail": (
+                        "Verify your email before signing in. "
+                        "Use resend verification if you need a new link."
+                    )
+                }
+            )
 
         if not user.is_active:
             raise serializers.ValidationError({"detail": "Account is disabled"})
@@ -716,7 +724,20 @@ class PortalTokenObtainPairSerializer(TokenObtainPairSerializer):
         with transaction.atomic():
             data = super().validate(attrs)
             refresh_token = self.token_class(data["refresh"])
-            create_account_session(user=self.user, refresh_token=refresh_token)
+            _, is_new_device = create_account_session(
+                user=self.user,
+                refresh_token=refresh_token,
+                request=self.context.get("request"),
+            )
+            if is_new_device:
+                send_security_notification_email(
+                    recipient_email=self.user.email,
+                    subject="New sign-in to your Manley Lifting account",
+                    text_body=(
+                        "A new sign-in to your Manley Lifting account just created a session.\n\n"
+                        "If this wasn't you, sign in immediately and review your active sessions."
+                    ),
+                )
             data["refresh"] = str(refresh_token)
             data["access"] = str(refresh_token.access_token)
             return data

@@ -1,6 +1,7 @@
 import base64
 import secrets
 import time
+from urllib.parse import quote
 from uuid import UUID
 
 from django.conf import settings
@@ -21,7 +22,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from .account_emails import send_email_change_email, send_verification_email
+from .account_emails import send_email_change_email, send_security_notification_email, send_verification_email
 from .account_tokens import consume_account_action_token, issue_account_action_token
 from .audit import log_portal_audit_event
 from .auth_sessions import SESSION_ID_CLAIM, revoke_account_session, revoke_user_sessions
@@ -47,6 +48,18 @@ REGISTRATION_RESPONSE = {
 RESEND_RESPONSE = {
     "detail": "If an unverified account exists, a verification email will be sent."
 }
+
+
+OPERATIONS_ACCOUNT_ROLES = {
+    UserProfile.ROLE_OWNER,
+    UserProfile.ROLE_OFFICE_STAFF,
+    UserProfile.ROLE_STAFF,
+}
+
+
+def _is_operations_account(user):
+    profile = UserProfile.objects.filter(user_id=user.pk).first()
+    return bool(profile and profile.role in OPERATIONS_ACCOUNT_ROLES)
 
 
 def _queue_verification_email(*, recipient_email, raw_token):
@@ -95,6 +108,39 @@ def generate_totp_code(secret):
     return str(binary % 1000000).zfill(6)
 
 
+def _mfa_issuer_name():
+    issuer = str(getattr(settings, "ACCOUNT_MFA_ISSUER", "") or "").strip()
+    return issuer or "Manley Lifting"
+
+
+def _mfa_account_label(user):
+    email = str(getattr(user, "email", "") or "").strip()
+    username = str(getattr(user, "username", "") or "").strip()
+    return email or username or f"user-{user.pk}"
+
+
+def _build_mfa_otpauth_uri(*, user, secret):
+    issuer = _mfa_issuer_name()
+    label = f"{issuer}:{_mfa_account_label(user)}"
+    return f"otpauth://totp/{quote(label)}?secret={quote(secret)}&issuer={quote(issuer)}"
+
+
+def _build_mfa_qr_code_url(otpauth_uri):
+    # Render with a local QR image when available; otherwise fall back to a hosted QR URL.
+    try:
+        import io
+
+        import qrcode
+    except Exception:
+        return f"https://quickchart.io/qr?size=240&text={quote(otpauth_uri, safe='')}"
+
+    image = qrcode.make(otpauth_uri)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
 @method_decorator(csrf_protect, name="dispatch")
 class CommerceRegistrationView(APIView):
     authentication_classes = []
@@ -129,10 +175,21 @@ class CommerceRegistrationView(APIView):
         password_hash = make_password(payload["password"])
         try:
             with transaction.atomic():
-                identity_exists = user_model.objects.filter(
-                    Q(email__iexact=email) | Q(username__iexact=email)
-                ).exists()
-                if identity_exists:
+                existing_user = (
+                    user_model.objects.select_related("commerce_profile")
+                    .filter(Q(email__iexact=email) | Q(username__iexact=email))
+                    .order_by("id")
+                    .first()
+                )
+                if existing_user is not None:
+                    profile = getattr(existing_user, "commerce_profile", None)
+                    if (
+                        profile is not None
+                        and profile.disabled_at is None
+                        and profile.anonymized_at is None
+                        and not profile.has_verified_email()
+                    ):
+                        _issue_verification(user=existing_user)
                     return Response(
                         REGISTRATION_RESPONSE,
                         status=status.HTTP_202_ACCEPTED,
@@ -375,6 +432,8 @@ class AccountOrdersView(APIView):
         }
 
     def _has_verified_commerce_access(self, user):
+        if _is_operations_account(user):
+            return False
         profile = CommerceCustomerProfile.objects.filter(user=user).first()
         if profile is None:
             return True
@@ -498,6 +557,8 @@ class AccountAddressesView(APIView):
         return profile
 
     def _has_verified_commerce_access(self, user):
+        if _is_operations_account(user):
+            return False
         profile = CommerceCustomerProfile.objects.filter(user=user).first()
         if profile is None:
             return True
@@ -614,6 +675,14 @@ def account_change_password(request):
         target_id=str(request.user.pk),
         details={"changed": True},
     )
+    send_security_notification_email(
+        recipient_email=request.user.email,
+        subject="Your Manley Lifting password was changed",
+        text_body=(
+            "Your Manley Lifting password was changed successfully.\n\n"
+            "If you did not make this change, sign in immediately and review your active sessions."
+        ),
+    )
     return Response({"ok": True})
 
 
@@ -638,6 +707,8 @@ def account_mfa_setup(request):
     security_state.mfa_secret = ""
     security_state.mfa_recovery_codes = []
     security_state.save(update_fields=["mfa_pending_secret", "mfa_enabled", "mfa_secret", "mfa_recovery_codes", "updated_at"])
+    otpauth_uri = _build_mfa_otpauth_uri(user=request.user, secret=secret)
+    qr_code_url = _build_mfa_qr_code_url(otpauth_uri)
 
     log_portal_audit_event(
         request=request,
@@ -646,7 +717,15 @@ def account_mfa_setup(request):
         target_id=str(request.user.pk),
         details={"started": True},
     )
-    return Response({"setupInProgress": True, "secret": secret, "recoveryCodes": []})
+    return Response(
+        {
+            "setupInProgress": True,
+            "secret": secret,
+            "otpauthUri": otpauth_uri,
+            "qrCodeUrl": qr_code_url,
+            "recoveryCodes": [],
+        }
+    )
 
 
 @api_view(["POST"])
@@ -678,6 +757,14 @@ def account_mfa_verify(request):
         target_type="account",
         target_id=str(request.user.pk),
         details={"enabled": True},
+    )
+    send_security_notification_email(
+        recipient_email=request.user.email,
+        subject="Multi-factor authentication was enabled on your account",
+        text_body=(
+            "Multi-factor authentication was enabled on your Manley Lifting account.\n\n"
+            "If you did not make this change, sign in immediately and review your active sessions."
+        ),
     )
     return Response({"ok": True, "recoveryCodes": recovery_codes})
 
@@ -876,10 +963,6 @@ def account_change_email_request(request):
             target_email=new_email,
             lifetime=settings.ACCOUNT_VERIFY_TOKEN_LIFETIME,
         )
-        profile.email_verified_at = None
-        profile.verified_email = ""
-        profile.activation_pending = False
-        profile.save(update_fields=["email_verified_at", "verified_email", "activation_pending", "updated_at"])
 
     log_portal_audit_event(
         request=request,
@@ -900,6 +983,8 @@ def account_change_email_complete(request):
 
     def apply_email_change(action_token):
         user = get_user_model().objects.select_for_update().get(pk=action_token.user_id)
+        old_email = user.email
+        now = timezone.now()
         profile = CommerceCustomerProfile.objects.select_for_update().filter(
             user=user,
             disabled_at__isnull=True,
@@ -910,10 +995,27 @@ def account_change_email_complete(request):
 
         user.email = action_token.target_email
         user.save(update_fields=["email"])
-        profile.verified_email = ""
-        profile.email_verified_at = None
+        profile.verified_email = action_token.target_email
+        profile.email_verified_at = now
         profile.activation_pending = False
         profile.save(update_fields=["verified_email", "email_verified_at", "activation_pending", "updated_at"])
+        send_security_notification_email(
+            recipient_email=old_email,
+            subject="Your Manley Lifting email address was changed",
+            text_body=(
+                f"Your Manley Lifting account email was changed to {action_token.target_email}.\n\n"
+                "If you did not make this change, sign in immediately and review your account security settings."
+            ),
+        )
+        if action_token.target_email and action_token.target_email.lower() != old_email.lower():
+            send_security_notification_email(
+                recipient_email=action_token.target_email,
+                subject="Your Manley Lifting email address was changed",
+                text_body=(
+                    "Your Manley Lifting account email change has completed successfully.\n\n"
+                    "If you did not make this change, sign in immediately and review your account security settings."
+                ),
+            )
         return user.pk
 
     completed_user_id = consume_account_action_token(
@@ -930,6 +1032,10 @@ def account_change_email_complete(request):
 @permission_classes([IsAuthenticated])
 @throttle_classes([PortalMethodRateThrottle])
 def account_bootstrap(request):
+    portal_profile = UserProfile.objects.filter(user_id=request.user.pk).first()
+    is_operations_account = bool(
+        portal_profile and portal_profile.role in OPERATIONS_ACCOUNT_ROLES
+    )
     commerce_profile = CommerceCustomerProfile.objects.filter(
         user_id=request.user.pk
     ).first()
@@ -958,11 +1064,10 @@ def account_bootstrap(request):
         "full_name": request.user.get_full_name() or "",
         "email_verified": email_verified,
         "capabilities": {
-            "can_shop": commerce_enabled,
-            "can_view_orders": commerce_enabled,
-            "can_access_portal": UserProfile.objects.filter(
-                user_id=request.user.pk
-            ).exists(),
+            "can_shop": commerce_enabled and not is_operations_account,
+            "can_view_orders": commerce_enabled and not is_operations_account,
+            "can_access_portal": bool(portal_profile),
+            "can_fulfill_orders": is_operations_account,
         },
     }
     if phone:

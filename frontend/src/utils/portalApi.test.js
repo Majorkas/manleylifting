@@ -86,6 +86,23 @@ describe('portalApi error messaging', () => {
     )
   })
 
+  it('includes mfa_code in login payload when provided', async () => {
+    fetch.mockResolvedValueOnce(mockJsonResponse(200, { access: 'access-token' }))
+
+    await portalLogin('owner', 'password123', ' 123456 ')
+
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/auth/token/'),
+      expect.objectContaining({
+        body: JSON.stringify({
+          username: 'owner',
+          password: 'password123',
+          mfa_code: '123456',
+        }),
+      }),
+    )
+  })
+
   it('submits commerce registration using the CSRF-protected account contract', async () => {
     fetch.mockResolvedValueOnce(mockJsonResponse(202, { detail: 'Check your email.' }))
 
@@ -153,6 +170,7 @@ describe('portalApi error messaging', () => {
         can_shop: true,
         can_view_orders: true,
         can_access_portal: false,
+        can_fulfill_orders: false,
       },
     }))
 
@@ -165,6 +183,7 @@ describe('portalApi error messaging', () => {
         canShop: true,
         canViewOrders: true,
         canAccessPortal: false,
+        canFulfillOrders: false,
       },
     })
   })
