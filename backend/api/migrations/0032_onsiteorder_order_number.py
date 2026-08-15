@@ -3,6 +3,19 @@
 from django.db import migrations, models
 
 
+def populate_legacy_order_numbers(apps, schema_editor):
+    OnsiteOrder = apps.get_model('api', 'OnsiteOrder')
+
+    for order in OnsiteOrder.objects.filter(order_number='').order_by('id'):
+        # Keep legacy backfill deterministic and short while guaranteeing uniqueness.
+        order.order_number = f"MNL-LEGACY-{order.id}"
+        order.save(update_fields=['order_number'])
+
+
+def noop_reverse(apps, schema_editor):
+    return
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -11,6 +24,12 @@ class Migration(migrations.Migration):
 
     operations = [
         migrations.AddField(
+            model_name='onsiteorder',
+            name='order_number',
+            field=models.CharField(blank=True, db_index=True, default='', max_length=32),
+        ),
+        migrations.RunPython(populate_legacy_order_numbers, noop_reverse),
+        migrations.AlterField(
             model_name='onsiteorder',
             name='order_number',
             field=models.CharField(blank=True, db_index=True, default='', max_length=32, unique=True),

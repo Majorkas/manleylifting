@@ -525,7 +525,11 @@ class AccountSessionRevocationTests(TestCase):
         )
 
         self.assertEqual(setup_response.status_code, 200)
-        self.assertTrue(setup_response.json()["setupInProgress"])
+        setup_body = setup_response.json()
+        self.assertTrue(setup_body["setupInProgress"])
+        self.assertTrue(setup_body["secret"])
+        self.assertTrue(setup_body["otpauthUri"].startswith("otpauth://totp/"))
+        self.assertTrue(setup_body["qrCodeUrl"].startswith(("data:image/png;base64,", "https://quickchart.io/qr?")))
         self.assertEqual(verify_response.status_code, 200)
         state.refresh_from_db()
         self.assertTrue(state.mfa_enabled)
@@ -538,7 +542,12 @@ class AccountSessionRevocationTests(TestCase):
             password="Strong-Password-123!",
             is_active=True,
         )
-        CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        CommerceCustomerProfile.objects.create(
+            user=user,
+            activation_pending=False,
+            verified_email=user.email,
+            email_verified_at=timezone.now(),
+        )
         state = AccountSecurityState.objects.get(user=user)
         state.mfa_enabled = True
         state.mfa_pending_secret = ""
@@ -561,6 +570,37 @@ class AccountSessionRevocationTests(TestCase):
         self.assertEqual(missing_code_response.status_code, 400)
         self.assertEqual(valid_code_response.status_code, 200)
         self.assertIn("access", valid_code_response.json())
+
+    @patch("api.account_views.send_security_notification_email")
+    def test_account_mfa_verify_sends_security_notification(self, mock_security_send):
+        user = get_user_model().objects.create_user(
+            username="account-mfa-notification-user",
+            email="account-mfa-notification@example.com",
+            password="Strong-Password-123!",
+            is_active=True,
+        )
+        CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        setup_response = client.post(
+            "/api/account/mfa/setup/",
+            data={"current_password": "Strong-Password-123!"},
+            format="json",
+        )
+        security_state = AccountSecurityState.objects.get(user=user)
+        with self.captureOnCommitCallbacks(execute=True):
+            verify_response = client.post(
+                "/api/account/mfa/verify/",
+                data={"code": generate_totp_code(security_state.mfa_pending_secret)},
+                format="json",
+            )
+
+        self.assertEqual(setup_response.status_code, 200)
+        self.assertTrue(setup_response.json()["setupInProgress"])
+        self.assertEqual(verify_response.status_code, 200)
+        self.assertEqual(mock_security_send.call_count, 1)
+        self.assertEqual(mock_security_send.call_args.kwargs["recipient_email"], user.email)
 
     def test_account_security_events_lists_recent_sensitive_actions(self):
         user = get_user_model().objects.create_user(
@@ -879,7 +919,7 @@ class AccountSessionRevocationTests(TestCase):
         client.force_authenticate(user=stale_user)
 
         response = client.post(
-            "/api/portal/me/change-password/",
+            "/api/account/change-password/",
             data={
                 "current_password": "session-password-123",
                 "new_password": "replacement-password-123!",
@@ -1063,9 +1103,10 @@ class AccountBootstrapTests(TestCase):
                 "full_name": "Shared Customer",
                 "email_verified": True,
                 "capabilities": {
-                    "can_shop": True,
-                    "can_view_orders": True,
+                    "can_shop": False,
+                    "can_view_orders": False,
                     "can_access_portal": True,
+                    "can_fulfill_orders": True,
                 },
             },
         )
@@ -1086,6 +1127,7 @@ class AccountBootstrapTests(TestCase):
                 "can_shop": True,
                 "can_view_orders": True,
                 "can_access_portal": False,
+                "can_fulfill_orders": False,
             },
         )
 
@@ -1101,6 +1143,7 @@ class AccountBootstrapTests(TestCase):
                 "can_shop": False,
                 "can_view_orders": False,
                 "can_access_portal": True,
+                "can_fulfill_orders": False,
             },
         )
         self.assertFalse(CommerceCustomerProfile.objects.filter(user=self.user).exists())
@@ -1130,6 +1173,7 @@ class AccountBootstrapTests(TestCase):
             self.assertEqual(response.json()["email_verified"], expected_email_verified)
             self.assertFalse(response.json()["capabilities"]["can_shop"])
             self.assertFalse(response.json()["capabilities"]["can_view_orders"])
+            self.assertFalse(response.json()["capabilities"]["can_fulfill_orders"])
 
     def test_read_does_not_create_authorization_state(self):
         response = self.client.get("/api/account/bootstrap/")
@@ -1143,6 +1187,7 @@ class AccountBootstrapTests(TestCase):
                 "can_shop": False,
                 "can_view_orders": False,
                 "can_access_portal": False,
+                "can_fulfill_orders": False,
             },
         )
 
@@ -1281,6 +1326,24 @@ class CommerceRegistrationTests(TestCase):
         self.assertFalse(CommerceCustomerProfile.objects.filter(user=existing_user).exists())
         self.assertFalse(AccountActionToken.objects.filter(user=existing_user).exists())
         mock_send.assert_not_called()
+
+    @patch("api.account_views.send_verification_email")
+    def test_existing_pending_ecommerce_email_reissues_verification(self, mock_send):
+        first_response = self.register(mock_send, email="pending@example.com")
+        self.assertEqual(first_response.status_code, 202)
+
+        mock_send.reset_mock()
+        with self.captureOnCommitCallbacks(execute=True):
+            second_response = self.client.post(
+                "/api/account/register/",
+                data={**self.registration_payload, "email": "PENDING@example.com"},
+                format="json",
+            )
+
+        self.assertEqual(second_response.status_code, 202)
+        self.assertEqual(second_response.json(), self.generic_registration_response)
+        self.assertEqual(get_user_model().objects.filter(email="pending@example.com").count(), 1)
+        mock_send.assert_called_once()
 
     @patch("api.account_views.send_verification_email")
     def test_registration_validates_password_and_legal_acceptance(self, mock_send):
@@ -1483,18 +1546,107 @@ class CommerceRegistrationTests(TestCase):
             data={"token": raw_token},
             format="json",
         )
-        verified_response = self.client.post(
-            "/api/auth/token/",
-            data={
-                "username": "NEW-CUSTOMER@example.com",
-                "password": self.registration_payload["password"],
-            },
-            format="json",
-        )
+        with self.captureOnCommitCallbacks(execute=True), patch("api.serializers.send_security_notification_email") as mock_security_send:
+            verified_response = self.client.post(
+                "/api/auth/token/",
+                data={
+                    "username": "NEW-CUSTOMER@example.com",
+                    "password": self.registration_payload["password"],
+                },
+                format="json",
+            )
 
         self.assertEqual(pending_response.status_code, 400)
+        self.assertEqual(
+            pending_response.json().get("detail"),
+            ["Verify your email before signing in. Use resend verification if you need a new link."],
+        )
         self.assertEqual(verified_response.status_code, 200)
         self.assertIn("access", verified_response.json())
+        mock_security_send.assert_called_once()
+        self.assertEqual(mock_security_send.call_args.kwargs["recipient_email"], "new-customer@example.com")
+
+    @patch("api.serializers.send_security_notification_email")
+    def test_email_login_prefers_ecommerce_email_over_username_collision(self, mock_security_send):
+        customer = get_user_model().objects.create_user(
+            username="commerce_customer_unique",
+            email="customer-login@example.com",
+            password="A-Strong-Commerce-Password-123!",
+            is_active=True,
+        )
+        CommerceCustomerProfile.objects.create(
+            user=customer,
+            activation_pending=False,
+            verified_email="customer-login@example.com",
+            email_verified_at=timezone.now(),
+        )
+
+        # Simulate a portal/staff identity whose username collides with the customer's email string.
+        get_user_model().objects.create_user(
+            username="customer-login@example.com",
+            email="different-user@example.com",
+            password="Different-Password-123!",
+            is_active=True,
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                "/api/auth/token/",
+                data={
+                    "username": "customer-login@example.com",
+                    "password": "A-Strong-Commerce-Password-123!",
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("access", response.json())
+        mock_security_send.assert_called_once()
+        self.assertEqual(mock_security_send.call_args.kwargs["recipient_email"], "customer-login@example.com")
+
+    @patch("api.serializers.send_security_notification_email")
+    def test_login_security_email_only_sends_for_new_device(self, mock_security_send):
+        user = get_user_model().objects.create_user(
+            username="new-device-notify-user",
+            email="new-device-notify@example.com",
+            password="A-Strong-Commerce-Password-123!",
+            is_active=True,
+        )
+        CommerceCustomerProfile.objects.create(
+            user=user,
+            activation_pending=False,
+            verified_email=user.email,
+            email_verified_at=timezone.now(),
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            first_login = self.client.post(
+                "/api/auth/token/",
+                data={"username": user.email, "password": "A-Strong-Commerce-Password-123!"},
+                format="json",
+                HTTP_USER_AGENT="BrowserOne/1.0",
+            )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            second_login_same_device = self.client.post(
+                "/api/auth/token/",
+                data={"username": user.email, "password": "A-Strong-Commerce-Password-123!"},
+                format="json",
+                HTTP_USER_AGENT="BrowserOne/1.0",
+            )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            third_login_new_device = self.client.post(
+                "/api/auth/token/",
+                data={"username": user.email, "password": "A-Strong-Commerce-Password-123!"},
+                format="json",
+                HTTP_USER_AGENT="BrowserTwo/2.0",
+            )
+
+        self.assertEqual(first_login.status_code, 200)
+        self.assertEqual(second_login_same_device.status_code, 200)
+        self.assertEqual(third_login_new_device.status_code, 200)
+        self.assertEqual(mock_security_send.call_count, 2)
 
     @patch("api.account_reset_views.send_password_reset_email")
     def test_password_reset_request_issues_single_use_token_and_sends_email(self, mock_send):
@@ -1559,7 +1711,8 @@ class CommerceRegistrationTests(TestCase):
         self.assertFalse(user.check_password("Old-Strong-Password-123!"))
         self.assertIsNotNone(action_token.consumed_at)
 
-    def test_password_reset_completion_revokes_existing_sessions_and_logs_security_event(self):
+    @patch("api.account_reset_views.send_security_notification_email")
+    def test_password_reset_completion_revokes_existing_sessions_and_logs_security_event(self, mock_security_send):
         user = get_user_model().objects.create_user(
             username="reset-session-user",
             email="reset-session@example.com",
@@ -1578,11 +1731,12 @@ class CommerceRegistrationTests(TestCase):
             lifetime=timedelta(hours=1),
         )
 
-        response = self.client.post(
-            "/api/account/password-reset/complete/",
-            data={"token": raw_token, "new_password": "Reset-Strong-Password-789!"},
-            format="json",
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                "/api/account/password-reset/complete/",
+                data={"token": raw_token, "new_password": "Reset-Strong-Password-789!"},
+                format="json",
+            )
 
         session.refresh_from_db()
         state = AccountSecurityState.objects.get(user=user)
@@ -1591,8 +1745,17 @@ class CommerceRegistrationTests(TestCase):
         self.assertIsNotNone(session.revoked_at)
         self.assertGreater(state.session_generation, 0)
         self.assertIsNotNone(security_event)
+        mock_security_send.assert_called_once_with(
+            recipient_email=user.email,
+            subject="Your Manley Lifting password was changed",
+            text_body=(
+                "Your Manley Lifting password was reset successfully.\n\n"
+                "If you did not make this change, sign in as soon as possible and review your active sessions."
+            ),
+        )
 
-    def test_account_password_change_requires_current_password_and_revokes_sessions(self):
+    @patch("api.account_views.send_security_notification_email")
+    def test_account_password_change_requires_current_password_and_revokes_sessions(self, mock_security_send):
         user = get_user_model().objects.create_user(
             username="account-password-user",
             email="account-password@example.com",
@@ -1608,11 +1771,12 @@ class CommerceRegistrationTests(TestCase):
             data={"current_password": "wrong-password", "new_password": "Cobalt-Glacier-44!"},
             format="json",
         )
-        success_response = self.client.post(
-            "/api/account/change-password/",
-            data={"current_password": "Old-Strong-Password-123!", "new_password": "Cobalt-Glacier-44!"},
-            format="json",
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            success_response = self.client.post(
+                "/api/account/change-password/",
+                data={"current_password": "Old-Strong-Password-123!", "new_password": "Cobalt-Glacier-44!"},
+                format="json",
+            )
 
         user.refresh_from_db()
         state = AccountSecurityState.objects.get(user=user)
@@ -1620,6 +1784,14 @@ class CommerceRegistrationTests(TestCase):
         self.assertEqual(success_response.status_code, 200)
         self.assertTrue(user.check_password("Cobalt-Glacier-44!"))
         self.assertEqual(state.session_generation, initial_generation + 1)
+        mock_security_send.assert_called_once_with(
+            recipient_email=user.email,
+            subject="Your Manley Lifting password was changed",
+            text_body=(
+                "Your Manley Lifting password was changed successfully.\n\n"
+                "If you did not make this change, sign in immediately and review your active sessions."
+            ),
+        )
 
     def test_account_logout_all_revokes_all_active_sessions(self):
         user = get_user_model().objects.create_user(
@@ -1755,6 +1927,9 @@ class CommerceRegistrationTests(TestCase):
         self.assertEqual(response.json(), {"ok": True})
         token = AccountActionToken.objects.get(user=user, purpose=AccountActionToken.Purpose.EMAIL_CHANGE)
         self.assertEqual(token.target_email, "new-email@example.com")
+        profile.refresh_from_db()
+        self.assertEqual(profile.verified_email, user.email)
+        self.assertIsNotNone(profile.email_verified_at)
         self.assertTrue(
             AuditLog.objects.filter(actor=user, action="account.email_change_request", target_type="account", target_id=str(user.pk)).exists()
         )
@@ -1785,7 +1960,8 @@ class CommerceRegistrationTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json().get("detail"), "Bot verification failed")
 
-    def test_account_email_change_completion_updates_email_and_clears_verification(self):
+    @patch("api.account_views.send_security_notification_email")
+    def test_account_email_change_completion_updates_email_and_marks_verified(self, mock_security_send):
         user = get_user_model().objects.create_user(
             username="account-email-confirm-user",
             email="current-email@example.com",
@@ -1805,19 +1981,24 @@ class CommerceRegistrationTests(TestCase):
             lifetime=timedelta(hours=1),
         )
 
-        response = self.client.post(
-            "/api/account/change-email/complete/",
-            data={"token": raw_token},
-            format="json",
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                "/api/account/change-email/complete/",
+                data={"token": raw_token},
+                format="json",
+            )
 
         user.refresh_from_db()
         profile.refresh_from_db()
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"ok": True})
         self.assertEqual(user.email, "updated-email@example.com")
-        self.assertEqual(profile.verified_email, "")
-        self.assertIsNone(profile.email_verified_at)
+        self.assertEqual(profile.verified_email, "updated-email@example.com")
+        self.assertIsNotNone(profile.email_verified_at)
+        self.assertTrue(profile.has_verified_email())
+        self.assertEqual(mock_security_send.call_count, 2)
+        self.assertEqual(mock_security_send.call_args_list[0].kwargs["recipient_email"], "current-email@example.com")
+        self.assertEqual(mock_security_send.call_args_list[1].kwargs["recipient_email"], "updated-email@example.com")
 
     @override_settings(CSRF_TRUSTED_ORIGINS=["https://trusted-frontend.example"])
     @patch("api.account_views.send_verification_email")
@@ -1881,6 +2062,12 @@ class ZeptoMailDeliveryTests(TestCase):
         self.assertFalse(payload["track_clicks"])
         self.assertFalse(payload["track_opens"])
         self.assertIn("#token=secret-verification-token", payload["textbody"])
+        self.assertIn("htmlbody", payload)
+        self.assertIn("Verify your email", payload["htmlbody"])
+        self.assertIn("Welcome to Manley Lifting", payload["htmlbody"])
+        self.assertIn("https://www.a-rich-web.dev/logo-navbar.png", payload["htmlbody"])
+        self.assertIn("Manley Lifting", payload["htmlbody"])
+        self.assertIn("mailto:accounts@manleylifting.ie", payload["htmlbody"])
         self.assertNotIn("secret-verification-token", request.full_url)
 
     @override_settings(
@@ -2733,7 +2920,6 @@ class PortalRBACTests(TestCase):
         self.client.force_authenticate(user=commerce_user)
         portal_requests = [
             ("get", "/api/portal/me/"),
-            ("post", "/api/portal/me/change-password/"),
             ("get", "/api/portal/companies/"),
             ("post", "/api/portal/customers/"),
             ("get", "/api/portal/company-header/"),
@@ -4322,23 +4508,6 @@ class PortalRBACTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("password", response.json())
 
-    def test_owner_change_password_requires_12_char_new_password(self):
-        self.client.force_authenticate(user=self.owner_user)
-        response = self.client.post(
-            "/api/portal/me/change-password/",
-            data={
-                "current_password": "testpass123",
-                "new_password": "Short123!",
-            },
-            format="json",
-        )
-
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(
-            response.json().get("detail"),
-            "Staff and owner passwords must be at least 12 characters long",
-        )
-
     def test_password_change_revokes_account_action_tokens(self):
         self.owner_user.email = "owner-security@example.com"
         self.owner_user.save(update_fields=["email"])
@@ -4352,7 +4521,7 @@ class PortalRBACTests(TestCase):
         self.client.force_authenticate(user=self.owner_user)
 
         response = self.client.post(
-            "/api/portal/me/change-password/",
+            "/api/account/change-password/",
             data={
                 "current_password": "testpass123",
                 "new_password": "A-New-Strong-Password-234!",
@@ -4496,3 +4665,208 @@ class PortalRBACTests(TestCase):
         self.client.force_authenticate(user=self.customer_user)
         response = self.client.get(f"/api/portal/equipment/{self.equipment_b.id}/activity/")
         self.assertEqual(response.status_code, 404)
+
+    def test_portal_orders_recent_bucket_is_paginated(self):
+        OnsiteOrder.objects.create(
+            checkout_ref="fulfill-recent-1",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Recent One",
+            customer_email="recent1@example.com",
+            line_items=[{"sku": "A", "qty": 1}],
+            amount_total_cents=1000,
+            currency="EUR",
+        )
+        OnsiteOrder.objects.create(
+            checkout_ref="fulfill-recent-2",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Recent Two",
+            customer_email="recent2@example.com",
+            line_items=[{"sku": "B", "qty": 2}],
+            amount_total_cents=2000,
+            currency="EUR",
+        )
+        OnsiteOrder.objects.create(
+            checkout_ref="fulfill-complete-1",
+            status=OnsiteOrder.STATUS_SHIPPED,
+            customer_name="Paid One",
+            customer_email="paid1@example.com",
+            line_items=[{"sku": "C", "qty": 1}],
+            amount_total_cents=3000,
+            currency="EUR",
+        )
+        OnsiteOrder.objects.create(
+            checkout_ref="fulfill-unpaid-1",
+            status=OnsiteOrder.STATUS_PENDING,
+            customer_name="Unpaid One",
+            customer_email="unpaid1@example.com",
+            line_items=[{"sku": "X", "qty": 1}],
+            amount_total_cents=500,
+            currency="EUR",
+        )
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.get("/api/portal/orders/?bucket=recent&page=1&page_size=1")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["page"], 1)
+        self.assertEqual(payload["page_size"], 1)
+        self.assertEqual(payload["total_count"], 2)
+        self.assertEqual(payload["total_pages"], 2)
+        self.assertEqual(len(payload["results"]), 1)
+        self.assertEqual(payload["results"][0]["status"], OnsiteOrder.STATUS_PAID)
+
+    def test_portal_orders_completed_bucket_allows_staff_role(self):
+        OnsiteOrder.objects.create(
+            checkout_ref="fulfill-complete-2",
+            status=OnsiteOrder.STATUS_SHIPPED,
+            customer_name="Paid Two",
+            customer_email="paid2@example.com",
+            line_items=[{"sku": "D", "qty": 1}],
+            amount_total_cents=4000,
+            currency="EUR",
+        )
+        OnsiteOrder.objects.create(
+            checkout_ref="fulfill-complete-3",
+            status=OnsiteOrder.STATUS_COMPLETED,
+            customer_name="Paid Three",
+            customer_email="paid3@example.com",
+            line_items=[{"sku": "E", "qty": 1}],
+            amount_total_cents=4500,
+            currency="EUR",
+        )
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.get("/api/portal/orders/?bucket=shipped-completed&page=1&page_size=3")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total_count"], 2)
+        self.assertIn(payload["results"][0]["status"], [OnsiteOrder.STATUS_SHIPPED, OnsiteOrder.STATUS_COMPLETED])
+        self.assertEqual(
+            [item["status"] for item in payload["results"]],
+            [OnsiteOrder.STATUS_SHIPPED, OnsiteOrder.STATUS_COMPLETED],
+        )
+
+    def test_portal_order_detail_returns_line_items_for_owner(self):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="fulfill-detail-1",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Detail One",
+            customer_email="detail1@example.com",
+            line_items=[{"sku": "DET", "qty": 2}],
+            amount_total_cents=5100,
+            currency="EUR",
+        )
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.get(f"/api/portal/orders/{order.order_number}/")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["orderNumber"], order.order_number)
+        self.assertEqual(payload["status"], OnsiteOrder.STATUS_PAID)
+        self.assertEqual(len(payload["lineItems"]), 1)
+
+    def test_portal_order_status_update_allows_office_staff(self):
+        user_model = get_user_model()
+        office_user = user_model.objects.create_user(username="office_staff_1", password="testpass123")
+        office_profile = UserProfile.objects.create(user=office_user, role=UserProfile.ROLE_OFFICE_STAFF)
+        office_profile.allowed_companies.add(self.company_a)
+
+        order = OnsiteOrder.objects.create(
+            checkout_ref="fulfill-update-1",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Update One",
+            customer_email="update1@example.com",
+            line_items=[{"sku": "UPD", "qty": 1}],
+            amount_total_cents=6100,
+            currency="EUR",
+        )
+
+        self.client.force_authenticate(user=office_user)
+        response = self.client.patch(
+            f"/api/portal/orders/{order.order_number}/",
+            data={"status": OnsiteOrder.STATUS_SHIPPED},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        order.refresh_from_db()
+        self.assertEqual(order.status, OnsiteOrder.STATUS_SHIPPED)
+
+    def test_portal_order_status_update_denies_staff_role(self):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="fulfill-update-2",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Update Two",
+            customer_email="update2@example.com",
+            line_items=[{"sku": "UPD2", "qty": 1}],
+            amount_total_cents=7100,
+            currency="EUR",
+        )
+
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.patch(
+            f"/api/portal/orders/{order.order_number}/",
+            data={"status": OnsiteOrder.STATUS_SHIPPED},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch("api.portal_views_modules.orders.send_order_completed_email")
+    def test_portal_order_completion_sends_delivery_confirmation(self, mock_completed_email):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="fulfill-completed-email-1",
+            status=OnsiteOrder.STATUS_SHIPPED,
+            customer_name="Completed Email",
+            customer_email="completed-email@example.com",
+            line_items=[{"sku": "COMPLETE", "qty": 1}],
+            amount_total_cents=8100,
+            currency="EUR",
+        )
+
+        self.client.force_authenticate(user=self.owner_user)
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.patch(
+                f"/api/portal/orders/{order.order_number}/",
+                data={"status": OnsiteOrder.STATUS_COMPLETED},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], OnsiteOrder.STATUS_COMPLETED)
+        mock_completed_email.assert_called_once()
+        self.assertEqual(mock_completed_email.call_args.kwargs["order"].order_number, order.order_number)
+
+    def test_portal_orders_denies_customer_role(self):
+        self.client.force_authenticate(user=self.customer_user)
+        response = self.client.get("/api/portal/orders/?bucket=recent")
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_portal_orders_pending_failed_bucket_returns_unconfirmed_orders(self):
+        OnsiteOrder.objects.create(
+            checkout_ref="fulfill-pending-1",
+            status=OnsiteOrder.STATUS_PENDING,
+            customer_name="Pending One",
+            line_items=[{"sku": "P", "qty": 1}],
+        )
+        OnsiteOrder.objects.create(
+            checkout_ref="fulfill-failed-1",
+            status=OnsiteOrder.STATUS_FAILED,
+            customer_name="Failed One",
+            line_items=[{"sku": "F", "qty": 1}],
+        )
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.get("/api/portal/orders/?bucket=pending-failed&page=1&page_size=3")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total_count"], 2)
+        self.assertEqual(
+            {item["status"] for item in payload["results"]},
+            {OnsiteOrder.STATUS_PENDING, OnsiteOrder.STATUS_FAILED},
+        )

@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import CustomerListSection from '../components/CustomerListSection'
@@ -18,7 +18,6 @@ import {
 import usePageMeta from '../utils/usePageMeta'
 import { exportRowsToCsv } from '../utils/csvExport'
 import {
-  changePortalPassword,
   createPortalSite,
   createStaffAssignment,
   deleteEquipmentCertificate,
@@ -30,6 +29,7 @@ import {
   clearPortalSession,
   createEquipmentReport,
   deleteReport,
+  getAccountOrders,
   getEquipmentActivity,
   getEquipmentReports,
   getPortalCompanies,
@@ -37,6 +37,8 @@ import {
   getPortalDashboardStats,
   getPortalEquipment,
   getPortalMe,
+  getPortalOrderDetail,
+  getPortalOrders,
   getSiteCertificates,
   getAccessToken,
   getPendingReportApprovals,
@@ -51,6 +53,7 @@ import {
   deletePortalSite,
   updatePortalCustomer,
   updatePortalSite,
+  updatePortalOrderStatus,
   updateStaffAssignment,
   updateReport,
   updatePortalEquipment,
@@ -72,6 +75,24 @@ const EQUIPMENT_STATUS_FILTER_WORN = 'worn_serviceable'
 const EQUIPMENT_STATUS_FILTER_ATTENTION = 'attention_required'
 const EQUIPMENT_STATUS_FILTER_NOT_PRESENTED = 'not_presented'
 const EQUIPMENT_STATUS_FILTER_NO_REPORT = 'no_approved_report'
+
+function formatOrderCurrency(amountCents, currency = 'GBP') {
+  const normalizedCurrency = String(currency || 'GBP').toUpperCase()
+  const amount = Number(amountCents || 0) / 100
+  return new Intl.NumberFormat('en-GB', {
+    style: 'currency',
+    currency: normalizedCurrency,
+    minimumFractionDigits: 2,
+  }).format(amount)
+}
+
+function formatOrderDate(value) {
+  if (!value) return 'Pending'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
 const portalQueryKeys = {
   profile: () => ['portal-profile'],
   companies: () => ['portal-companies'],
@@ -95,6 +116,12 @@ const portalQueryKeys = {
   dashboardStatsRoot: () => ['portal-dashboard-stats'],
   staffAssignments: (status = '') => ['portal-staff-assignments', String(status || '')],
   staffAssignmentsRoot: () => ['portal-staff-assignments'],
+  fulfillmentOrders: (bucket = '', page = 1, pageSize = 3) => [
+    'portal-fulfillment-orders',
+    String(bucket || ''),
+    Number(page || 1),
+    Number(pageSize || 3),
+  ],
 }
 const REPORT_SUBMISSION_CONFIRMATION_ITEMS = [
   'We have undertaken the test / thorough examination as prescribed.',
@@ -634,7 +661,7 @@ function printEquipmentQrLabel(title, equipmentName, equipmentAssetTag, qrDataUr
       <img src="${escapeHtml(qrDataUrl)}" alt="Equipment QR Code" />
       <p class="hint">${escapeHtml(deepLink)}</p>
     </div>
-    <script>window.onload = function () { window.print(); }<\/script>
+    <script>window.onload = function () { window.print(); }</script>
   </body>
 </html>`
 
@@ -723,7 +750,7 @@ function buildPrintDocument(title, contentHtml) {
       <span>Manley Lifting &mdash; www.manleylifting.ie</span>
       <span>Generated: ${generatedDate}</span>
     </div>
-    <script>window.onload = function () { window.print(); }<\/script>
+    <script>window.onload = function () { window.print(); }</script>
   </body>
 </html>`
 }
@@ -977,12 +1004,6 @@ function getActivityRecoveryState(entry, nowMs, recoveredAtMsByRecoverableTarget
   }
 }
 
-function isKeyboardEditableTarget(target) {
-  if (!target || typeof target !== 'object') return false
-  const tagName = String(target.tagName || '').toLowerCase()
-  return Boolean(target.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select')
-}
-
 function buildEmptyReportForm() {
   return {
     reportId: '',
@@ -1061,14 +1082,6 @@ function buildEmptyEmployeeForm() {
     last_name: '',
     role: 'engineer',
     allowed_company_ids: [],
-  }
-}
-
-function buildEmptyPasswordForm() {
-  return {
-    current_password: '',
-    new_password: '',
-    confirm_password: '',
   }
 }
 
@@ -1219,7 +1232,7 @@ export default function PortalDashboardPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const loginRedirectPath = `/portal${String(location.search || '')}`
   const loginRedirectState = { redirectTo: loginRedirectPath }
-  const loginRedirectQuery = `/portal/login?redirect=${encodeURIComponent(loginRedirectPath)}`
+  const loginRedirectQuery = `/account/login?redirect=${encodeURIComponent(loginRedirectPath)}`
   const queryClient = useQueryClient()
   const initialSearchQuery = String(searchParams.get('q') || '').trim()
   const initialReportYearFilter = String(searchParams.get('reportYear') || '').trim()
@@ -1263,7 +1276,7 @@ export default function PortalDashboardPage() {
   const [showSessionExpiryWarning, setShowSessionExpiryWarning] = useState(false)
   const [refreshingSession, setRefreshingSession] = useState(false)
   const [sessionWarningError, setSessionWarningError] = useState('')
-  const [nowMs, setNowMs] = useState(() => Date.now())
+  const [nowMs] = useState(() => Date.now())
   const [customersLastUpdatedAt, setCustomersLastUpdatedAt] = useState(0)
   const [equipmentLastUpdatedAt, setEquipmentLastUpdatedAt] = useState(0)
   const [pendingApprovalsLastUpdatedAt, setPendingApprovalsLastUpdatedAt] = useState(0)
@@ -1291,7 +1304,7 @@ export default function PortalDashboardPage() {
   const [creatingReport, setCreatingReport] = useState(false)
   const [savingReportEdit, setSavingReportEdit] = useState(false)
   const [approvingReport, setApprovingReport] = useState(false)
-  const [revisionReportId, setRevisionReportId] = useState('')
+  const [, setRevisionReportId] = useState('')
   const [reportRevisions, setReportRevisions] = useState([])
   const [selectedRevisionPreview, setSelectedRevisionPreview] = useState(null)
   const [revisionsLoading, setRevisionsLoading] = useState(false)
@@ -1364,11 +1377,6 @@ export default function PortalDashboardPage() {
   const [creatingStaffAssignment, setCreatingStaffAssignment] = useState(false)
   const [confirmRemoveUserId, setConfirmRemoveUserId] = useState(0)
   const [showCreateEquipmentForm, setShowCreateEquipmentForm] = useState(false)
-  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false)
-  const [passwordForm, setPasswordForm] = useState(buildEmptyPasswordForm())
-  const [changingPassword, setChangingPassword] = useState(false)
-  const [passwordChangeError, setPasswordChangeError] = useState('')
-  const [, setPasswordChangeSuccess] = useState('')
   const [creatingEquipment, setCreatingEquipment] = useState(false)
   const [equipmentCreateError, setEquipmentCreateError] = useState('')
   const [, setEquipmentCreateSuccess] = useState('')
@@ -1383,6 +1391,12 @@ export default function PortalDashboardPage() {
   const [siteEditError, setSiteEditError] = useState('')
   const [siteEditForm, setSiteEditForm] = useState(buildEmptySiteEditForm())
   const [deletingSite, setDeletingSite] = useState(false)
+  const [fulfillmentOrdersTab, setFulfillmentOrdersTab] = useState('recent')
+  const [fulfillmentOrdersPage, setFulfillmentOrdersPage] = useState(1)
+  const [showFulfillmentOrderModal, setShowFulfillmentOrderModal] = useState(false)
+  const [fulfillmentOrderDetail, setFulfillmentOrderDetail] = useState(null)
+  const [loadingFulfillmentOrderDetail, setLoadingFulfillmentOrderDetail] = useState(false)
+  const [fulfillmentOrderActionError, setFulfillmentOrderActionError] = useState('')
   const [equipmentPage, setEquipmentPage] = useState(initialEquipmentPage)
   const [updatingEquipmentStatus, setUpdatingEquipmentStatus] = useState(false)
   const [equipmentStatusError, setEquipmentStatusError] = useState('')
@@ -1428,6 +1442,7 @@ export default function PortalDashboardPage() {
   const employeePageSize = 5
   const pendingApprovalsPageSize = 6
   const equipmentActivityPageSize = 4
+  const fulfillmentOrdersPageSize = 3
 
   const canEditReports = useMemo(
     () => ['owner', 'office_staff', 'staff', 'engineer'].includes(profile?.role),
@@ -1452,6 +1467,9 @@ export default function PortalDashboardPage() {
   const latestReport = useMemo(() => getMostRecentReport(reports), [reports])
   const showsCustomerPicker = canEditReports && !selectedCompanyId
   const isOwner = profile?.role === 'owner' || profile?.role === 'office_staff'
+  const canFulfillOrders = profile?.role === 'owner' || profile?.role === 'office_staff' || profile?.role === 'staff'
+  const canUpdateFulfillmentOrders = profile?.role === 'owner' || profile?.role === 'office_staff'
+  const isPortalCustomer = profile?.role === 'customer'
   const canManageSites = isOwner
   const canViewEquipmentActivity = isOwner
   const isStaff = profile?.role === 'staff' || profile?.role === 'engineer'
@@ -1472,6 +1490,68 @@ export default function PortalDashboardPage() {
     staleTime: 30 * 1000,
   })
   const reportsLoading = reportsQuery.isLoading || reportsQuery.isFetching
+  const requestedPanel = String(searchParams.get('panel') || '').trim().toLowerCase()
+  const fulfillmentPanelRef = useRef(null)
+
+  const customerOrdersQuery = useQuery({
+    queryKey: ['portal-customer-orders'],
+    queryFn: getAccountOrders,
+    enabled: isPortalCustomer,
+    staleTime: 5 * 60 * 1000,
+  })
+  const customerOrders = customerOrdersQuery.data || []
+  const customerOrdersLoading = customerOrdersQuery.isLoading || customerOrdersQuery.isFetching
+
+  const fulfillmentOrdersQuery = useQuery({
+    queryKey: portalQueryKeys.fulfillmentOrders(
+      fulfillmentOrdersTab,
+      fulfillmentOrdersPage,
+      fulfillmentOrdersPageSize,
+    ),
+    queryFn: () =>
+      getPortalOrders({
+        bucket: fulfillmentOrdersTab,
+        page: fulfillmentOrdersPage,
+        pageSize: fulfillmentOrdersPageSize,
+      }),
+    enabled: canFulfillOrders,
+    staleTime: 60 * 1000,
+  })
+  const fulfillmentOrders = Array.isArray(fulfillmentOrdersQuery.data?.results)
+    ? fulfillmentOrdersQuery.data.results
+    : []
+  const fulfillmentOrdersTotalPages = Math.max(1, Number(fulfillmentOrdersQuery.data?.totalPages || 1))
+  const fulfillmentOrdersLoading = fulfillmentOrdersQuery.isLoading || fulfillmentOrdersQuery.isFetching
+
+  const fulfillmentStatusUpdateMutation = useMutation({
+    mutationFn: ({ orderNumber, status }) => updatePortalOrderStatus(orderNumber, status),
+    onSuccess: async (updatedOrder) => {
+      setFulfillmentOrderDetail(updatedOrder)
+      await queryClient.invalidateQueries({ queryKey: ['portal-fulfillment-orders'] })
+      setFulfillmentOrderActionError('')
+    },
+    onError: (error) => {
+      setFulfillmentOrderActionError(String(error?.message || 'Unable to update order status.'))
+    },
+  })
+
+  const openFulfillmentOrder = useCallback(async (orderNumber) => {
+    const normalizedOrderNumber = String(orderNumber || '').trim()
+    if (!normalizedOrderNumber) return
+
+    setShowFulfillmentOrderModal(true)
+    setLoadingFulfillmentOrderDetail(true)
+    setFulfillmentOrderActionError('')
+    try {
+      const detail = await getPortalOrderDetail(normalizedOrderNumber)
+      setFulfillmentOrderDetail(detail)
+    } catch (error) {
+      setFulfillmentOrderDetail(null)
+      setFulfillmentOrderActionError(String(error?.message || 'Unable to load this order.'))
+    } finally {
+      setLoadingFulfillmentOrderDetail(false)
+    }
+  }, [])
 
   const equipmentActivityQuery = useQuery({
     queryKey: portalQueryKeys.equipmentActivity(activeSelectedEquipment?.id),
@@ -1487,6 +1567,34 @@ export default function PortalDashboardPage() {
   })
   const generatedCertificates = generatedCertificatesQuery.data || []
   const generatedCertificatesLoading = generatedCertificatesQuery.isLoading || generatedCertificatesQuery.isFetching
+
+  useEffect(() => {
+    if (requestedPanel !== 'fulfillment') return
+    if (!canFulfillOrders) return
+    let animationFrame = 0
+    let retryTimer = 0
+
+    const focusFulfillmentPanel = () => {
+      if (!fulfillmentPanelRef.current) {
+        retryTimer = window.setTimeout(() => {
+          animationFrame = window.requestAnimationFrame(focusFulfillmentPanel)
+        }, 50)
+        return
+      }
+      fulfillmentPanelRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+
+    animationFrame = window.requestAnimationFrame(focusFulfillmentPanel)
+    return () => {
+      window.cancelAnimationFrame(animationFrame)
+      window.clearTimeout(retryTimer)
+    }
+  }, [requestedPanel, canFulfillOrders])
+
+  useEffect(() => {
+    setFulfillmentOrdersPage(1)
+  }, [fulfillmentOrdersTab])
+
   const approveReportMutation = useMutation({
     mutationFn: ({ reportId }) => updateReport(reportId, { status: 'approved' }),
     onMutate: async ({ reportSnapshot }) => {
@@ -2158,8 +2266,8 @@ export default function PortalDashboardPage() {
     }
   }, [equipment, equipmentSortDirection, equipmentSortKey])
 
-  const activeEquipment = sortedEquipment.active || []
-  const decommissionedEquipment = sortedEquipment.decommissioned || []
+  const activeEquipment = useMemo(() => sortedEquipment.active || [], [sortedEquipment.active])
+  const decommissionedEquipment = useMemo(() => sortedEquipment.decommissioned || [], [sortedEquipment.decommissioned])
   const currentTableEquipment = useMemo(() => {
     if (equipmentTableTab === 'decommissioned') return decommissionedEquipment
     if (equipmentTableTab === 'all') return [...activeEquipment, ...decommissionedEquipment]
@@ -2634,7 +2742,6 @@ export default function PortalDashboardPage() {
       showEditCustomerForm ||
       showCreateEmployeeForm ||
       companyPickerUserId ||
-        showChangePasswordModal ||
       showCreateEquipmentForm ||
       showDecommissionConfirm ||
       showReportSubmissionConfirmModal ||
@@ -2683,13 +2790,6 @@ export default function PortalDashboardPage() {
       String(equipmentForm.last_inspected_at || '').trim() !== '' ||
       String(equipmentForm.notes || '').trim() !== '',
     [equipmentForm],
-  )
-  const isPasswordDirty = useMemo(
-    () =>
-      String(passwordForm.current_password || '').trim() !== '' ||
-      String(passwordForm.new_password || '').trim() !== '' ||
-      String(passwordForm.confirm_password || '').trim() !== '',
-    [passwordForm],
   )
   const isCreateReportDirty = useMemo(
     () =>
@@ -2772,19 +2872,6 @@ export default function PortalDashboardPage() {
     return true
   }
 
-  function closeChangePasswordModal(force = false) {
-    if (profile?.requiredPasswordChange) return false
-    if (!force && isPasswordDirty) {
-      setUnsavedChangesPrompt('changePassword')
-      return false
-    }
-    setShowChangePasswordModal(false)
-    setPasswordForm(buildEmptyPasswordForm())
-    setPasswordChangeError('')
-    setPasswordChangeSuccess('')
-    return true
-  }
-
   async function closeCreateReportForm(force = false) {
     if (creatingReport || savingReportEdit) return false
 
@@ -2858,11 +2945,6 @@ export default function PortalDashboardPage() {
       return
     }
 
-    if (unsavedChangesPrompt === 'changePassword') {
-      clearPromptAndRun(() => closeChangePasswordModal(true))
-      return
-    }
-
   }
 
   function handleUnsavedPromptRevert() {
@@ -2897,16 +2979,6 @@ export default function PortalDashboardPage() {
         setShowCreateEquipmentForm(false)
         setEquipmentForm(buildEmptyEquipmentForm())
         setEquipmentCreateError('')
-      })
-      return
-    }
-
-    if (unsavedChangesPrompt === 'changePassword') {
-      clearPromptAndRun(() => {
-        setShowChangePasswordModal(false)
-        setPasswordForm(buildEmptyPasswordForm())
-        setPasswordChangeError('')
-        setPasswordChangeSuccess('')
       })
       return
     }
@@ -3025,8 +3097,7 @@ export default function PortalDashboardPage() {
       showCreateCustomerForm ||
       showEditCustomerForm ||
       showCreateEmployeeForm ||
-      showCreateEquipmentForm ||
-      showChangePasswordModal
+      showCreateEquipmentForm
     ) {
       return
     }
@@ -3037,7 +3108,6 @@ export default function PortalDashboardPage() {
     showEditCustomerForm,
     showCreateEmployeeForm,
     showCreateEquipmentForm,
-    showChangePasswordModal,
   ])
 
   const customersLastUpdatedLabel = useMemo(
@@ -3453,27 +3523,9 @@ export default function PortalDashboardPage() {
 
     window.addEventListener('keydown', handleEscapeClose)
     return () => window.removeEventListener('keydown', handleEscapeClose)
+  // The Escape handler intentionally closes over the active modal callbacks.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewedReport, showEditReportModal, showRevisionsModal])
-
-  useEffect(() => {
-    if (!profile?.requiredPasswordChange) return
-    setPasswordChangeError('')
-    setPasswordChangeSuccess('')
-    setPasswordForm(buildEmptyPasswordForm())
-    setShowChangePasswordModal(true)
-  }, [profile?.requiredPasswordChange])
-
-  useEffect(() => {
-    if (!showChangePasswordModal) return
-
-    function handleEscapeClose(event) {
-      if (event.key !== 'Escape') return
-      closeChangePasswordModal()
-    }
-
-    window.addEventListener('keydown', handleEscapeClose)
-    return () => window.removeEventListener('keydown', handleEscapeClose)
-  }, [showChangePasswordModal, profile?.requiredPasswordChange])
 
   useEffect(() => {
     const isAnyCreateModalOpen = Boolean(
@@ -3517,6 +3569,8 @@ export default function PortalDashboardPage() {
 
     window.addEventListener('keydown', handleEscapeClose)
     return () => window.removeEventListener('keydown', handleEscapeClose)
+  // The Escape handler intentionally closes over the active modal callbacks.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     showCreateCustomerForm,
     showEditCustomerForm,
@@ -4009,6 +4063,8 @@ export default function PortalDashboardPage() {
     return () => {
       cancelled = true
     }
+  // The bootstrap effect intentionally owns the initial portal load lifecycle.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     isAuthenticated,
     navigate,
@@ -4024,58 +4080,8 @@ export default function PortalDashboardPage() {
     try {
       await portalLogout()
     } finally {
-      navigate('/portal/login', { replace: true })
+      navigate('/account/login?redirect=%2Fportal', { replace: true })
       setLoggingOut(false)
-    }
-  }
-
-  async function handleChangePassword(event) {
-    event.preventDefault()
-    if (changingPassword) return
-
-    const currentPassword = String(passwordForm.current_password || '')
-    const nextPassword = String(passwordForm.new_password || '')
-    const confirmPassword = String(passwordForm.confirm_password || '')
-
-    if (!currentPassword || !nextPassword || !confirmPassword) {
-      setPasswordChangeError('All password fields are required.')
-      setPasswordChangeSuccess('')
-      return
-    }
-
-    if (nextPassword !== confirmPassword) {
-      setPasswordChangeError('New password and confirmation must match.')
-      setPasswordChangeSuccess('')
-      return
-    }
-
-    setChangingPassword(true)
-    setPasswordChangeError('')
-    setPasswordChangeSuccess('')
-
-    try {
-      await changePortalPassword({
-        current_password: currentPassword,
-        new_password: nextPassword,
-      })
-
-      await invalidatePortalCaches([
-        portalQueryKeys.profile(),
-      ])
-
-      setPasswordChangeSuccess('Password updated successfully.')
-      showSuccessToast('Password updated successfully.', 'Password Updated')
-      setPasswordForm(buildEmptyPasswordForm())
-      setProfile((current) => {
-        if (!current) return current
-        return { ...current, requiredPasswordChange: false }
-      })
-      setShowChangePasswordModal(false)
-    } catch (error) {
-      setPasswordChangeError(String(error?.message || 'Unable to update password.'))
-      setPasswordChangeSuccess('')
-    } finally {
-      setChangingPassword(false)
     }
   }
 
@@ -5149,18 +5155,6 @@ export default function PortalDashboardPage() {
               </span>
               <button
                 type="button"
-                onClick={() => {
-                  setPasswordChangeError('')
-                  setPasswordChangeSuccess('')
-                  setPasswordForm(buildEmptyPasswordForm())
-                  setShowChangePasswordModal(true)
-                }}
-                className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold uppercase tracking-wide text-slate-700 transition hover:border-[#123A7A] hover:text-[#123A7A]"
-              >
-                Change Password
-              </button>
-              <button
-                type="button"
                 onClick={handleLogout}
                 disabled={loggingOut}
                 className="rounded-md border-2 border-[#123A7A] px-4 py-2 text-sm font-bold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
@@ -5459,6 +5453,432 @@ export default function PortalDashboardPage() {
               </div>
             </div>
           </article>
+        )}
+
+        {canFulfillOrders && (
+          <section ref={fulfillmentPanelRef} className="mt-8 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-2xl font-extrabold text-[#123A7A]">Fulfillment operations</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  Review recent orders and track shipped/completed fulfillment progress.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-2 sm:flex sm:flex-wrap">
+              <button
+                type="button"
+                onClick={() => setFulfillmentOrdersTab('recent')}
+                className={`min-h-11 rounded-md px-3 py-2 text-left text-sm font-semibold transition sm:text-center ${
+                  fulfillmentOrdersTab === 'recent'
+                    ? 'bg-[#123A7A] text-white'
+                    : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                Recent orders received
+              </button>
+              <button
+                type="button"
+                onClick={() => setFulfillmentOrdersTab('shipped-completed')}
+                className={`min-h-11 rounded-md px-3 py-2 text-left text-sm font-semibold transition sm:text-center ${
+                  fulfillmentOrdersTab === 'shipped-completed'
+                    ? 'bg-[#123A7A] text-white'
+                    : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                Shipped / completed
+              </button>
+              <button
+                type="button"
+                onClick={() => setFulfillmentOrdersTab('pending-failed')}
+                className={`min-h-11 rounded-md px-3 py-2 text-left text-sm font-semibold transition sm:text-center ${
+                  fulfillmentOrdersTab === 'pending-failed'
+                    ? 'bg-[#123A7A] text-white'
+                    : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                Pending / failed
+              </button>
+            </div>
+
+            {fulfillmentOrdersQuery.error && (
+              <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {String(fulfillmentOrdersQuery.error?.message || 'Unable to load fulfillment orders.')}
+              </div>
+            )}
+
+            {!fulfillmentOrdersQuery.error && (
+              <>
+              <div className="mt-4 space-y-3 md:hidden">
+                {fulfillmentOrdersLoading ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-5 text-sm text-slate-500">
+                    Loading fulfillment orders...
+                  </div>
+                ) : fulfillmentOrders.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+                    {fulfillmentOrdersTab === 'recent'
+                      ? 'No recent orders in the queue.'
+                      : fulfillmentOrdersTab === 'shipped-completed'
+                        ? 'No shipped or completed orders yet.'
+                        : 'No pending or failed orders.'}
+                  </div>
+                ) : (
+                  fulfillmentOrders.map((order) => (
+                    <article key={order.checkoutRef || order.orderNumber} className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="break-words font-semibold text-slate-900">{order.orderNumber || order.checkoutRef}</p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {Number(order.lineItemCount || 0)} item{Number(order.lineItemCount || 0) === 1 ? '' : 's'}
+                          </p>
+                        </div>
+                        <span className="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold capitalize text-slate-700">
+                          {String(order.status || 'processing')}
+                        </span>
+                      </div>
+                      <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-sm">
+                        <div>
+                          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Customer</dt>
+                          <dd className="mt-0.5 break-words text-slate-700">{order.customerName || 'Guest checkout'}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Placed</dt>
+                          <dd className="mt-0.5 text-slate-700">{formatOrderDate(order.createdAt)}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Ship to</dt>
+                          <dd className="mt-0.5 break-words text-slate-700">
+                            {[order.shippingCity, order.shippingPostcode, order.shippingCountryCode]
+                              .filter((part) => String(part || '').trim())
+                              .join(', ') || 'Address unavailable'}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">Total</dt>
+                          <dd className="mt-0.5 text-slate-700">{formatOrderCurrency(order.amountTotalCents, order.currency)}</dd>
+                        </div>
+                      </dl>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void openFulfillmentOrder(order.orderNumber || order.checkoutRef)
+                        }}
+                        className="mt-4 min-h-11 w-full rounded-md border border-[#123A7A] bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                      >
+                        View order
+                      </button>
+                    </article>
+                  ))
+                )}
+              </div>
+              <div className="mt-4 hidden overflow-hidden rounded-xl border border-slate-200 md:block">
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[820px] border-collapse text-left text-sm">
+                    <thead className="bg-[#123A7A] text-white">
+                      <tr>
+                        <th className="px-4 py-3 font-semibold">Order</th>
+                        <th className="px-4 py-3 font-semibold">Placed</th>
+                        <th className="px-4 py-3 font-semibold">Status</th>
+                        <th className="px-4 py-3 font-semibold">Customer</th>
+                        <th className="px-4 py-3 font-semibold">Ship to</th>
+                        <th className="px-4 py-3 font-semibold">Total</th>
+                        <th className="px-4 py-3 font-semibold">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {fulfillmentOrdersLoading ? (
+                        <tr>
+                          <td className="px-4 py-4 text-slate-500" colSpan={7}>
+                            Loading fulfillment orders...
+                          </td>
+                        </tr>
+                      ) : fulfillmentOrders.length === 0 ? (
+                        <tr>
+                          <td className="px-4 py-6 text-slate-500" colSpan={7}>
+                            {fulfillmentOrdersTab === 'recent'
+                              ? 'No recent orders in the queue.'
+                              : fulfillmentOrdersTab === 'shipped-completed'
+                                ? 'No shipped or completed orders yet.'
+                                : 'No pending or failed orders.'}
+                          </td>
+                        </tr>
+                      ) : (
+                        fulfillmentOrders.map((order) => (
+                          <tr
+                            key={order.checkoutRef || order.orderNumber}
+                            className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60"
+                          >
+                            <td className="px-4 py-3 font-semibold text-slate-800">
+                              {order.orderNumber || order.checkoutRef}
+                              <p className="mt-1 text-xs font-normal text-slate-500">
+                                {Number(order.lineItemCount || 0)} item{Number(order.lineItemCount || 0) === 1 ? '' : 's'}
+                              </p>
+                            </td>
+                            <td className="px-4 py-3 text-slate-700">{formatOrderDate(order.createdAt)}</td>
+                            <td className="px-4 py-3 text-slate-700">
+                              {String(order.status || 'processing').replace(/^./, (char) => char.toUpperCase())}
+                            </td>
+                            <td className="px-4 py-3 text-slate-700">
+                              {order.customerName || 'Guest checkout'}
+                              {order.customerEmail ? (
+                                <p className="mt-1 text-xs text-slate-500">{order.customerEmail}</p>
+                              ) : null}
+                            </td>
+                            <td className="px-4 py-3 text-slate-700">
+                              {order.shippingName || 'N/A'}
+                              <p className="mt-1 text-xs text-slate-500">
+                                {[order.shippingCity, order.shippingPostcode, order.shippingCountryCode]
+                                  .filter((part) => String(part || '').trim())
+                                  .join(', ') || 'Address unavailable'}
+                              </p>
+                            </td>
+                            <td className="px-4 py-3 text-slate-700">
+                              {formatOrderCurrency(order.amountTotalCents, order.currency)}
+                            </td>
+                            <td className="px-4 py-3 text-slate-700">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void openFulfillmentOrder(order.orderNumber || order.checkoutRef)
+                                }}
+                                className="rounded-md border border-[#123A7A] bg-white px-3 py-1.5 text-xs font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                              >
+                                View order
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              </>
+            )}
+
+            {!fulfillmentOrdersQuery.error && fulfillmentOrdersTotalPages > 1 && (
+              <div className="mt-4 flex justify-stretch sm:justify-end">
+                <PaginationControls
+                  page={Math.min(fulfillmentOrdersPage, fulfillmentOrdersTotalPages)}
+                  totalPages={fulfillmentOrdersTotalPages}
+                  onPrevious={() => setFulfillmentOrdersPage((current) => Math.max(1, current - 1))}
+                  className="flex w-full items-center justify-between gap-2 sm:w-auto sm:justify-end"
+                  buttonClassName="min-h-11 flex-1 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-700 disabled:opacity-50 sm:flex-none"
+                  labelClassName="text-center text-xs font-semibold uppercase tracking-wide text-slate-600"
+                  onNext={() =>
+                    setFulfillmentOrdersPage((current) =>
+                      Math.min(fulfillmentOrdersTotalPages, current + 1),
+                    )
+                  }
+                />
+              </div>
+            )}
+          </section>
+        )}
+
+        <Modal
+          open={showFulfillmentOrderModal}
+          panelClassName="max-h-[calc(100vh-2rem)] w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 shadow-xl sm:max-h-[calc(100vh-3rem)] sm:p-6"
+          onClose={() => {
+            if (fulfillmentStatusUpdateMutation.isPending) return
+            setShowFulfillmentOrderModal(false)
+            setFulfillmentOrderDetail(null)
+            setFulfillmentOrderActionError('')
+          }}
+        >
+          <div className="space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-extrabold text-[#123A7A]">Order details</h3>
+                <p className="mt-1 text-sm text-slate-600">Review this individual paid order and fulfillment state.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (fulfillmentStatusUpdateMutation.isPending) return
+                  setShowFulfillmentOrderModal(false)
+                  setFulfillmentOrderDetail(null)
+                  setFulfillmentOrderActionError('')
+                }}
+                className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                Close
+              </button>
+            </div>
+
+            {loadingFulfillmentOrderDetail && (
+              <p className="text-sm text-slate-600">Loading order details...</p>
+            )}
+
+            {fulfillmentOrderActionError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {fulfillmentOrderActionError}
+              </div>
+            )}
+
+            {!loadingFulfillmentOrderDetail && fulfillmentOrderDetail && (
+              <>
+                <div className="grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700 md:grid-cols-2">
+                  <p><span className="font-semibold text-slate-900">Order:</span> {fulfillmentOrderDetail.orderNumber || fulfillmentOrderDetail.checkoutRef}</p>
+                  <p><span className="font-semibold text-slate-900">Status:</span> {String(fulfillmentOrderDetail.status || '').replace(/^./, (char) => char.toUpperCase())}</p>
+                  <p><span className="font-semibold text-slate-900">Placed:</span> {formatOrderDate(fulfillmentOrderDetail.createdAt)}</p>
+                  <p><span className="font-semibold text-slate-900">Paid:</span> {formatOrderDate(fulfillmentOrderDetail.paidAt)}</p>
+                  <p><span className="font-semibold text-slate-900">Customer:</span> {fulfillmentOrderDetail.customerName || 'Guest checkout'}</p>
+                  <p><span className="font-semibold text-slate-900">Email:</span> {fulfillmentOrderDetail.customerEmail || 'Not provided'}</p>
+                  <p className="md:col-span-2"><span className="font-semibold text-slate-900">Shipping:</span> {[fulfillmentOrderDetail.shippingName, fulfillmentOrderDetail.shippingAddressLine1, fulfillmentOrderDetail.shippingAddressLine2, fulfillmentOrderDetail.shippingCity, fulfillmentOrderDetail.shippingCounty, fulfillmentOrderDetail.shippingPostcode, fulfillmentOrderDetail.shippingCountryCode].filter((part) => String(part || '').trim()).join(', ') || 'Address unavailable'}</p>
+                  <p className="md:col-span-2"><span className="font-semibold text-slate-900">Total:</span> {formatOrderCurrency(fulfillmentOrderDetail.amountTotalCents, fulfillmentOrderDetail.currency)}</p>
+                </div>
+
+                <div className="rounded-lg border border-slate-200">
+                  <div className="border-b border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800">Line items</div>
+                  <div className="px-4 py-3 text-sm text-slate-700">
+                    {Array.isArray(fulfillmentOrderDetail.lineItems) && fulfillmentOrderDetail.lineItems.length > 0 ? (
+                      <ul className="space-y-2">
+                        {fulfillmentOrderDetail.lineItems.map((item, index) => (
+                          <li key={`${String(item?.sku || item?.variant_ref || 'item')}-${index}`} className="rounded-md border border-slate-200 bg-white px-3 py-2">
+                            <p className="font-semibold text-slate-900">{item?.title || item?.name || item?.sku || `Item ${index + 1}`}</p>
+                            <p className="mt-1 text-xs text-slate-500">
+                              Qty: {Number(item?.quantity || item?.qty || 1)}
+                            </p>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p>No line items were returned for this order.</p>
+                    )}
+                  </div>
+                </div>
+
+                {canUpdateFulfillmentOrders && (
+                  <div className="grid gap-2 sm:flex sm:flex-wrap">
+                    {fulfillmentOrderDetail.status === 'paid' && (
+                      <>
+                        <button
+                          type="button"
+                          disabled={fulfillmentStatusUpdateMutation.isPending}
+                          onClick={() => {
+                            fulfillmentStatusUpdateMutation.mutate({
+                              orderNumber: fulfillmentOrderDetail.orderNumber,
+                              status: 'shipped',
+                            })
+                          }}
+                          className="min-h-11 w-full rounded-md border border-[#123A7A] bg-white px-4 py-2 text-left text-sm font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white disabled:opacity-60 sm:w-auto sm:text-center"
+                        >
+                          Mark as shipped
+                        </button>
+                        <button
+                          type="button"
+                          disabled={fulfillmentStatusUpdateMutation.isPending}
+                          onClick={() => {
+                            fulfillmentStatusUpdateMutation.mutate({
+                              orderNumber: fulfillmentOrderDetail.orderNumber,
+                              status: 'completed',
+                            })
+                          }}
+                          className="min-h-11 w-full rounded-md border border-emerald-600 bg-white px-4 py-2 text-left text-sm font-semibold text-emerald-700 transition hover:bg-emerald-600 hover:text-white disabled:opacity-60 sm:w-auto sm:text-center"
+                        >
+                          Mark as completed
+                        </button>
+                      </>
+                    )}
+                    {fulfillmentOrderDetail.status === 'shipped' && (
+                      <button
+                        type="button"
+                        disabled={fulfillmentStatusUpdateMutation.isPending}
+                        onClick={() => {
+                          fulfillmentStatusUpdateMutation.mutate({
+                            orderNumber: fulfillmentOrderDetail.orderNumber,
+                            status: 'completed',
+                          })
+                        }}
+                        className="min-h-11 w-full rounded-md border border-emerald-600 bg-white px-4 py-2 text-left text-sm font-semibold text-emerald-700 transition hover:bg-emerald-600 hover:text-white disabled:opacity-60 sm:w-auto sm:text-center"
+                      >
+                        Mark as completed
+                      </button>
+                    )}
+                    {fulfillmentOrderDetail.status === 'completed' && (
+                      <p className="text-sm text-emerald-700">This order is already completed.</p>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </Modal>
+
+        {isPortalCustomer && (
+          <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-2xl font-extrabold text-[#123A7A]">Store orders</h2>
+                <p className="mt-1 text-sm text-slate-600">
+                  Read-only order history from the shared account session.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => navigate('/account/orders')}
+                className="rounded-md border border-[#123A7A] bg-white px-3 py-2 text-sm font-semibold text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+              >
+                Open account orders
+              </button>
+            </div>
+
+            {customerOrdersQuery.error && (
+              <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {String(customerOrdersQuery.error?.message || 'Unable to load store orders.')}
+              </div>
+            )}
+
+            {customerOrdersLoading && !customerOrdersQuery.error && (
+              <p className="mt-4 text-sm text-slate-600">Loading store orders...</p>
+            )}
+
+            {!customerOrdersLoading && !customerOrdersQuery.error && customerOrders.length === 0 && (
+              <div className="mt-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm text-slate-600">
+                No store orders have been placed yet.
+              </div>
+            )}
+
+            {!customerOrdersLoading && !customerOrdersQuery.error && customerOrders.length > 0 && (
+              <div className="mt-4 overflow-hidden rounded-xl border border-slate-200">
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[640px] border-collapse text-left text-sm">
+                    <thead className="bg-[#123A7A] text-white">
+                      <tr>
+                        <th className="px-4 py-3 font-semibold">Order</th>
+                        <th className="px-4 py-3 font-semibold">Placed</th>
+                        <th className="px-4 py-3 font-semibold">Status</th>
+                        <th className="px-4 py-3 font-semibold">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {customerOrders.map((order) => (
+                        <tr key={order.checkoutRef} className="border-t border-slate-200 odd:bg-white even:bg-slate-50/60">
+                          <td className="px-4 py-3 font-semibold text-slate-800">
+                            {order.orderNumber || order.checkoutRef}
+                            <p className="mt-1 text-xs font-normal text-slate-500">
+                              {Array.isArray(order.lineItems) && order.lineItems.length > 0
+                                ? `${order.lineItems.length} item${order.lineItems.length === 1 ? '' : 's'}`
+                                : 'Line items available in your confirmation email'}
+                            </p>
+                          </td>
+                          <td className="px-4 py-3 text-slate-700">{formatOrderDate(order.createdAt)}</td>
+                          <td className="px-4 py-3 text-slate-700">
+                            {String(order.status || 'processing').replace(/^./, (char) => char.toUpperCase())}
+                          </td>
+                          <td className="px-4 py-3 text-slate-700">
+                            {formatOrderCurrency(order.amountTotalCents, order.currency)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </section>
         )}
 
         {!showsCustomerPicker && selectedCompanyId && !company && (
@@ -7136,93 +7556,6 @@ export default function PortalDashboardPage() {
               </button>
             </form>
           </Modal>
-        )}
-
-        {showChangePasswordModal && (
-          <div
-            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6"
-            onClick={() => closeChangePasswordModal()}
-          >
-            <form
-              className="max-h-[calc(100vh-7rem)] w-full max-w-xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:max-h-[calc(100vh-3rem)]"
-              onSubmit={handleChangePassword}
-              onClick={(event) => event.stopPropagation()}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-lg font-bold text-[#123A7A]">Change Password</h3>
-                  <p className="mt-1 text-sm text-slate-600">
-                    {profile?.requiredPasswordChange
-                      ? 'Your account requires a password update before continuing.'
-                      : 'Update your portal password.'}
-                  </p>
-                </div>
-                {!profile?.requiredPasswordChange && (
-                  <button
-                    type="button"
-                    onClick={() => closeChangePasswordModal()}
-                    className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-slate-700"
-                  >
-                    Close
-                  </button>
-                )}
-              </div>
-
-              {passwordChangeError && (
-                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                  {passwordChangeError}
-                </div>
-              )}
-              <div className="mt-4 grid gap-3">
-                <label className="text-sm font-semibold text-slate-700">
-                  Current Password
-                  <input
-                    type="password"
-                    value={passwordForm.current_password}
-                    onChange={(event) =>
-                      setPasswordForm((current) => ({ ...current, current_password: event.target.value }))
-                    }
-                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                    required
-                  />
-                </label>
-
-                <label className="text-sm font-semibold text-slate-700">
-                  New Password
-                  <input
-                    type="password"
-                    value={passwordForm.new_password}
-                    onChange={(event) =>
-                      setPasswordForm((current) => ({ ...current, new_password: event.target.value }))
-                    }
-                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                    required
-                  />
-                </label>
-
-                <label className="text-sm font-semibold text-slate-700">
-                  Confirm New Password
-                  <input
-                    type="password"
-                    value={passwordForm.confirm_password}
-                    onChange={(event) =>
-                      setPasswordForm((current) => ({ ...current, confirm_password: event.target.value }))
-                    }
-                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
-                    required
-                  />
-                </label>
-              </div>
-
-              <button
-                type="submit"
-                disabled={changingPassword}
-                className="mt-4 rounded-md bg-[#123A7A] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#0f3168] disabled:opacity-70"
-              >
-                {changingPassword ? 'Updating password...' : 'Update Password'}
-              </button>
-            </form>
-          </div>
         )}
 
         {canEditReports && showCreateReportForm && (

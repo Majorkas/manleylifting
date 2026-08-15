@@ -13,7 +13,6 @@ vi.mock('../utils/portalApi', () => ({
   clearPortalSession: vi.fn(),
   createPortalSite: vi.fn(),
   createEquipmentReport: vi.fn(),
-  changePortalPassword: vi.fn(),
   deleteEquipmentCertificate: vi.fn(),
   deletePortalSite: vi.fn(),
   deleteReport: vi.fn(),
@@ -21,6 +20,7 @@ vi.mock('../utils/portalApi', () => ({
   downloadCertificate: vi.fn(),
   generateSiteCertificates: vi.fn(),
   getAccessToken: vi.fn(),
+  getAccountOrders: vi.fn(),
   getEquipmentActivity: vi.fn(),
   getEquipmentReports: vi.fn(),
   getPortalDashboardStats: vi.fn(),
@@ -28,6 +28,8 @@ vi.mock('../utils/portalApi', () => ({
   getPortalCompanyHeader: vi.fn(),
   getPortalEquipment: vi.fn(),
   getPortalMe: vi.fn(),
+  getPortalOrderDetail: vi.fn(),
+  getPortalOrders: vi.fn(),
   getSiteCertificates: vi.fn(),
   getPendingReportApprovals: vi.fn(),
   reactivateStaffAssignment: vi.fn(),
@@ -36,6 +38,7 @@ vi.mock('../utils/portalApi', () => ({
   hasPortalSession: vi.fn(),
   portalLogout: vi.fn(),
   refreshPortalSession: vi.fn(),
+  updatePortalOrderStatus: vi.fn(),
   updatePortalSite: vi.fn(),
   updatePortalCustomer: vi.fn(),
   updatePortalEquipment: vi.fn(),
@@ -45,13 +48,13 @@ vi.mock('../utils/portalApi', () => ({
 import {
   createPortalSite,
   createEquipmentReport,
-  changePortalPassword,
   deleteEquipmentCertificate,
   deletePortalSite,
   deleteReport,
   deleteStaffAssignment,
   downloadCertificate,
   generateSiteCertificates,
+  getAccountOrders,
   getAccessToken,
   getEquipmentActivity,
   getEquipmentReports,
@@ -60,6 +63,8 @@ import {
   getPortalCompanyHeader,
   getPortalEquipment,
   getPortalMe,
+  getPortalOrderDetail,
+  getPortalOrders,
   getSiteCertificates,
   getPendingReportApprovals,
   getReportRevisions,
@@ -67,6 +72,7 @@ import {
   getStaffAssignments,
   hasPortalSession,
   refreshPortalSession,
+  updatePortalOrderStatus,
   updatePortalSite,
   updatePortalCustomer,
   updatePortalEquipment,
@@ -87,7 +93,7 @@ function renderDashboardPage(initialEntry = '/portal') {
       <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
           <Route path="/portal" element={<PortalDashboardPage />} />
-          <Route path="/portal/login" element={<div>Login Page</div>} />
+          <Route path="/account/login" element={<div>Account Login</div>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -160,10 +166,52 @@ describe('PortalDashboardPage', () => {
     getEquipmentReports.mockResolvedValue([])
     getPortalCompanyHeader.mockResolvedValue({})
     getPortalEquipment.mockResolvedValue([])
+    getPortalOrders.mockResolvedValue({ results: [], totalCount: 0, page: 1, pageSize: 3, totalPages: 1 })
+    getPortalOrderDetail.mockResolvedValue({
+      checkoutRef: 'chk_fulfillment_1',
+      orderNumber: 'MNL-2401-ABC123',
+      status: 'paid',
+      customerName: 'Demo Customer',
+      customerEmail: 'customer@example.com',
+      lineItemCount: 1,
+      lineItems: [{ sku: 'SLING-1T', qty: 1 }],
+      amountTotalCents: 12999,
+      currency: 'GBP',
+      createdAt: '2026-08-10T10:00:00Z',
+      paidAt: '2026-08-10T10:05:00Z',
+      shippingName: 'Demo Customer',
+      shippingAddressLine1: '1 Demo Street',
+      shippingAddressLine2: '',
+      shippingCity: 'Wexford',
+      shippingCounty: 'Wexford',
+      shippingPostcode: 'Y35',
+      shippingCountryCode: 'IE',
+    })
+    updatePortalOrderStatus.mockResolvedValue({
+      checkoutRef: 'chk_fulfillment_1',
+      orderNumber: 'MNL-2401-ABC123',
+      status: 'shipped',
+      customerName: 'Demo Customer',
+      customerEmail: 'customer@example.com',
+      lineItemCount: 1,
+      lineItems: [{ sku: 'SLING-1T', qty: 1 }],
+      amountTotalCents: 12999,
+      currency: 'GBP',
+      createdAt: '2026-08-10T10:00:00Z',
+      paidAt: '2026-08-10T10:05:00Z',
+      shippingName: 'Demo Customer',
+      shippingAddressLine1: '1 Demo Street',
+      shippingAddressLine2: '',
+      shippingCity: 'Wexford',
+      shippingCounty: 'Wexford',
+      shippingPostcode: 'Y35',
+      shippingCountryCode: 'IE',
+    })
     getSiteCertificates.mockResolvedValue([])
     getPendingReportApprovals.mockResolvedValue([])
     getReportRevisions.mockResolvedValue([])
     getStaffAssignments.mockResolvedValue([])
+    getAccountOrders.mockResolvedValue([])
     getAccessToken.mockReturnValue('')
     reactivateStaffAssignment.mockResolvedValue({})
     deleteEquipmentCertificate.mockResolvedValue({ ok: true })
@@ -190,7 +238,7 @@ describe('PortalDashboardPage', () => {
       window.dispatchEvent(new CustomEvent('portalSessionExpired'))
     })
 
-    expect(await screen.findByText('Login Page')).toBeInTheDocument()
+    expect(await screen.findByText('Account Login')).toBeInTheDocument()
   })
 
   it('filters visible reports by selected report year', async () => {
@@ -256,6 +304,146 @@ describe('PortalDashboardPage', () => {
 
     expect(await within(reportsTable).findByText('Inspection 2025')).toBeInTheDocument()
     expect(within(reportsTable).queryByText('Inspection 2026')).not.toBeInTheDocument()
+  })
+
+  it('shows customer store orders inside the portal experience', async () => {
+    getAccountOrders.mockResolvedValue([
+      {
+        checkoutRef: 'chk_1',
+        orderNumber: 'ML-1001',
+        status: 'paid',
+        amountTotalCents: 12999,
+        currency: 'GBP',
+        createdAt: '2026-07-01T10:00:00Z',
+        lineItems: [{ sku: 'HOIST-1' }],
+      },
+    ])
+
+    renderDashboardPage('/portal')
+
+    expect(await screen.findByRole('heading', { name: 'Store orders' })).toBeInTheDocument()
+    expect(await screen.findByText('ML-1001')).toBeInTheDocument()
+    expect(screen.getByText('1 item')).toBeInTheDocument()
+    expect(screen.getByText('1 Jul 2026')).toBeInTheDocument()
+    expect(screen.getByText('Paid')).toBeInTheDocument()
+  })
+
+  it('keeps customer store orders hidden for owner users', async () => {
+    getPortalMe.mockResolvedValue({
+      id: 31,
+      username: 'demo_owner',
+      email: 'owner@example.com',
+      fullName: 'Demo Owner',
+      role: 'owner',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+
+    renderDashboardPage('/portal')
+
+    expect(await screen.findByRole('heading', { name: 'Employee Controls' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Store orders' })).not.toBeInTheDocument()
+    expect(getAccountOrders).not.toHaveBeenCalled()
+  })
+
+  it('opens fulfillment panel when deep-linked for fulfillment-capable users', async () => {
+    const user = userEvent.setup()
+
+    getPortalMe.mockResolvedValue({
+      id: 31,
+      username: 'demo_owner',
+      email: 'owner@example.com',
+      fullName: 'Demo Owner',
+      role: 'owner',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+
+    renderDashboardPage('/portal?panel=fulfillment')
+
+    expect(await screen.findByRole('heading', { name: 'Fulfillment operations' })).toBeInTheDocument()
+
+    await waitFor(() => {
+      expect(getPortalOrders).toHaveBeenCalledWith({ bucket: 'recent', page: 1, pageSize: 3 })
+    })
+
+    await user.click(screen.getByRole('button', { name: /Shipped \/ completed/i }))
+
+    await waitFor(() => {
+      expect(getPortalOrders).toHaveBeenCalledWith({
+        bucket: 'shipped-completed',
+        page: 1,
+        pageSize: 3,
+      })
+    })
+
+    await user.click(screen.getByRole('button', { name: /Pending \/ failed/i }))
+
+    await waitFor(() => {
+      expect(getPortalOrders).toHaveBeenCalledWith({
+        bucket: 'pending-failed',
+        page: 1,
+        pageSize: 3,
+      })
+    })
+  })
+
+  it('allows office staff to view and update an individual paid order status', async () => {
+    const user = userEvent.setup()
+    getPortalMe.mockResolvedValue({
+      id: 41,
+      username: 'demo_office',
+      email: 'office@example.com',
+      fullName: 'Office Staff',
+      role: 'office_staff',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+    getPortalOrders.mockResolvedValue({
+      results: [
+        {
+          checkoutRef: 'chk_fulfillment_1',
+          orderNumber: 'MNL-2401-ABC123',
+          status: 'paid',
+          customerName: 'Demo Customer',
+          customerEmail: 'customer@example.com',
+          lineItemCount: 1,
+          amountTotalCents: 12999,
+          currency: 'GBP',
+          createdAt: '2026-08-10T10:00:00Z',
+          paidAt: '2026-08-10T10:05:00Z',
+          shippingName: 'Demo Customer',
+          shippingCity: 'Wexford',
+          shippingPostcode: 'Y35',
+          shippingCountryCode: 'IE',
+        },
+      ],
+      totalCount: 1,
+      page: 1,
+      pageSize: 3,
+      totalPages: 1,
+    })
+
+    renderDashboardPage('/portal?panel=fulfillment')
+
+    await screen.findByRole('heading', { name: 'Fulfillment operations' })
+    const viewOrderButtons = await screen.findAllByRole('button', { name: 'View order' })
+    await user.click(viewOrderButtons[0])
+
+    await waitFor(() => {
+      expect(getPortalOrderDetail).toHaveBeenCalledWith('MNL-2401-ABC123')
+    })
+
+    await user.click(screen.getByRole('button', { name: 'Mark as shipped' }))
+    await waitFor(() => {
+      expect(updatePortalOrderStatus).toHaveBeenCalledWith('MNL-2401-ABC123', 'shipped')
+    })
   })
 
   it('uses two-step confirm before removing an employee assignment', async () => {
@@ -424,12 +612,12 @@ describe('PortalDashboardPage', () => {
     expect(updateReport).toHaveBeenCalledWith('2', expect.objectContaining({ removed_image_ids: [77] }))
   })
 
-  it('redirects signed-out users to the portal login route', () => {
+  it('redirects signed-out users to the account login route', () => {
     hasPortalSession.mockReturnValue(false)
 
     renderDashboardPage()
 
-    expect(screen.getByText('Login Page')).toBeInTheDocument()
+    expect(screen.getByText('Account Login')).toBeInTheDocument()
   })
 
   it('shows a pre-expiry warning modal and refreshes the session when requested', async () => {
@@ -458,32 +646,6 @@ describe('PortalDashboardPage', () => {
       expect(screen.queryByRole('heading', { name: 'Session Expiring Soon' })).not.toBeInTheDocument()
     })
   })
-
-  it('shows an auto-dismissing toast after a password update', async () => {
-    const user = userEvent.setup()
-
-    mockCustomerData()
-    changePortalPassword.mockResolvedValue({})
-
-    renderDashboardPage('/portal')
-
-    expect(await screen.findByText('Acme Lifts')).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: 'Change Password' }))
-    await user.type(screen.getByLabelText('Current Password'), 'old-password')
-    await user.type(screen.getByLabelText('New Password'), 'new-password-123')
-    await user.type(screen.getByLabelText('Confirm New Password'), 'new-password-123')
-    await user.click(screen.getByRole('button', { name: 'Update Password' }))
-
-    expect(await screen.findByText('Password updated successfully.')).toBeInTheDocument()
-
-    await waitFor(
-      () => {
-        expect(screen.queryByText('Password updated successfully.')).not.toBeInTheDocument()
-      },
-      { timeout: 6000 },
-    )
-  }, 10000)
 
   it('lets owners jump from a report modal to the matching equipment', async () => {
     const user = userEvent.setup()

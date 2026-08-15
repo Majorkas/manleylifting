@@ -8,8 +8,6 @@ except ImportError:
     cloudinary_uploader = None
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Count, Q
 from django.utils import timezone
@@ -32,7 +30,6 @@ from .serializers import (
     PortalCustomerCreateResponseSerializer,
     PortalCustomerCreateSerializer,
     PortalCustomerUpdateSerializer,
-    PortalChangePasswordSerializer,
 )
 from .throttles import PortalMethodRateThrottle
 
@@ -457,53 +454,6 @@ def portal_me(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated, HasPortalAccess])
-@throttle_classes([PortalMethodRateThrottle])
-def portal_change_password(request):
-    serializer = PortalChangePasswordSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
-    payload = serializer.validated_data
-
-    current_password = payload["current_password"]
-    new_password = payload["new_password"]
-
-    if _is_staff_or_owner(request.user) and len(new_password) < 12:
-        return Response(
-            {"detail": "Staff and owner passwords must be at least 12 characters long"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    if not request.user.check_password(current_password):
-        return Response({"detail": "Current password is incorrect"}, status=status.HTTP_400_BAD_REQUEST)
-
-    if current_password == new_password:
-        return Response(
-            {"detail": "New password must be different from current password"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    try:
-        validate_password(new_password, user=request.user)
-    except ValidationError as error:
-        messages = list(error.messages or [])
-        return Response(
-            {"detail": messages[0] if messages else "Password is not valid"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    with transaction.atomic():
-        request.user.set_password(new_password)
-        request.user.save(update_fields=["password"])
-
-        profile = _profile_for_user(request.user)
-        if profile.required_password_change:
-            profile.required_password_change = False
-            profile.save(update_fields=["required_password_change", "updated_at"])
-
-    return Response({"ok": True})
-
-
-@api_view(["POST"])
 @permission_classes([IsAuthenticated])
 @throttle_classes([PortalMethodRateThrottle])
 def portal_logout(request):
@@ -744,4 +694,5 @@ from .portal_views_modules.reports import (  # noqa: E402
     portal_report_owner_edit,
     portal_report_revisions,
 )
+from .portal_views_modules.orders import portal_orders  # noqa: E402
 from .portal_views_modules.staff import portal_staff_assignments  # noqa: E402

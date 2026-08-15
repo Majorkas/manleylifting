@@ -83,6 +83,8 @@ class OnsiteOrder(models.Model):
     STATUS_PENDING = "pending"
     STATUS_PROCESSING = "processing"
     STATUS_PAID = "paid"
+    STATUS_SHIPPED = "shipped"
+    STATUS_COMPLETED = "completed"
     STATUS_FAILED = "failed"
     STATUS_CANCELED = "canceled"
 
@@ -90,6 +92,8 @@ class OnsiteOrder(models.Model):
         (STATUS_PENDING, "Pending"),
         (STATUS_PROCESSING, "Processing"),
         (STATUS_PAID, "Paid"),
+        (STATUS_SHIPPED, "Shipped"),
+        (STATUS_COMPLETED, "Completed"),
         (STATUS_FAILED, "Failed"),
         (STATUS_CANCELED, "Canceled"),
     ]
@@ -360,6 +364,9 @@ class AccountSession(models.Model):
         related_name="account_sessions",
     )
     expires_at = models.DateTimeField(db_index=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=512, blank=True, default="")
+    device_fingerprint = models.CharField(max_length=64, blank=True, default="", db_index=True)
     last_seen_at = models.DateTimeField(null=True, blank=True)
     revoked_at = models.DateTimeField(null=True, blank=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
