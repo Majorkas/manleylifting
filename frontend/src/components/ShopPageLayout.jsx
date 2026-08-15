@@ -11,7 +11,6 @@ const navbarLogo = '/logo-navbar.png'
 const shopNavItems = [
   { label: 'Home', to: '/' },
   { label: 'Shop', to: '/shop' },
-  { label: 'Account', to: '/account' },
   { label: 'Contact', to: '/contact' },
 ]
 

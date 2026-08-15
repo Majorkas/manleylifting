@@ -264,7 +264,7 @@ export default function ContactPage() {
                 Access your inspection reports, certificates, and equipment status with full transparency.
               </p>
               <Link
-                to="/portal/login"
+                to="/account/login?redirect=/portal"
                 className="mt-4 inline-flex w-full justify-center rounded-md border border-white bg-white/20 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/30"
               >
                 Customer Portal

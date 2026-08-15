@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import PortalEntryLink from './PortalEntryLink'
 
 const portalFeatures = [
   {
@@ -33,12 +33,11 @@ export default function PortalPlatformSection() {
               monitor equipment readiness, and keep certification records organized and accessible.
             </p>
             <div className="mt-6">
-              <Link
-                to="/portal/login"
+              <PortalEntryLink
                 className="rounded-md bg-[#123A7A] px-5 py-3 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-[#0f3168]"
               >
                 Open Customer Portal
-              </Link>
+              </PortalEntryLink>
             </div>
           </div>
 

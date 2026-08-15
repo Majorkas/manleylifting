@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom'
+import PortalEntryLink from './PortalEntryLink'
 
 export default function HeroSection({ heroLogo }) {
   return (
@@ -13,17 +14,16 @@ export default function HeroSection({ heroLogo }) {
             </p>
 
             <div className="mt-8 flex flex-wrap gap-4">
-              <Link
-                to="/portal/login"
+              <PortalEntryLink
                 className="rounded-md bg-white px-6 py-3 text-sm font-bold uppercase tracking-wide text-[#123A7A] transition hover:bg-slate-100"
               >
                 Customer Portal
-              </Link>
+              </PortalEntryLink>
               <Link
                 to="/contact"
                 className="rounded-md bg-[#123A7A] px-6 py-3 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-[#0f3168]"
               >
-                Request a Quote
+                Contact Us
               </Link>
               <a
                 href="#services"

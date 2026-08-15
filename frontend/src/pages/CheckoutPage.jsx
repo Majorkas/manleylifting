@@ -138,7 +138,6 @@ export default function CheckoutPage() {
   const [customerName, setCustomerName] = useState('')
   const [customerEmail, setCustomerEmail] = useState('')
   const [checkoutAccountState, setCheckoutAccountState] = useState('checking')
-  const [showGuestPrompt, setShowGuestPrompt] = useState(true)
   const [showAccountChoice, setShowAccountChoice] = useState(true)
   const [customerPhone, setCustomerPhone] = useState('')
   const [selectedAddressId, setSelectedAddressId] = useState('')
@@ -206,14 +205,12 @@ export default function CheckoutPage() {
         setCustomerEmail((current) => current || nextEmail)
         setCustomerPhone((current) => current || nextPhone)
         setCheckoutAccountState('signed-in')
-        setShowGuestPrompt(false)
         setShowAccountChoice(false)
         setShowOneOffAddressForm(true)
       })
       .catch(() => {
         if (!cancelled) {
           setCheckoutAccountState('guest')
-          setShowGuestPrompt(true)
           setShowAccountChoice(true)
           setShowOneOffAddressForm(false)
         }
@@ -661,7 +658,6 @@ export default function CheckoutPage() {
                   <button
                     type="button"
                     onClick={() => {
-                      setShowGuestPrompt(false)
                       setShowAccountChoice(false)
                       setShowOneOffAddressForm(true)
                     }}

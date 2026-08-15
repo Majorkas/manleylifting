@@ -49,11 +49,9 @@ export default function HomePage() {
   ]
 
   const navItems = [
-    { label: 'Services', href: '#services' },
-    { label: 'Certification', href: '#trust' },
-    { label: 'Portal', href: '#portal-platform' },
-    { label: 'Contact', href: '#contact' },
-    { label: 'Portal Login', to: '/portal/login' },
+    { label: 'Home', to: '/' },
+    { label: 'Shop', to: '/shop' },
+    { label: 'Contact', to: '/contact' },
   ]
 
   return (

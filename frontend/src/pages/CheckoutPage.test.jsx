@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import CheckoutPage from './CheckoutPage'
 import { createOnsitePaymentIntent } from '../utils/shopConfig'
-import { getAccountAddresses, getAccountBootstrap, portalLogin, registerCommerceAccount } from '../utils/portalApi'
+import { getAccountAddresses, getAccountBootstrap, registerCommerceAccount } from '../utils/portalApi'
 
 vi.mock('../components/ShopPageLayout', () => ({
   default: ({ children }) => <div>{children}</div>,
@@ -23,7 +23,6 @@ vi.mock('../utils/portalApi', () => ({
   createAccountAddress: vi.fn(),
   getAccountAddresses: vi.fn(),
   getAccountBootstrap: vi.fn(),
-  portalLogin: vi.fn(),
   registerCommerceAccount: vi.fn(),
   hasPortalSession: vi.fn(() => false),
 }))
