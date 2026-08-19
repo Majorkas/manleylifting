@@ -184,6 +184,7 @@ describe('portalApi error messaging', () => {
         canViewOrders: true,
         canAccessPortal: false,
         canFulfillOrders: false,
+        canManageShop: false,
       },
     })
   })

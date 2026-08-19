@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import PortalCatalogManagementPanel from '../components/PortalCatalogManagementPanel'
 
 const mockState = vi.hoisted(() => ({ mutationError: false }))
@@ -19,6 +20,7 @@ vi.mock('../hooks/useCatalogManagementQueries', () => ({
           isActive: true,
           variantRef: 'chain-block-variant',
           sku: '',
+          images: [{ id: 1, url: 'https://example.com/chain-block.png', alt: 'Chain Block' }],
         },
       ],
     },
@@ -29,8 +31,12 @@ vi.mock('../hooks/useCatalogManagementQueries', () => ({
 }))
 
 describe('catalog management panel', () => {
+  beforeEach(() => {
+    mockState.mutationError = false
+  })
+
   it('renders the owner and office-staff catalog management surface', () => {
-    render(<PortalCatalogManagementPanel />)
+    render(<MemoryRouter><PortalCatalogManagementPanel /></MemoryRouter>)
     expect(screen.getByRole('heading', { name: 'Store products' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Add product' })).toBeInTheDocument()
     expect(screen.queryByLabelText('stockPolicy')).not.toBeInTheDocument()
@@ -38,7 +44,7 @@ describe('catalog management panel', () => {
 
   it('opens the product form in a modal and closes it with Escape', async () => {
     const user = (await import('@testing-library/user-event')).default.setup()
-    render(<PortalCatalogManagementPanel />)
+    render(<MemoryRouter><PortalCatalogManagementPanel /></MemoryRouter>)
 
     expect(screen.queryByRole('dialog', { name: /add a product/i })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Add product' }))
@@ -51,19 +57,29 @@ describe('catalog management panel', () => {
 
   it('renders mutation errors and supports status filtering', () => {
     mockState.mutationError = true
-    render(<PortalCatalogManagementPanel />)
+    render(<MemoryRouter><PortalCatalogManagementPanel /></MemoryRouter>)
     expect(screen.getByRole('alert')).toHaveTextContent('Duplicate handle')
     expect(screen.getByLabelText('Visibility')).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Visibility'), { target: { value: 'false' } })
   })
 
-  it('does not open the product modal when typing in the stock adjustment field', () => {
-    render(<PortalCatalogManagementPanel />)
+  it('keeps stock adjustment behind a dedicated action', () => {
+    render(<MemoryRouter><PortalCatalogManagementPanel /></MemoryRouter>)
 
-    const stockInput = screen.getByLabelText('Stock change for Chain Block')
-    fireEvent.change(stockInput, { target: { value: '5' } })
-
+    expect(screen.getAllByRole('button', { name: 'Adjust stock for Chain Block' }).length).toBeGreaterThan(0)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(stockInput).toHaveValue('5')
+  })
+
+  it('shows a result count and dedicated stock adjustment action', () => {
+    render(<MemoryRouter><PortalCatalogManagementPanel /></MemoryRouter>)
+    expect(screen.getByText('Showing 1-1 of 1')).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /Adjust stock for Chain Block/i }).length).toBeGreaterThan(0)
+  })
+
+  it('shows current product images when editing', async () => {
+    const user = (await import('@testing-library/user-event')).default.setup()
+    render(<MemoryRouter><PortalCatalogManagementPanel /></MemoryRouter>)
+    await user.click(screen.getAllByRole('button', { name: 'Edit' })[0])
+    expect(screen.getByText('Product images')).toBeInTheDocument()
   })
 })

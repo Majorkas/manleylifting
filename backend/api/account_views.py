@@ -1277,6 +1277,10 @@ def account_bootstrap(request):
             "can_view_orders": commerce_enabled and not is_operations_account,
             "can_access_portal": bool(portal_profile),
             "can_fulfill_orders": is_operations_account,
+            "can_manage_shop": bool(
+                portal_profile
+                and portal_profile.role in {UserProfile.ROLE_OWNER, UserProfile.ROLE_OFFICE_STAFF}
+            ),
         },
     }
     if phone:

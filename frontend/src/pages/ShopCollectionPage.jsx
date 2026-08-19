@@ -133,7 +133,7 @@ export default function ShopCollectionPage() {
                     </Link>
 
                     <div className="mt-auto pt-5">
-                      <StockStatusBadge status={stockStatus} compact />
+                      <StockStatusBadge status={stockStatus} compact className="mb-3 md:mb-4" />
                       <QuantityAddToCart
                         unitPrice={Number(product.price || 0)}
                         max={product.inventoryTracked ? Math.max(1, product.availableQty) : 99}

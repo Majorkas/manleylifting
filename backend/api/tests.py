@@ -38,6 +38,7 @@ from .models import (
     AuditLog,
     CatalogCollection,
     CatalogProduct,
+    CatalogProductImage,
     Certificate,
     CommerceCustomerProfile,
     Company,
@@ -66,6 +67,12 @@ from backend.settings import (
     validate_required_secrets,
     validate_shop_turnstile_configuration,
 )
+
+
+def _png_bytes():
+    image_buffer = BytesIO()
+    Image.new("RGB", (1, 1), color=(255, 0, 0)).save(image_buffer, format="PNG")
+    return image_buffer.getvalue()
 
 
 def create_verified_user():
@@ -107,13 +114,13 @@ class BaseApiTestCase(TestCase):
         header_value = str(response.headers.get("Content-Security-Policy-Report-Only") or "")
         self.assertIn("default-src 'self'", header_value)
 
-    def test_secure_checkout_csp_allows_stripe_and_turnstile_iframes(self):
+    def test_secure_checkout_csp_keeps_default_restrictive_policy(self):
         response = self.client.get("/api/hello/")
         self.assertEqual(response.status_code, 200)
         csp_value = str(response.headers.get("Content-Security-Policy") or "")
-        self.assertIn("https://*.stripe.com", csp_value)
-        self.assertIn("https://*.cloudflare.com", csp_value)
-        self.assertIn("frame-src", csp_value)
+        self.assertIn("default-src 'self'", csp_value)
+        self.assertNotIn("https://*.stripe.com", csp_value)
+        self.assertNotIn("https://*.cloudflare.com", csp_value)
 
     def test_validate_required_secrets_raises_when_missing_in_production(self):
         with self.assertRaisesMessage(ValueError, "Missing required environment variables: STRIPE_SECRET_KEY"):
@@ -1226,6 +1233,7 @@ class AccountBootstrapTests(TestCase):
                     "can_view_orders": False,
                     "can_access_portal": True,
                     "can_fulfill_orders": True,
+                    "can_manage_shop": True,
                 },
             },
         )
@@ -1247,6 +1255,7 @@ class AccountBootstrapTests(TestCase):
                 "can_view_orders": True,
                 "can_access_portal": False,
                 "can_fulfill_orders": False,
+                "can_manage_shop": False,
             },
         )
 
@@ -1263,6 +1272,7 @@ class AccountBootstrapTests(TestCase):
                 "can_view_orders": False,
                 "can_access_portal": True,
                 "can_fulfill_orders": False,
+                "can_manage_shop": False,
             },
         )
         self.assertFalse(CommerceCustomerProfile.objects.filter(user=self.user).exists())
@@ -1293,6 +1303,7 @@ class AccountBootstrapTests(TestCase):
             self.assertFalse(response.json()["capabilities"]["can_shop"])
             self.assertFalse(response.json()["capabilities"]["can_view_orders"])
             self.assertFalse(response.json()["capabilities"]["can_fulfill_orders"])
+            self.assertFalse(response.json()["capabilities"]["can_manage_shop"])
 
     def test_read_does_not_create_authorization_state(self):
         response = self.client.get("/api/account/bootstrap/")
@@ -1307,6 +1318,7 @@ class AccountBootstrapTests(TestCase):
                 "can_view_orders": False,
                 "can_access_portal": False,
                 "can_fulfill_orders": False,
+                "can_manage_shop": False,
             },
         )
 
@@ -2397,7 +2409,7 @@ class CatalogReadEndpointTests(BaseApiTestCase):
             description="Lifting gear",
             is_active=True,
         )
-        CatalogProduct.objects.create(
+        product = CatalogProduct.objects.create(
             product_ref="legacy-product-id",
             variant_ref="legacy-variant-id",
             handle="chain-block",
@@ -2410,6 +2422,12 @@ class CatalogReadEndpointTests(BaseApiTestCase):
             collection=self.collection,
             is_active=True,
         )
+        CatalogProductImage.objects.create(
+            product=product,
+            image=SimpleUploadedFile("catalog-front.png", _png_bytes(), content_type="image/png"),
+            alt_text="Front view",
+            sort_order=0,
+        )
 
     def test_featured_products_success(self):
         response = self.client.get("/api/shop/products/featured/")
@@ -2418,6 +2436,7 @@ class CatalogReadEndpointTests(BaseApiTestCase):
         self.assertEqual(len(body["products"]), 1)
         self.assertEqual(body["products"][0]["handle"], "chain-block")
         self.assertEqual(body["products"][0]["variantId"], "legacy-variant-id")
+        self.assertEqual(body["products"][0]["images"][0]["alt"], "Front view")
 
     def test_collections_success(self):
         response = self.client.get("/api/shop/collections/")
@@ -2542,7 +2561,7 @@ class OnsiteCheckoutTests(BaseApiTestCase):
     @patch("api.views._stripe_config_ok", return_value=True)
     @patch("api.views._verify_turnstile_token", return_value=True)
     def test_onsite_intent_success(self, _mock_turnstile, _mock_cfg, _mock_origin, mock_stripe_client):
-        CatalogProduct.objects.create(
+        product = CatalogProduct.objects.create(
             product_ref="legacy-product-id",
             variant_ref="legacy-variant-id",
             handle="chain-block",
@@ -2586,10 +2605,14 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         self.assertEqual(order.shipping_cents, 0)
         self.assertEqual(order.tax_cents, 0)
         self.assertEqual(order.order_items.count(), 1)
-        self.assertEqual(order.inventory_reservations.count(), 1)
+        self.assertEqual(order.inventory_reservations.count(), 0)
         self.assertFalse(hasattr(order, "payment_client_secret"))
         self.assertNotEqual(order.status_token, body["statusToken"])
         self.assertIsNotNone(order.status_token_expires_at)
+
+        product.refresh_from_db()
+        self.assertEqual(product.available_qty, 10)
+        self.assertEqual(product.reserved_qty, 0)
 
         status_response = self.client.post(
             "/api/payments/onsite-status/",
@@ -2608,6 +2631,64 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         self.assertEqual(summary["paymentStatus"], OnsiteOrder.PAYMENT_STATUS_PENDING)
         self.assertEqual(summary["fulfillmentStatus"], OnsiteOrder.FULFILLMENT_STATUS_UNFULFILLED)
         self.assertEqual(len(summary["orderItems"]), 1)
+
+    @patch("api.views.STRIPE_CLIENT")
+    @patch("api.views.STRIPE_SECRET_KEY", "sk_test")
+    def test_onsite_paid_status_fulfills_inventory(self, mock_stripe_client):
+        raw_status_token = "c" * 64
+        product = CatalogProduct.objects.create(
+            variant_ref="paid-inventory-variant",
+            handle="paid-inventory-product",
+            title="Paid Inventory Product",
+            price_amount="10.00",
+            available_qty=5,
+            inventory_tracked=True,
+            is_active=True,
+        )
+        order = OnsiteOrder.objects.create(
+            checkout_ref="paid-inventory-checkout",
+            status_token=digest_capability_token(raw_status_token),
+            status=OnsiteOrder.STATUS_PENDING,
+            payment_intent_id="pi_paid_inventory",
+            amount_total_cents=2000,
+            currency="EUR",
+            line_items=[
+                {
+                    "sku": product.variant_ref,
+                    "title": product.title,
+                    "variantRef": product.variant_ref,
+                    "unitAmountCents": 1000,
+                    "quantity": 2,
+                    "lineTotalCents": 2000,
+                }
+            ],
+        )
+        _populate_order_items_and_reservations(order)
+        mock_stripe_client.v1.payment_intents.retrieve.return_value = {
+            "id": order.payment_intent_id,
+            "status": "succeeded",
+            "amount": 2000,
+            "currency": "eur",
+            "metadata": {"checkout_ref": order.checkout_ref},
+        }
+
+        response = self.client.post(
+            "/api/payments/onsite-status/",
+            data=json.dumps({"checkoutRef": order.checkout_ref, "statusToken": raw_status_token}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        product.refresh_from_db()
+        self.assertEqual(product.available_qty, 3)
+        self.assertEqual(product.reserved_qty, 0)
+        self.assertEqual(
+            InventoryReservation.objects.filter(
+                order=order,
+                status=InventoryReservation.STATUS_FULFILLED,
+            ).count(),
+            1,
+        )
 
     def test_expired_status_token_cannot_read_checkout_status(self):
         raw_status_token = "a" * 64
@@ -2714,7 +2795,7 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         self.assertEqual(first_response.json()["paymentIntentId"], second_response.json()["paymentIntentId"])
         self.assertEqual(mock_stripe_client.v1.payment_intents.create.call_count, 2)
         for call in mock_stripe_client.v1.payment_intents.create.call_args_list:
-            self.assertEqual(call.kwargs["idempotency_key"], "onsite:onsite_retry_1")
+            self.assertEqual(call.kwargs["options"]["idempotency_key"], "onsite:onsite_retry_1")
 
     @patch("api.views.STRIPE_CLIENT")
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
@@ -4081,6 +4162,86 @@ class PortalRBACTests(TestCase):
 
         owner_profile = UserProfile.objects.create(user=self.owner_user, role=UserProfile.ROLE_OWNER)
         owner_profile.allowed_companies.add(self.company_a, self.company_b)
+
+    def test_owner_can_create_product_with_multiple_images(self):
+        self.client.force_authenticate(user=self.owner_user)
+        first_image = SimpleUploadedFile("front.png", _png_bytes(), content_type="image/png")
+        second_image = SimpleUploadedFile("side.png", _png_bytes(), content_type="image/png")
+
+        response = self.client.post(
+            "/api/portal/catalog/products/",
+            data={
+                "variantRef": "uploaded-product-variant",
+                "handle": "uploaded-product",
+                "title": "Uploaded Product",
+                "priceAmount": "25.00",
+                "images": [first_image, second_image],
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        product = CatalogProduct.objects.get(handle="uploaded-product")
+        images = list(CatalogProductImage.objects.filter(product=product).order_by("sort_order"))
+        self.assertEqual(len(images), 2)
+        self.assertEqual([image.sort_order for image in images], [0, 1])
+        self.assertEqual(len(response.json()["images"]), 2)
+        self.assertTrue(all(image["url"] for image in response.json()["images"]))
+
+    def test_owner_cannot_create_product_with_invalid_image(self):
+        self.client.force_authenticate(user=self.owner_user)
+        invalid_image = SimpleUploadedFile("not-an-image.png", b"not-an-image", content_type="image/png")
+
+        response = self.client.post(
+            "/api/portal/catalog/products/",
+            data={
+                "variantRef": "invalid-upload-variant",
+                "handle": "invalid-upload",
+                "title": "Invalid Upload",
+                "priceAmount": "25.00",
+                "images": [invalid_image],
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("image", str(response.json()).lower())
+
+    def test_owner_can_edit_product_images_and_order(self):
+        self.client.force_authenticate(user=self.owner_user)
+        product = CatalogProduct.objects.create(
+            variant_ref="editable-images-variant",
+            handle="editable-images",
+            title="Editable Images",
+            price_amount="25.00",
+        )
+        first = CatalogProductImage.objects.create(
+            product=product,
+            image=SimpleUploadedFile("first.png", _png_bytes(), content_type="image/png"),
+            sort_order=0,
+        )
+        second = CatalogProductImage.objects.create(
+            product=product,
+            image=SimpleUploadedFile("second.png", _png_bytes(), content_type="image/png"),
+            sort_order=1,
+        )
+        replacement = SimpleUploadedFile("replacement.png", _png_bytes(), content_type="image/png")
+
+        response = self.client.patch(
+            f"/api/portal/catalog/products/{product.id}/",
+            data={
+                "removedImageIds": json.dumps([first.id]),
+                "imageOrder": json.dumps([second.id]),
+                "images": [replacement],
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        images = list(CatalogProductImage.objects.filter(product=product).order_by("sort_order"))
+        self.assertEqual(len(images), 2)
+        self.assertEqual(images[0].id, second.id)
+        self.assertEqual(images[1].sort_order, 1)
 
     def test_authenticate_with_case_insensitive_username(self):
         user_model = get_user_model()
@@ -6156,9 +6317,8 @@ class PortalRBACTests(TestCase):
         self.assertEqual(order.status, OnsiteOrder.STATUS_CANCELED)
         self.assertTrue(AuditLog.objects.filter(action="order.canceled", target_id=str(order.pk)).exists())
 
-    @patch("api.portal_views_modules.orders.stripe.Refund.create")
-    @patch("api.portal_views_modules.orders.stripe.api_key", "sk_test_present")
-    def test_owner_refund_requires_confirmation_and_records_audit(self, mock_refund):
+    @patch("api.portal_views_modules.orders.STRIPE_CLIENT")
+    def test_owner_refund_requires_confirmation_and_records_audit(self, mock_stripe_client):
         order = OnsiteOrder.objects.create(
             checkout_ref="m8-refund-order",
             status=OnsiteOrder.STATUS_PAID,
@@ -6167,7 +6327,7 @@ class PortalRBACTests(TestCase):
             amount_total_cents=1000,
             currency="EUR",
         )
-        mock_refund.return_value = {"id": "re_m8_refund"}
+        mock_stripe_client.v1.refunds.create.return_value = {"id": "re_m8_refund"}
         self.client.force_authenticate(user=self.owner_user)
         response = self.client.patch(
             f"/api/portal/orders/{order.order_number}/",
@@ -6181,7 +6341,13 @@ class PortalRBACTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 200)
-        mock_refund.assert_called_once()
+        mock_stripe_client.v1.refunds.create.assert_called_once_with(
+            {
+                "payment_intent": "pi_m8_refund",
+                "amount": 500,
+                "metadata": {"order_number": order.order_number},
+            }
+        )
         self.assertTrue(AuditLog.objects.filter(action="order.refund_requested", target_id=str(order.pk)).exists())
 
     def test_office_staff_cannot_issue_refund(self):
@@ -7236,7 +7402,7 @@ class M5PricingTests(BaseApiTestCase):
         self.assertEqual(order.subtotal_cents, 1000)
         self.assertEqual(order.shipping_cents, 1299)
         self.assertEqual(order.amount_total_cents, 2299)
-        self.assertEqual(mock_stripe_client.v1.payment_intents.create.call_args.kwargs["amount"], 2299)
+        self.assertEqual(mock_stripe_client.v1.payment_intents.create.call_args.args[0]["amount"], 2299)
 
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)

@@ -103,8 +103,25 @@ describe('AccountOverviewPage shell', () => {
       </MemoryRouter>,
     )
 
-    expect(await screen.findByRole('link', { name: /Fulfillment operations/i })).toHaveAttribute('href', '/portal?panel=fulfillment')
+    expect(await screen.findByRole('link', { name: /Fulfillment operations/i })).toHaveAttribute('href', '/shop/fulfillment')
     expect(screen.queryByRole('link', { name: /Store orders/i })).not.toBeInTheDocument()
+  })
+
+  it('shows a separate shop management shortcut for catalog managers', async () => {
+    portalApi.getAccountBootstrap.mockResolvedValue({
+      email: 'owner@example.com',
+      fullName: 'Owner Example',
+      emailVerified: true,
+      capabilities: { canShop: true, canViewOrders: true, canAccessPortal: true, canFulfillOrders: true, canManageShop: true },
+    })
+
+    render(
+      <MemoryRouter>
+        <AccountOverviewPage />
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByRole('link', { name: /Shop management/i })).toHaveAttribute('href', '/shop/shop-management')
   })
 
   it('redirects unauthenticated users to login with a safe /account return path', async () => {

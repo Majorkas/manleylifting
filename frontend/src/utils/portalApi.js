@@ -605,6 +605,7 @@ export async function getAccountBootstrap() {
       canViewOrders: Boolean(body?.capabilities?.can_view_orders),
       canAccessPortal: Boolean(body?.capabilities?.can_access_portal),
       canFulfillOrders: Boolean(body?.capabilities?.can_fulfill_orders),
+      canManageShop: Boolean(body?.capabilities?.can_manage_shop),
     },
   }
 }

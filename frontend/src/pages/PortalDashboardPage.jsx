@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import CustomerListSection from '../components/CustomerListSection'
 import EmployeeControlsSection from '../components/EmployeeControlsSection'
@@ -7,7 +7,6 @@ import EquipmentTableSection from '../components/EquipmentTableSection'
 import Modal from '../components/Modal'
 import PaginationControls from '../components/PaginationControls'
 import PortalToast from '../components/PortalToast'
-import PortalCatalogManagementPanel from '../components/PortalCatalogManagementPanel'
 import PendingApprovalsSection from '../components/PendingApprovalsSection'
 import PortalLayout from '../components/PortalLayout'
 import {
@@ -1213,7 +1212,7 @@ function buildUniqueEmployeeUsername(baseUsername, existingUsernames) {
   return candidate
 }
 
-export default function PortalDashboardPage() {
+export default function PortalDashboardPage({ fulfillmentOnly = false }) {
   usePageMeta({
     title: 'Customer Portal',
     description: 'Manage equipment, reports, certificates, and approvals in the Manley Lifting portal.',
@@ -1222,6 +1221,7 @@ export default function PortalDashboardPage() {
 
   const navigate = useNavigate()
   const location = useLocation()
+  const isFulfillmentOnly = fulfillmentOnly || location.pathname === '/shop/fulfillment'
   const [searchParams, setSearchParams] = useSearchParams()
   const loginRedirectPath = `/portal${String(location.search || '')}`
   const loginRedirectState = { redirectTo: loginRedirectPath }
@@ -5076,6 +5076,10 @@ export default function PortalDashboardPage() {
     return <Navigate to={loginRedirectQuery} state={loginRedirectState} replace />
   }
 
+  if (isFulfillmentOnly && profile && !canFulfillOrders) {
+    return <Navigate to="/portal" replace />
+  }
+
   return (
     <PortalLayout hideNavbar={isAnyModalOpen}>
       <PortalToast toast={portalToast} onClose={() => setPortalToast(null)} />
@@ -5114,10 +5118,15 @@ export default function PortalDashboardPage() {
           </div>
         </div>
       </Modal>
-      <section className="mx-auto w-full max-w-7xl px-6 py-10 md:py-12">
+      <section
+        data-portal-view={isFulfillmentOnly ? 'fulfillment-only' : 'dashboard'}
+        className={`mx-auto w-full max-w-7xl px-6 py-10 md:py-12${isFulfillmentOnly ? ' portal-dashboard--fulfillment-only' : ''}`}
+      >
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">Portal</p>
+            <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">
+              {isFulfillmentOnly ? 'Order operations' : 'Portal'}
+            </p>
             {showsCustomerPicker ? (
               <>
                 <h1 className="mt-1 text-3xl font-extrabold text-[#123A7A] md:text-4xl">
@@ -5128,9 +5137,16 @@ export default function PortalDashboardPage() {
                 </p>
               </>
             ) : (
-              <h1 className="mt-1 text-3xl font-extrabold text-[#123A7A] md:text-4xl">
-                Equipment & Certification Hub
-              </h1>
+              <>
+                <h1 className="mt-1 text-3xl font-extrabold text-[#123A7A] md:text-4xl">
+                  {isFulfillmentOnly ? 'Fulfillment operations' : 'Equipment & Certification Hub'}
+                </h1>
+                {isFulfillmentOnly && (
+                  <p className="mt-2 max-w-2xl text-slate-600">
+                    Review incoming orders, update fulfillment progress, and manage customer order actions.
+                  </p>
+                )}
+              </>
             )}
           </div>
 
@@ -5150,6 +5166,17 @@ export default function PortalDashboardPage() {
             </div>
           )}
         </div>
+
+        {isFulfillmentOnly && (
+          <div className="mt-5">
+            <Link
+              to="/portal"
+              className="inline-flex min-h-11 items-center rounded-md border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-[#123A7A] transition hover:bg-slate-50"
+            >
+              Back to portal
+            </Link>
+          </div>
+        )}
 
         {errorMessage && (
           <div className="mt-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -5441,8 +5468,8 @@ export default function PortalDashboardPage() {
           </article>
         )}
 
-        {canFulfillOrders && (
-          <section ref={fulfillmentPanelRef} className="mt-8 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+        {isFulfillmentOnly && (
+          <section ref={fulfillmentPanelRef} data-fulfillment-panel className="mt-8 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h2 className="text-2xl font-extrabold text-[#123A7A]">Fulfillment operations</h2>
@@ -5662,8 +5689,6 @@ export default function PortalDashboardPage() {
             )}
           </section>
         )}
-
-        {isOwner && <PortalCatalogManagementPanel />}
 
         <Modal
           open={showFulfillmentOrderModal}

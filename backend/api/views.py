@@ -295,9 +295,9 @@ class PaymentIntentVerificationError(ValueError):
 
 def _populate_order_items_and_reservations(order):
   """
-  Create OrderItem snapshots and InventoryReservations from order's line_items.
+  Create immutable OrderItem snapshots from order's line_items.
   Called after order is created during checkout.
-  Idempotent: only creates items/reservations if they don't already exist.
+  Inventory is intentionally untouched until payment is verified as paid.
   """
   if not order.line_items:
     return True, "No line items to process"
@@ -339,18 +339,61 @@ def _populate_order_items_and_reservations(order):
         shipping_class=product.shipping_class,
         tax_code=product.tax_code,
     )
+  return True, "OrderItems created successfully"
+
+
+def _fulfill_order_inventory(order):
+  """Deduct tracked stock exactly once after the payment is verified as paid."""
+  if InventoryReservation.objects.filter(
+    order=order,
+    status=InventoryReservation.STATUS_FULFILLED,
+  ).exists():
+    return
+
+  order_items = list(OrderItem.objects.filter(order=order))
+  products = {}
+  products_by_variant = {}
+  quantities_by_product = {}
+  for order_item in order_items:
+    product = CatalogProduct.objects.select_for_update().filter(
+      variant_ref=order_item.variant_ref,
+      is_active=True,
+    ).first()
+    if product is None or product.stock_policy == CatalogProduct.STOCK_POLICY_UNAVAILABLE:
+      raise ValueError(f"Product {order_item.variant_ref} is no longer available")
+    products[product.pk] = product
+    products_by_variant[product.variant_ref] = product
+    quantities_by_product[product.pk] = quantities_by_product.get(product.pk, 0) + order_item.quantity
+
+  for product_id, quantity in quantities_by_product.items():
+    product = products[product_id]
+    inventory_tracked = product.inventory_tracked or product.stock_policy == CatalogProduct.STOCK_POLICY_FINITE
+    if inventory_tracked and product.available_qty < quantity:
+      raise ValueError(f"Insufficient inventory for product {product.variant_ref}")
+
+  fulfilled_at = timezone.now()
+  for product_id, quantity in quantities_by_product.items():
+    product = products[product_id]
+    inventory_tracked = product.inventory_tracked or product.stock_policy == CatalogProduct.STOCK_POLICY_FINITE
+    if inventory_tracked:
+      product.available_qty -= quantity
+      product.save(update_fields=["available_qty", "updated_at"])
+      InventoryTransaction.objects.create(
+        product=product,
+        order=order,
+        transaction_type=InventoryTransaction.TYPE_FULFILL,
+        quantity_change=-quantity,
+        reason="Payment paid",
+      )
+
+  for order_item in order_items:
     InventoryReservation.objects.create(
       order=order,
-      product=product,
-      quantity=quantity,
-      status=InventoryReservation.STATUS_RESERVED,
-      expires_at=timezone.now() + timedelta(minutes=30),
+      product=products_by_variant[order_item.variant_ref],
+      quantity=order_item.quantity,
+      status=InventoryReservation.STATUS_FULFILLED,
+      fulfilled_at=fulfilled_at,
     )
-    if inventory_tracked:
-      product.reserved_qty += quantity
-      product.save(update_fields=["reserved_qty", "updated_at"])
-
-  return True, "OrderItems and InventoryReservations created successfully"
 
 
 def _populate_financial_totals(order, totals=None):
@@ -439,6 +482,9 @@ def _set_onsite_order_from_payment_intent(payment_intent, status):
       status,
     )
     return order
+
+  if status == OnsiteOrder.STATUS_PAID:
+    _fulfill_order_inventory(order)
 
   order.status = status
   update_fields = ["status", "payment_intent_id", "updated_at"]
@@ -548,6 +594,14 @@ def _to_float(value, default=0.0):
 
 def _map_catalog_product(product):
   collection = getattr(product, "collection", None)
+  images = [
+    {
+      "url": image.image.url,
+      "alt": image.alt_text or product.image_alt or product.title,
+      "sortOrder": image.sort_order,
+    }
+    for image in product.images.all()
+  ]
   return {
     "id": str(product.product_ref or ""),
     "title": str(product.title or ""),
@@ -555,6 +609,7 @@ def _map_catalog_product(product):
     "description": str(product.description or ""),
     "imageUrl": str(product.image_url or ""),
     "imageAlt": str(product.image_alt or ""),
+    "images": images,
     "variantId": str(product.variant_ref or ""),
     "price": _to_float(product.price_amount, 0.0),
     "currency": str(product.currency_code or "EUR"),
@@ -577,7 +632,7 @@ def shop_featured_products(request):
       scope="shop-read",
     )
 
-  products_qs = CatalogProduct.objects.filter(is_active=True).select_related("collection")[:12]
+  products_qs = CatalogProduct.objects.filter(is_active=True).select_related("collection").prefetch_related("images")[:12]
   products = [_map_catalog_product(product) for product in products_qs]
 
   return JsonResponse({"products": products})
@@ -631,7 +686,7 @@ def shop_collection_detail(request, handle):
       log_level="info",
     )
 
-  products = CatalogProduct.objects.filter(collection=collection, is_active=True).select_related("collection")[:50]
+  products = CatalogProduct.objects.filter(collection=collection, is_active=True).select_related("collection").prefetch_related("images")[:50]
   mapped_products = [_map_catalog_product(product) for product in products]
 
   return JsonResponse(
@@ -658,7 +713,7 @@ def shop_product_detail(request, handle):
       scope="shop-read",
     )
 
-  product = CatalogProduct.objects.filter(handle=handle, is_active=True).select_related("collection").first()
+  product = CatalogProduct.objects.filter(handle=handle, is_active=True).select_related("collection").prefetch_related("images").first()
   if not product:
     return _client_error(
       "Product not found",
@@ -941,14 +996,16 @@ def onsite_checkout_intent(request):
   try:
     if client is not None and hasattr(client, "v1") and hasattr(client.v1, "payment_intents"):
       intent = client.v1.payment_intents.create(
-        amount=amount_total,
-        currency=currency,
-        automatic_payment_methods={"enabled": True},
-        idempotency_key=f"onsite:{checkout_ref}",
-        receipt_email=customer_email,
-        metadata={
-          "checkout_ref": checkout_ref,
+        {
+          "amount": amount_total,
+          "currency": currency,
+          "automatic_payment_methods": {"enabled": True},
+          "receipt_email": customer_email,
+          "metadata": {
+            "checkout_ref": checkout_ref,
+          },
         },
+        options={"idempotency_key": f"onsite:{checkout_ref}"},
       )
     else:
       intent = stripe.PaymentIntent.create(

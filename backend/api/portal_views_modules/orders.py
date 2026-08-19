@@ -253,7 +253,13 @@ def portal_orders(request, order_number=None):
                 return Response({"detail": "This order is not refundable yet."}, status=400)
             try:
                 if hasattr(client, "v1") and hasattr(client.v1, "refunds"):
-                    refund = client.v1.refunds.create(payment_intent=order.payment_intent_id, amount=refund_cents, metadata={"order_number": order.order_number})
+                    refund = client.v1.refunds.create(
+                        {
+                            "payment_intent": order.payment_intent_id,
+                            "amount": refund_cents,
+                            "metadata": {"order_number": order.order_number},
+                        }
+                    )
                 else:
                     refund = stripe.Refund.create(payment_intent=order.payment_intent_id, amount=refund_cents, metadata={"order_number": order.order_number})
             except Exception:

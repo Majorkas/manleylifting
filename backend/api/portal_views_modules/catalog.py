@@ -1,4 +1,6 @@
 from decimal import Decimal, InvalidOperation
+import json
+import os
 
 from django.db import IntegrityError, transaction
 from django.db.models import Q
@@ -6,11 +8,15 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from PIL import Image, UnidentifiedImageError
 
-from ..models import CatalogCollection, CatalogProduct, InventoryTransaction
+from ..models import CatalogCollection, CatalogProduct, CatalogProductImage, InventoryTransaction
 from ..permissions import HasPortalAccess
 from ..portal_views import _get_pagination_params, _is_owner, _paginate_queryset
 from ..throttles import PortalMethodRateThrottle
+
+PRODUCT_IMAGE_ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+PRODUCT_IMAGE_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 
 
 def _catalog_allowed(user):
@@ -18,6 +24,15 @@ def _catalog_allowed(user):
 
 
 def _serialize_product(product):
+    images = [
+        {
+            "id": image.id,
+            "url": image.image.url,
+            "alt": image.alt_text or product.image_alt or product.title,
+            "sortOrder": image.sort_order,
+        }
+        for image in product.images.all()
+    ]
     return {
         "id": product.id,
         "variantRef": product.variant_ref,
@@ -28,6 +43,7 @@ def _serialize_product(product):
         "description": product.description,
         "imageUrl": product.image_url,
         "imageAlt": product.image_alt,
+        "images": images,
         "priceAmount": str(product.price_amount),
         "currencyCode": product.currency_code,
         "collectionId": product.collection_id,
@@ -44,6 +60,68 @@ def _serialize_product(product):
         "createdAt": product.created_at.isoformat() if product.created_at else None,
         "updatedAt": product.updated_at.isoformat() if product.updated_at else None,
     }
+
+
+def _validate_product_images(uploaded_images):
+    allowed_formats = {
+        ".png": {"PNG"},
+        ".jpg": {"JPEG"},
+        ".jpeg": {"JPEG"},
+        ".webp": {"WEBP"},
+    }
+    for uploaded_file in uploaded_images:
+        if uploaded_file.size > PRODUCT_IMAGE_MAX_FILE_SIZE_BYTES:
+            return "Each product image must be 10MB or smaller"
+        extension = os.path.splitext(uploaded_file.name or "")[1].lower()
+        if extension not in PRODUCT_IMAGE_ALLOWED_EXTENSIONS:
+            return "Product images must be PNG, JPG, JPEG, or WEBP"
+        uploaded_file.seek(0)
+        try:
+            image = Image.open(uploaded_file)
+            image.verify()
+            image_format = str(image.format or "").upper()
+        except (UnidentifiedImageError, OSError, ValueError):
+            uploaded_file.seek(0)
+            return "Product image content does not match the file extension"
+        uploaded_file.seek(0)
+        if image_format not in allowed_formats[extension]:
+            return "Product image content does not match the file extension"
+    return ""
+
+
+def _save_product_images(product, uploaded_images):
+    next_sort_order = product.images.count()
+    for offset, uploaded_image in enumerate(uploaded_images):
+        CatalogProductImage.objects.create(
+            product=product,
+            image=uploaded_image,
+            alt_text=product.image_alt or product.title,
+            sort_order=next_sort_order + offset,
+        )
+
+
+def _apply_product_image_changes(product, request_data, uploaded_images):
+    raw_removed_ids = request_data.get("removedImageIds", "[]")
+    raw_image_order = request_data.get("imageOrder", "[]")
+    try:
+        removed_ids = {int(value) for value in json.loads(raw_removed_ids or "[]")}
+        image_order = [int(value) for value in json.loads(raw_image_order or "[]")]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raise ValueError("Product image ordering data is invalid")
+
+    if removed_ids:
+        product.images.filter(id__in=removed_ids).delete()
+    if uploaded_images:
+        _save_product_images(product, uploaded_images)
+
+    images = list(product.images.order_by("sort_order", "id"))
+    ordered_ids = [image_id for image_id in image_order if image_id in {image.id for image in images}]
+    ordered_images = [next(image for image in images if image.id == image_id) for image_id in ordered_ids]
+    ordered_images.extend(image for image in images if image.id not in set(ordered_ids))
+    for sort_order, image in enumerate(ordered_images):
+        if image.sort_order != sort_order:
+            image.sort_order = sort_order
+            image.save(update_fields=["sort_order"])
 
 
 def _validate_product(data, create=False):
@@ -114,12 +192,22 @@ def portal_catalog_products(request):
         page, page_size = _get_pagination_params(request)
         page_data = _paginate_queryset(queryset, page, page_size)
         return Response({**page_data, "results": [_serialize_product(item) for item in page_data["results"]]})
+    uploaded_images = request.FILES.getlist("images")
+    image_error = _validate_product_images(uploaded_images)
+    if image_error:
+        return Response({"detail": image_error}, status=400)
     errors = _validate_product(request.data, create=True)
     if errors: return Response(errors, status=400)
     product = CatalogProduct()
     _apply_product(product, request.data, create=True)
-    try: product.save()
-    except IntegrityError: return Response({"detail": "Handle, SKU, or variant reference already exists."}, status=400)
+    try:
+        with transaction.atomic():
+            product.save()
+            _save_product_images(product, uploaded_images)
+    except IntegrityError:
+        return Response({"detail": "Handle, SKU, or variant reference already exists."}, status=400)
+    except Exception:
+        return Response({"detail": "Product could not be saved."}, status=500)
     return Response(_serialize_product(product), status=status.HTTP_201_CREATED)
 
 
@@ -133,8 +221,17 @@ def portal_catalog_product_detail(request, product_id):
     if request.method == "GET": return Response(_serialize_product(product))
     errors = _validate_product(request.data)
     if errors: return Response(errors, status=400)
-    _apply_product(product, request.data)
-    try: product.save()
+    uploaded_images = request.FILES.getlist("images")
+    image_error = _validate_product_images(uploaded_images)
+    if image_error:
+        return Response({"detail": image_error}, status=400)
+    try:
+        with transaction.atomic():
+            _apply_product(product, request.data)
+            product.save()
+            _apply_product_image_changes(product, request.data, uploaded_images)
+    except ValueError as error:
+        return Response({"detail": str(error)}, status=400)
     except IntegrityError: return Response({"detail": "Handle, SKU, or variant reference already exists."}, status=400)
     return Response(_serialize_product(product))
 

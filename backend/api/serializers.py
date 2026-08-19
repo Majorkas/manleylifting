@@ -435,6 +435,7 @@ class AccountCapabilitiesSerializer(serializers.Serializer):
     can_view_orders = serializers.BooleanField()
     can_access_portal = serializers.BooleanField()
     can_fulfill_orders = serializers.BooleanField(required=False)
+    can_manage_shop = serializers.BooleanField(required=False)
 
 
 class AccountBootstrapSerializer(serializers.Serializer):

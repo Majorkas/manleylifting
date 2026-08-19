@@ -4,14 +4,14 @@ const toneClasses = {
   negative: '!border-rose-200 !bg-rose-50 !text-rose-800',
 }
 
-export default function StockStatusBadge({ status, compact = false }) {
+export default function StockStatusBadge({ status, compact = false, className = '' }) {
   if (!status) return null
 
   return (
     <div
       className={`inline-flex items-center gap-2 border px-3 py-2 text-sm font-semibold ${
         compact ? 'rounded-md' : 'rounded-lg'
-      } ${toneClasses[status.tone] || toneClasses.positive}`}
+      } ${toneClasses[status.tone] || toneClasses.positive} ${className}`}
       role="status"
       aria-label={`${status.label}: ${status.detail}`}
     >

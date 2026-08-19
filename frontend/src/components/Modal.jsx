@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 
 const defaultOverlayClassName =
   'fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/50 px-4 pb-6 pt-24 sm:items-center sm:pt-6'
@@ -72,6 +72,9 @@ export default function Modal({
   closeOnEscape = true,
   ariaLabel,
 }) {
+  const panelRef = useRef(null)
+  const returnFocusRef = useRef(null)
+
   useEffect(() => {
     if (!open || !closeOnEscape) return undefined
 
@@ -88,9 +91,32 @@ export default function Modal({
   useEffect(() => {
     if (!open) return undefined
 
+    returnFocusRef.current = document.activeElement
     lockDocumentScroll()
+    const focusableSelector = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    const focusFrame = window.requestAnimationFrame(() => {
+      panelRef.current?.querySelector(focusableSelector)?.focus()
+    })
+    function handleTab(event) {
+      if (event.key !== 'Tab' || !panelRef.current) return
+      const focusable = Array.from(panelRef.current.querySelectorAll(focusableSelector))
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', handleTab)
     return () => {
+      window.cancelAnimationFrame(focusFrame)
+      document.removeEventListener('keydown', handleTab)
       unlockDocumentScroll()
+      returnFocusRef.current?.focus?.()
     }
   }, [open])
 
@@ -109,7 +135,7 @@ export default function Modal({
         }
       }}
     >
-      <div className={panelClassName}>{children}</div>
+      <div ref={panelRef} className={panelClassName}>{children}</div>
     </div>
   )
 }

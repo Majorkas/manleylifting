@@ -8,6 +8,8 @@ const ContactPage = lazy(() => import('./components/ContactPage'))
 const LegalPage = lazy(() => import('./components/LegalPage'))
 const HomePage = lazy(() => import('./pages/HomePage'))
 const PortalDashboardPage = lazy(() => import('./pages/PortalDashboardPage'))
+const FulfillmentOperationsPage = lazy(() => import('./pages/FulfillmentOperationsPage'))
+const ShopManagementPage = lazy(() => import('./pages/ShopManagementPage'))
 const PortalDemoPage = lazy(() => import('./pages/PortalDemoPage'))
 const CartPage = lazy(() => import('./pages/CartPage'))
 const ShopCollectionPage = lazy(() => import('./pages/ShopCollectionPage'))
@@ -72,6 +74,8 @@ export default function App() {
         <Route path="/account/reset-password" element={<AccountResetPasswordPage />} />
         <Route path="/account/change-email" element={<AccountChangeEmailPage />} />
         <Route path="/portal" element={<PortalDashboardPage />} />
+        <Route path="/shop/fulfillment" element={<FulfillmentOperationsPage />} />
+        <Route path="/shop/shop-management" element={<ShopManagementPage />} />
         <Route path="/portal-demo" element={<PortalDemoPage />} />
         <Route path="/contact" element={<ContactPage />} />
         <Route path="/privacy-policy" element={<LegalPage title="Privacy Policy" />} />

@@ -92,6 +92,7 @@ function renderDashboardPage(initialEntry = '/portal') {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
+          <Route path="/shop/fulfillment" element={<PortalDashboardPage fulfillmentOnly />} />
           <Route path="/portal" element={<PortalDashboardPage />} />
           <Route path="/account/login" element={<div>Account Login</div>} />
         </Routes>
@@ -363,9 +364,10 @@ describe('PortalDashboardPage', () => {
       { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
     ])
 
-    renderDashboardPage('/portal?panel=fulfillment')
+    renderDashboardPage('/shop/fulfillment')
 
     expect(await screen.findByRole('heading', { name: 'Fulfillment operations' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Back to portal' })).toHaveAttribute('href', '/portal')
 
     await waitFor(() => {
       expect(getPortalOrders).toHaveBeenCalledWith({ bucket: 'recent', page: 1, pageSize: 3 })
@@ -392,7 +394,7 @@ describe('PortalDashboardPage', () => {
     })
   })
 
-  it('places store products below fulfillment operations for owners', async () => {
+  it('keeps store management out of the main portal dashboard', async () => {
     getPortalMe.mockResolvedValue({
       id: 31,
       username: 'demo_owner',
@@ -407,9 +409,26 @@ describe('PortalDashboardPage', () => {
 
     renderDashboardPage('/portal')
 
-    const fulfillmentHeading = await screen.findByRole('heading', { name: 'Fulfillment operations' })
-    const productsHeading = await screen.findByRole('heading', { name: 'Store products' })
-    expect(fulfillmentHeading.compareDocumentPosition(productsHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    await screen.findByRole('heading', { name: 'Employee Controls' })
+    expect(screen.queryByRole('heading', { name: 'Store products' })).not.toBeInTheDocument()
+  })
+
+  it('keeps fulfillment operations out of the main portal dashboard', async () => {
+    getPortalMe.mockResolvedValue({
+      id: 31,
+      username: 'demo_owner',
+      email: 'owner@example.com',
+      fullName: 'Demo Owner',
+      role: 'owner',
+      allowedCompanyIds: [1],
+    })
+    getPortalCompanies.mockResolvedValue([
+      { id: 1, name: 'Acme Lifts', contact_email: 'hello@acme.test', contact_phone: '555-0100' },
+    ])
+
+    renderDashboardPage('/portal')
+
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Fulfillment operations' })).not.toBeInTheDocument())
   })
 
   it('allows office staff to view and update an individual paid order status', async () => {
@@ -450,7 +469,7 @@ describe('PortalDashboardPage', () => {
       totalPages: 1,
     })
 
-    renderDashboardPage('/portal?panel=fulfillment')
+    renderDashboardPage('/shop/fulfillment')
 
     await screen.findByRole('heading', { name: 'Fulfillment operations' })
     const viewOrderButtons = await screen.findAllByRole('button', { name: 'View order' })

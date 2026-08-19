@@ -3,8 +3,9 @@ import { queryKeys } from '../queryKeys'
 import { authFetch, parseResponse } from '../utils/portalApi'
 
 async function catalogRequest(path, options = {}) {
+  const isMultipart = typeof FormData !== 'undefined' && options.body instanceof FormData
   const response = await authFetch(path, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    headers: isMultipart ? (options.headers || {}) : { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options,
   })
   return parseResponse(response, path)
@@ -38,9 +39,23 @@ export function useCatalogManagementMutation() {
           : productId
             ? `/portal/catalog/products/${productId}/`
             : '/portal/catalog/products/'
+      const images = Array.isArray(payload?.images) ? payload.images.filter(Boolean) : []
+      const body = images.length > 0
+        ? (() => {
+            const formData = new FormData()
+            Object.entries(payload || {}).forEach(([key, value]) => {
+              if (key !== 'images' && value != null) {
+                const serializedValue = Array.isArray(value) ? JSON.stringify(value) : String(value)
+                formData.set(key, serializedValue)
+              }
+            })
+            images.forEach((image) => formData.append('images', image))
+            return formData
+          })()
+        : JSON.stringify(payload || {})
       return catalogRequest(path, {
         method: productId && action !== 'stock' && action !== 'state' ? 'PATCH' : 'POST',
-        body: JSON.stringify(payload || {}),
+        body,
       })
     },
     onSuccess: (product) => invalidateCatalogQueries(queryClient, product),

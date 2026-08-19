@@ -17,6 +17,7 @@ export default function AccountOverviewPage() {
   const canViewOrders = Boolean(account?.capabilities?.canViewOrders)
   const canAccessPortal = Boolean(account?.capabilities?.canAccessPortal)
   const canFulfillOrders = Boolean(account?.capabilities?.canFulfillOrders)
+  const canManageShop = Boolean(account?.capabilities?.canManageShop)
 
   useEffect(() => {
     let cancelled = false
@@ -119,8 +120,14 @@ export default function AccountOverviewPage() {
                     <span aria-hidden="true">&rarr;</span>
                   </Link>
                   {canFulfillOrders && (
-                    <Link className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-4 text-[#123A7A] shadow-sm transition hover:border-[#123A7A] hover:shadow-md" to="/portal?panel=fulfillment">
+                    <Link className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-4 text-[#123A7A] shadow-sm transition hover:border-[#123A7A] hover:shadow-md" to="/shop/fulfillment">
                       <span className="flex items-center gap-3 font-bold"><Package2 size={20} aria-hidden="true" />Fulfillment operations</span>
+                      <span aria-hidden="true">&rarr;</span>
+                    </Link>
+                  )}
+                  {canManageShop && (
+                    <Link className="flex items-center justify-between rounded-md border border-slate-200 bg-white px-4 py-4 text-[#123A7A] shadow-sm transition hover:border-[#123A7A] hover:shadow-md" to="/shop/shop-management">
+                      <span className="flex items-center gap-3 font-bold"><ShoppingBag size={20} aria-hidden="true" />Shop management</span>
                       <span aria-hidden="true">&rarr;</span>
                     </Link>
                   )}

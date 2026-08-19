@@ -541,6 +541,24 @@ class CatalogProduct(models.Model):
         return self.title or self.handle
 
 
+class CatalogProductImage(models.Model):
+    product = models.ForeignKey(
+        CatalogProduct,
+        on_delete=models.CASCADE,
+        related_name="images",
+    )
+    image = models.ImageField(upload_to="products/")
+    alt_text = models.CharField(max_length=255, blank=True, default="")
+    sort_order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["sort_order", "id"]
+
+    def __str__(self):
+        return f"{self.product.title} image {self.sort_order + 1}"
+
+
 class Company(models.Model):
     name = models.CharField(max_length=200, unique=True)
     slug = models.SlugField(max_length=220, unique=True)
