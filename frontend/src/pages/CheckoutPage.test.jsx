@@ -115,7 +115,7 @@ describe('checkout saved-address flow', () => {
 
     const savedAddressSelect = await screen.findByLabelText(/Saved address/i)
     await user.selectOptions(savedAddressSelect, '7')
-    await user.click(screen.getByRole('button', { name: /Prepare Secure Payment/i }))
+    await user.click(screen.getByRole('button', { name: /Continue to payment/i }))
 
     await waitFor(() => expect(createOnsitePaymentIntent).toHaveBeenCalled())
     expect(screen.getByTestId('delivery-address-heading')).toBeInTheDocument()
@@ -159,7 +159,7 @@ describe('checkout saved-address flow', () => {
     await user.click(screen.getByLabelText(/Create an account/i))
     await user.type(screen.getByLabelText(/^Password$/i), 'StrongPassword123')
     await user.type(screen.getByLabelText(/^Confirm password$/i), 'StrongPassword123')
-    await user.click(screen.getByRole('button', { name: /Prepare Secure Payment/i }))
+    await user.click(screen.getByRole('button', { name: /Continue to payment/i }))
 
     await waitFor(() => expect(registerCommerceAccount).toHaveBeenCalled())
     expect(registerCommerceAccount).toHaveBeenCalledWith(expect.objectContaining({
@@ -198,7 +198,7 @@ describe('checkout saved-address flow', () => {
     expect(screen.getByLabelText(/Saved address/i)).toBeInTheDocument()
   })
 
-  it('shows server-confirmed pricing and a stale-cart notice after payment preparation', async () => {
+  it('shows a customer-facing payment step and order refresh notice after preparation', async () => {
     const user = userEvent.setup()
     createOnsitePaymentIntent.mockImplementationOnce(async (_items, checkoutRef, _customer, options) => ({
       checkoutRef,
@@ -223,9 +223,10 @@ describe('checkout saved-address flow', () => {
     await user.click(await screen.findByRole('button', { name: /Continue as guest/i }))
     await user.type(screen.getByLabelText(/Full Name/i), 'Guest User')
     await user.type(screen.getByLabelText(/Email/i), 'guest@example.com')
-    await user.click(screen.getByRole('button', { name: /Prepare Secure Payment/i }))
+    await user.click(screen.getByRole('button', { name: /Continue to payment/i }))
 
-    expect(await screen.findByText(/Server-confirmed summary/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Server-confirmed summary/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /Payment/i })).toBeInTheDocument()
     expect(screen.getByText(/We refreshed your order with the latest pricing and stock availability/i)).toBeInTheDocument()
     expect(screen.getAllByText(/Chain Block/i).length).toBeGreaterThan(0)
     expect(screen.getByText('€12.50')).toBeInTheDocument()
@@ -279,7 +280,7 @@ describe('checkout saved-address flow', () => {
     await user.click(screen.getByLabelText(/Create an account/i))
     await user.type(screen.getByLabelText(/^Password$/i), 'StrongPassword123')
     await user.type(screen.getByLabelText(/^Confirm password$/i), 'StrongPassword123')
-    await user.click(screen.getByRole('button', { name: /Prepare Secure Payment/i }))
+    await user.click(screen.getByRole('button', { name: /Continue to payment/i }))
 
     await waitFor(() => expect(registerCommerceAccount).toHaveBeenCalled())
     expect(registerCommerceAccount).toHaveBeenCalledWith(expect.objectContaining({
@@ -363,7 +364,7 @@ describe('checkout saved-address flow', () => {
     )
 
     await screen.findByText(/Signed in as/i)
-    const prepareButton = await screen.findByRole('button', { name: /Prepare Secure Payment/i })
+    const prepareButton = await screen.findByRole('button', { name: /Continue to payment/i })
     await user.click(prepareButton)
     await user.click(prepareButton)
 
@@ -407,13 +408,13 @@ describe('checkout saved-address flow', () => {
     )
 
     await screen.findByText(/Signed in as/i)
-    const prepareButton = await screen.findByRole('button', { name: /Prepare Secure Payment/i })
+    const prepareButton = await screen.findByRole('button', { name: /Continue to payment/i })
     await user.click(prepareButton)
     expect(await screen.findByText(/could not reach checkout/i)).toBeInTheDocument()
     expect(screen.getByRole('alert')).toHaveTextContent(/could not reach checkout/i)
     expect(screen.getByLabelText(/Full Name/i)).toHaveValue('Jane Doe')
 
-    await user.click(screen.getByRole('button', { name: /Prepare Secure Payment/i }))
+    await user.click(screen.getByRole('button', { name: /Continue to payment/i }))
     expect(await screen.findByText(/Secure payment details loaded/i)).toBeInTheDocument()
     expect(createOnsitePaymentIntent).toHaveBeenCalledTimes(2)
   })

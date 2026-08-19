@@ -5,7 +5,8 @@ import ShopPageLayout from '../components/ShopPageLayout'
 import { ProductDetailSkeleton } from '../components/ShopSkeleton'
 import { useCart } from '../context/CartContext'
 import { useProductQuery } from '../hooks/useCatalogQueries'
-import { formatCurrency, getUserFacingErrorMessage, shopRoutes } from '../utils/shopConfig'
+import StockStatusBadge from '../components/StockStatusBadge'
+import { formatCurrency, getStockStatus, getUserFacingErrorMessage, shopRoutes } from '../utils/shopConfig'
 import usePageMeta from '../utils/usePageMeta'
 
 export default function ShopProductPage() {
@@ -28,6 +29,7 @@ export default function ShopProductPage() {
 
   const basePrice = Number(product?.price || 0)
   const displayPrice = useMemo(() => basePrice * quantity, [basePrice, quantity])
+  const stockStatus = getStockStatus(product)
 
   return (
     <ShopPageLayout>
@@ -54,41 +56,51 @@ export default function ShopProductPage() {
               </Link>
             </div>
 
-            <div className="grid gap-10 md:grid-cols-2 md:items-start">
-              <div>
+            <div className="grid gap-8 md:grid-cols-[1.1fr_0.9fr] md:items-start lg:gap-14">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:p-6">
                 {product?.imageUrl ? (
                   <img
                     src={product.imageUrl}
                     alt={product.imageAlt || product.title}
                     fetchPriority="high"
                     decoding="async"
-                    className="mx-auto max-h-[70vh] w-full rounded-2xl border border-slate-200 object-contain bg-white"
+                    className="mx-auto max-h-[70vh] w-full rounded-xl object-contain mix-blend-multiply"
                   />
                 ) : (
                   <div className="mx-auto aspect-[4/3] max-h-[70vh] w-full rounded-2xl border border-slate-200 bg-slate-100" />
                 )}
               </div>
 
-              <div className="md:pt-2">
+              <div className="md:pt-3">
                 <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">
                   Product
                 </p>
-                <h1 className="mt-2 text-4xl font-extrabold text-[#123A7A] md:text-5xl">
+                <h1 className="mt-2 max-w-xl text-4xl font-extrabold leading-tight text-[#123A7A] md:text-5xl">
                   {product?.title || 'Product'}
                 </h1>
-                <p className="mt-4 text-2xl font-bold text-[#C61F2A]">
+                <p className="mt-5 text-3xl font-bold text-[#C61F2A]">
                   {formatCurrency(displayPrice, product?.currency)}
                 </p>
-                <p className="mt-6 max-w-2xl text-slate-600">{product?.description || ' '}</p>
+                <p className="mt-5 max-w-2xl leading-relaxed text-slate-600">
+                  {product?.description || 'Product details available on request.'}
+                </p>
 
-                <div className="mt-8">
+                <div className="mt-8 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <StockStatusBadge status={stockStatus} />
+                  <p className="mt-3 text-sm text-slate-600">
+                    {stockStatus.canAdd
+                      ? product.inventoryTracked
+                        ? `Choose up to ${Math.max(1, product.availableQty)} units.`
+                        : 'Quantity is confirmed when your order is prepared.'
+                      : 'This item cannot be added to the cart right now.'}
+                  </p>
                   <QuantityAddToCart
                     unitPrice={basePrice}
                     max={product.inventoryTracked ? Math.max(1, product.availableQty) : 99}
-                    disabled={product.stockPolicy === 'unavailable' || (product.inventoryTracked && product.availableQty <= 0) || (product.stockPolicy === 'finite' && product.availableQty <= 0)}
+                    disabled={!stockStatus.canAdd}
                     onQuantityChange={setQuantity}
                     onAdd={(selectedQuantity) => addItem(product, selectedQuantity)}
-                    buttonLabel={product.stockPolicy === 'unavailable' || (product.inventoryTracked && product.availableQty <= 0) || (product.stockPolicy === 'finite' && product.availableQty <= 0) ? 'Unavailable' : 'Add to Cart'}
+                    buttonLabel={stockStatus.canAdd ? 'Add to Cart' : stockStatus.label}
                   />
                 </div>
 

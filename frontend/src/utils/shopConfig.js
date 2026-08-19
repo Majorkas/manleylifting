@@ -118,6 +118,53 @@ export function getUserFacingErrorMessage(error, fallbackMessage = 'Something we
   return message || fallbackMessage
 }
 
+export function getStockStatus(product = {}) {
+  if (product.stockPolicy === 'unavailable') {
+    return {
+      label: 'Unavailable',
+      detail: 'Contact us for availability',
+      tone: 'negative',
+      canAdd: false,
+    }
+  }
+
+  if (product.inventoryTracked || product.stockPolicy === 'finite') {
+    const availableQty = Math.max(0, Number(product.availableQty || 0))
+
+    if (availableQty === 0) {
+      return {
+        label: 'Out of stock',
+        detail: 'Currently unavailable',
+        tone: 'negative',
+        canAdd: false,
+      }
+    }
+
+    if (availableQty <= 5) {
+      return {
+        label: 'Low stock',
+        detail: `Only ${availableQty} left`,
+        tone: 'caution',
+        canAdd: true,
+      }
+    }
+
+    return {
+      label: 'In stock',
+      detail: `${availableQty} available`,
+      tone: 'positive',
+      canAdd: true,
+    }
+  }
+
+  return {
+    label: 'Available to order',
+    detail: 'Stock confirmed at checkout',
+    tone: 'positive',
+    canAdd: true,
+  }
+}
+
 function getCookie(name) {
   if (typeof document === 'undefined') return ''
   const cookie = document.cookie

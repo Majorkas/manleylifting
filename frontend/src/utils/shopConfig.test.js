@@ -8,6 +8,7 @@ import {
   createOnsitePaymentIntent,
   getOnsiteCheckoutStatus,
   generateCapabilityToken,
+  getStockStatus,
   loadGuestCheckoutOffer,
   loadCartItems,
   loadPendingCheckout,
@@ -231,5 +232,61 @@ describe('shopConfig cart normalization', () => {
     expect(result.shippingCents).toBe(1299)
     expect(result.subtotalCents).toBe(1000)
     expect(result.amountTotalCents).toBe(2299)
+  })
+})
+
+describe('shopConfig stock presentation', () => {
+  it('describes healthy tracked stock', () => {
+    expect(getStockStatus({ inventoryTracked: true, availableQty: 12 })).toEqual({
+      label: 'In stock',
+      detail: '12 available',
+      tone: 'positive',
+      canAdd: true,
+    })
+  })
+
+  it('calls out low tracked stock', () => {
+    expect(getStockStatus({ inventoryTracked: true, availableQty: 3 })).toEqual({
+      label: 'Low stock',
+      detail: 'Only 3 left',
+      tone: 'caution',
+      canAdd: true,
+    })
+  })
+
+  it('blocks an out-of-stock tracked product', () => {
+    expect(getStockStatus({ inventoryTracked: true, availableQty: 0 })).toEqual({
+      label: 'Out of stock',
+      detail: 'Currently unavailable',
+      tone: 'negative',
+      canAdd: false,
+    })
+  })
+
+  it('blocks a finite product with no remaining quantity', () => {
+    expect(getStockStatus({ inventoryTracked: false, stockPolicy: 'finite', availableQty: 0 })).toEqual({
+      label: 'Out of stock',
+      detail: 'Currently unavailable',
+      tone: 'negative',
+      canAdd: false,
+    })
+  })
+
+  it('describes untracked products as available to order', () => {
+    expect(getStockStatus({ inventoryTracked: false, stockPolicy: 'infinite' })).toEqual({
+      label: 'Available to order',
+      detail: 'Stock confirmed at checkout',
+      tone: 'positive',
+      canAdd: true,
+    })
+  })
+
+  it('blocks products explicitly marked unavailable', () => {
+    expect(getStockStatus({ inventoryTracked: false, stockPolicy: 'unavailable' })).toEqual({
+      label: 'Unavailable',
+      detail: 'Contact us for availability',
+      tone: 'negative',
+      canAdd: false,
+    })
   })
 })

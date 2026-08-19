@@ -196,6 +196,8 @@ export default function CheckoutPage() {
     savedAddresses.find((address) => String(address.id) === String(selectedAddressId)) ||
     (savedAddresses.length === 1 ? savedAddresses[0] : null)
   const shouldShowSavedAddressExperience = checkoutAccountState === 'signed-in'
+  const displayedTotal = amountTotalCents > 0 ? amountTotalCents / 100 : subtotal
+  const displayedTotalLabel = amountTotalCents > 0 ? 'Total' : 'Current subtotal'
 
   useEffect(() => {
     if (!savedAddresses.length) return
@@ -625,7 +627,7 @@ export default function CheckoutPage() {
             </p>
           </div>
           <div className="rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-semibold text-slate-700">
-            Fast, secure, tracked delivery
+            Secure payment · Order updates
           </div>
         </div>
 
@@ -992,29 +994,19 @@ export default function CheckoutPage() {
             </div>
 
             <div className="mt-6 border-t border-slate-200 pt-6">
-              <div className="rounded-lg border border-slate-200 bg-white p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Server-confirmed summary</p>
-                    <p className="mt-1 text-sm text-slate-600">
-                      {amountTotalCents > 0 ? 'We verified the current order total before checkout.' : 'We will confirm the final total once the server prepares payment.'}
-                    </p>
-                  </div>
-                  <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
-                    Verified
-                  </span>
-                </div>
-                {priceRefreshNotice && (
-                  <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-                    {priceRefreshNotice}
-                  </p>
-                )}
+              <div className="flex items-center justify-between">
+                <span className="text-base font-bold text-[#123A7A]">{displayedTotalLabel}</span>
+                <span className="text-xl font-extrabold text-[#C61F2A]">
+                  {formatCurrency(displayedTotal, checkoutCurrency)}
+                </span>
               </div>
 
-              <div className="mt-4 flex items-center justify-between">
-                <span className="text-base font-bold text-[#123A7A]">Total</span>
-                <span className="text-xl font-extrabold text-[#C61F2A]">{formatCurrency(amountTotalCents / 100, checkoutCurrency)}</span>
-              </div>
+              {priceRefreshNotice && (
+                <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900" role="status" aria-live="polite">
+                  <p className="font-semibold">Order updated</p>
+                  <p className="mt-1">{priceRefreshNotice}</p>
+                </div>
+              )}
 
               {serverLineItems.length > 0 && (
                 <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3">
@@ -1026,7 +1018,7 @@ export default function CheckoutPage() {
                         <span className="font-semibold text-slate-900">{formatCurrency((line.lineTotalCents || 0) / 100, checkoutCurrency)}</span>
                       </div>
                     ))}
-                    <div className="flex items-center justify-between border-t border-slate-200 pt-2"><span>Server subtotal</span><span>{formatCurrency(serverSubtotalCents / 100, checkoutCurrency)}</span></div>
+                    <div className="flex items-center justify-between border-t border-slate-200 pt-2"><span>Subtotal</span><span>{formatCurrency(serverSubtotalCents / 100, checkoutCurrency)}</span></div>
                     <div className="flex items-center justify-between"><span>Shipping</span><span>{serverShippingCents ? formatCurrency(serverShippingCents / 100, checkoutCurrency) : 'Free'}</span></div>
                     <div className="flex items-center justify-between"><span>VAT/tax</span><span>{formatCurrency(serverTaxCents / 100, checkoutCurrency)}</span></div>
                   </div>
@@ -1034,6 +1026,24 @@ export default function CheckoutPage() {
               )}
 
               <div className="mt-8 space-y-3">
+                <section className="rounded-xl border border-slate-200 bg-white p-4" aria-labelledby="payment-heading">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-[#C61F2A]">Payment</p>
+                    <h3 id="payment-heading" className="mt-1 text-lg font-bold text-[#123A7A]">
+                      {clientSecret ? 'Enter payment details' : 'Continue to secure payment'}
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-600">
+                      {clientSecret
+                        ? 'Your card details are handled securely by Stripe.'
+                        : 'We will confirm the final price and availability before showing the payment form.'}
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-700">
+                    Secure
+                  </span>
+                </div>
+
                 {turnstileSiteKey && (
                   <div className="rounded-lg border border-slate-200 bg-white p-3">
                     <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
@@ -1047,19 +1057,20 @@ export default function CheckoutPage() {
                   </div>
                 )}
 
-                <button
-                  type="button"
-                  onClick={handlePreparePayment}
-                  disabled={
-                    cartItems.length === 0 ||
-                    isSubmitting ||
-                    Boolean(turnstileSiteKey && (!turnstileToken || turnstileLoadError)) ||
-                    Boolean(clientSecret)
-                  }
-                  className="block w-full rounded-md bg-[#123A7A] px-6 py-3 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-[#0f3168] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isSubmitting ? 'Preparing Payment...' : 'Prepare Secure Payment'}
-                </button>
+                {!clientSecret && (
+                  <button
+                    type="button"
+                    onClick={handlePreparePayment}
+                    disabled={
+                      cartItems.length === 0 ||
+                      isSubmitting ||
+                      Boolean(turnstileSiteKey && (!turnstileToken || turnstileLoadError))
+                    }
+                    className="block w-full rounded-md bg-[#123A7A] px-6 py-3 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-[#0f3168] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isSubmitting ? 'Checking order...' : 'Continue to payment'}
+                  </button>
+                )}
 
                 {clientSecret && stripePromise && (
                   <Elements stripe={stripePromise} options={{ clientSecret }}>
@@ -1085,6 +1096,8 @@ export default function CheckoutPage() {
                     />
                   </Elements>
                 )}
+
+                </section>
 
                 <Link
                   to={shopRoutes.cart}

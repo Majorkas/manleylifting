@@ -5,10 +5,12 @@ import ShopPageLayout from '../components/ShopPageLayout'
 import { CollectionGridSkeleton } from '../components/ShopSkeleton'
 import { useCart } from '../context/CartContext'
 import { useCollectionQuery } from '../hooks/useCatalogQueries'
+import StockStatusBadge from '../components/StockStatusBadge'
 import {
   buildProductPath,
   formatCurrency,
   getUserFacingErrorMessage,
+  getStockStatus,
   shopRoutes,
 } from '../utils/shopConfig'
 import usePageMeta from '../utils/usePageMeta'
@@ -93,10 +95,13 @@ export default function ShopCollectionPage() {
               <CollectionGridSkeleton count={3} />
             ) : (
               <div className="grid gap-6 md:grid-cols-3">
-                {(collection?.products || []).map((product) => (
+                {(collection?.products || []).map((product) => {
+                  const stockStatus = getStockStatus(product)
+
+                  return (
                   <article
                     key={product.handle}
-                    className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+                    className="group flex h-full flex-col rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-[#123A7A] hover:shadow-md sm:p-5"
                   >
                     <Link
                       to={buildProductPath(product.handle)}
@@ -104,39 +109,45 @@ export default function ShopCollectionPage() {
                       aria-label={'View ' + product.title}
                     >
                       {product.imageUrl ? (
-                        <img
-                          src={product.imageUrl}
-                          alt={product.imageAlt || product.title}
-                          loading="lazy"
-                          decoding="async"
-                          className="aspect-[4/3] w-full rounded-lg object-cover"
-                        />
+                        <div className="overflow-hidden rounded-lg bg-slate-50">
+                          <img
+                            src={product.imageUrl}
+                            alt={product.imageAlt || product.title}
+                            loading="lazy"
+                            decoding="async"
+                            className="aspect-[4/3] w-full object-cover transition duration-300 group-hover:scale-[1.02]"
+                          />
+                        </div>
                       ) : (
                         <div className="aspect-[4/3] rounded-lg bg-slate-100" />
                       )}
 
-                      <h2 className="mt-5 text-xl font-bold text-[#123A7A] transition hover:text-[#C61F2A]">
+                      <div className="mt-5 flex items-start justify-between gap-3">
+                        <h2 className="text-xl font-bold leading-tight text-[#123A7A] transition group-hover:text-[#C61F2A]">
                         {product.title}
-                      </h2>
-                      <p className="mt-2 text-lg font-semibold text-[#C61F2A]">
-                        {formatCurrency(getDisplayPrice(product), product.currency)}
-                      </p>
+                        </h2>
+                        <p className="shrink-0 text-lg font-bold text-[#C61F2A]">
+                          {formatCurrency(getDisplayPrice(product), product.currency)}
+                        </p>
+                      </div>
                     </Link>
 
-                    <div className="mt-6 flex items-center gap-3">
+                    <div className="mt-auto pt-5">
+                      <StockStatusBadge status={stockStatus} compact />
                       <QuantityAddToCart
                         unitPrice={Number(product.price || 0)}
                         max={product.inventoryTracked ? Math.max(1, product.availableQty) : 99}
-                        disabled={product.stockPolicy === 'unavailable' || (product.inventoryTracked && product.availableQty <= 0) || (product.stockPolicy === 'finite' && product.availableQty <= 0)}
+                        disabled={!stockStatus.canAdd}
                         onQuantityChange={(quantity) =>
                           handleQuantityChange(product.handle, quantity)
                         }
                         onAdd={(quantity) => addItem(product, quantity)}
-                        buttonLabel={product.stockPolicy === 'unavailable' || (product.inventoryTracked && product.availableQty <= 0) || (product.stockPolicy === 'finite' && product.availableQty <= 0) ? 'Unavailable' : 'Add to Cart'}
+                        buttonLabel={stockStatus.canAdd ? 'Add to Cart' : stockStatus.label}
                       />
                     </div>
                   </article>
-                ))}
+                  )
+                })}
               </div>
             )}
           </div>
