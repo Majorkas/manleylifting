@@ -31,6 +31,7 @@ from .auth_sessions import (
 )
 from .auth_backends import resolve_login_user
 from .account_emails import send_security_notification_email
+from .privacy_tokens import verify_recovery_code
 from .models import AccountSecurityState, AccountSession, Certificate, Company, Equipment, InspectionReport, ReportImage, ReportRevision, Site, UserProfile
 
 REPORT_CHECKLIST_ALLOWED_STATUSES = {
@@ -548,6 +549,10 @@ class AccountDeleteSerializer(serializers.Serializer):
     confirm = serializers.BooleanField()
 
 
+class AccountDeleteRecoverySerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True, min_length=8, max_length=128)
+
+
 class UserProfileAssignmentSerializer(serializers.ModelSerializer):
     user_id = serializers.IntegerField(source="user.id", read_only=True)
     username = serializers.CharField(source="user.username", read_only=True)
@@ -721,7 +726,14 @@ class PortalTokenObtainPairSerializer(TokenObtainPairSerializer):
 
         cache.delete(failure_key)
 
+        # Store MFA code for potential consumption
+        mfa_code_for_consumption = mfa_code if (security_state and security_state.mfa_enabled) else None
+
         with transaction.atomic():
+            # Lock the security_state if MFA is enabled to ensure atomic recovery code consumption
+            if security_state and security_state.mfa_enabled:
+                security_state = AccountSecurityState.objects.select_for_update().filter(pk=security_state.pk).first()
+            
             data = super().validate(attrs)
             refresh_token = self.token_class(data["refresh"])
             _, is_new_device = create_account_session(
@@ -729,6 +741,9 @@ class PortalTokenObtainPairSerializer(TokenObtainPairSerializer):
                 refresh_token=refresh_token,
                 request=self.context.get("request"),
             )
+            # Consume recovery code if one was valid and used
+            if mfa_code_for_consumption and security_state:
+                self._consume_recovery_code(security_state, mfa_code_for_consumption)
             if is_new_device:
                 send_security_notification_email(
                     recipient_email=self.user.email,
@@ -748,9 +763,22 @@ class PortalTokenObtainPairSerializer(TokenObtainPairSerializer):
         expected = _totp_code(security_state.mfa_secret)
         if code == expected:
             return True
-        if code in (security_state.mfa_recovery_codes or []):
-            return True
+        # Check recovery codes against stored hashes
+        for stored_hash in (security_state.mfa_recovery_codes or []):
+            if verify_recovery_code(code, stored_hash):
+                return True
         return False
+
+    def _consume_recovery_code(self, security_state, code):
+        """Atomically remove a recovery code from the stored list after use."""
+        if not security_state or not security_state.mfa_recovery_codes:
+            return
+        remaining_codes = []
+        for stored_hash in security_state.mfa_recovery_codes:
+            if not verify_recovery_code(code, stored_hash):
+                remaining_codes.append(stored_hash)
+        security_state.mfa_recovery_codes = remaining_codes
+        security_state.save(update_fields=["mfa_recovery_codes", "updated_at"])
 
 
 class PortalTokenRefreshSerializer(TokenRefreshSerializer):

@@ -1,10 +1,12 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import CheckoutPage from './CheckoutPage'
-import { createOnsitePaymentIntent } from '../utils/shopConfig'
-import { getAccountAddresses, getAccountBootstrap, registerCommerceAccount } from '../utils/portalApi'
+import { QueryProvider } from '../test/testQueryClient'
+import { createTestQueryClient } from '../test/createTestQueryClient'
+import { createOnsitePaymentIntent, getOnsiteCheckoutStatus, loadPendingCheckout } from '../utils/shopConfig'
+import { getAccessToken, getAccountAddresses, getAccountBootstrap, registerCommerceAccount } from '../utils/portalApi'
 
 vi.mock('../components/ShopPageLayout', () => ({
   default: ({ children }) => <div>{children}</div>,
@@ -23,6 +25,7 @@ vi.mock('../utils/portalApi', () => ({
   createAccountAddress: vi.fn(),
   getAccountAddresses: vi.fn(),
   getAccountBootstrap: vi.fn(),
+  getAccessToken: vi.fn(),
   registerCommerceAccount: vi.fn(),
   hasPortalSession: vi.fn(() => false),
 }))
@@ -35,6 +38,7 @@ vi.mock('../utils/shopConfig', async () => {
     clearPendingCheckout: vi.fn(),
     saveCompletedCheckout: vi.fn(),
     loadPendingCheckout: vi.fn(() => null),
+    getOnsiteCheckoutStatus: vi.fn(),
     savePendingCheckout: vi.fn(),
     generateCheckoutRef: vi.fn(() => 'chk_test_123'),
   }
@@ -56,13 +60,19 @@ vi.mock('../utils/usePageMeta', () => ({
 }))
 
 describe('checkout saved-address flow', () => {
+  function renderWithQuery(ui) {
+    return render(<QueryProvider client={createTestQueryClient()}>{ui}</QueryProvider>)
+  }
+
   afterEach(() => {
     cleanup()
   })
 
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.useRealTimers()
     getAccountBootstrap.mockRejectedValue(new Error('not signed in'))
+    getAccessToken.mockReturnValue('')
     getAccountAddresses.mockResolvedValue([
       {
         id: 7,
@@ -80,13 +90,14 @@ describe('checkout saved-address flow', () => {
       },
     ])
     registerCommerceAccount.mockResolvedValue({ ok: true })
-    createOnsitePaymentIntent.mockResolvedValue({
-      checkoutRef: 'chk_test_123',
-      statusToken: 'status-token',
+    createOnsitePaymentIntent.mockImplementation(async (_items, checkoutRef, _customer, options) => ({
+      checkoutRef,
+      statusToken: options.statusToken,
+      claimToken: options.claimToken,
       clientSecret: 'secret',
       amountTotalCents: 1000,
       currency: 'EUR',
-    })
+    }))
   })
 
   it('sends the selected saved address as shipping details during payment preparation', async () => {
@@ -96,7 +107,7 @@ describe('checkout saved-address flow', () => {
       email: 'jane@example.com',
     })
 
-    render(
+    renderWithQuery(
       <MemoryRouter>
         <CheckoutPage />
       </MemoryRouter>,
@@ -131,7 +142,7 @@ describe('checkout saved-address flow', () => {
     const user = userEvent.setup()
     getAccountBootstrap.mockRejectedValue(new Error('not signed in'))
 
-    render(
+    renderWithQuery(
       <MemoryRouter>
         <CheckoutPage />
       </MemoryRouter>,
@@ -174,7 +185,7 @@ describe('checkout saved-address flow', () => {
       email: 'jane@example.com',
     })
 
-    render(
+    renderWithQuery(
       <MemoryRouter>
         <CheckoutPage />
       </MemoryRouter>,
@@ -189,9 +200,10 @@ describe('checkout saved-address flow', () => {
 
   it('shows server-confirmed pricing and a stale-cart notice after payment preparation', async () => {
     const user = userEvent.setup()
-    createOnsitePaymentIntent.mockResolvedValue({
-      checkoutRef: 'chk_test_123',
-      statusToken: 'status-token',
+    createOnsitePaymentIntent.mockImplementationOnce(async (_items, checkoutRef, _customer, options) => ({
+      checkoutRef,
+      statusToken: options.statusToken,
+      claimToken: options.claimToken,
       clientSecret: 'secret',
       amountTotalCents: 1250,
       currency: 'EUR',
@@ -200,9 +212,9 @@ describe('checkout saved-address flow', () => {
         { title: 'Rope Sling', quantity: 1, unitAmountCents: 250, lineTotalCents: 250 },
       ],
       priceRefreshNotice: 'We refreshed your order with the latest pricing and stock availability.',
-    })
+    }))
 
-    render(
+    renderWithQuery(
       <MemoryRouter>
         <CheckoutPage />
       </MemoryRouter>,
@@ -222,7 +234,7 @@ describe('checkout saved-address flow', () => {
   it('shows a sign-in prompt for guests and lets them continue as guests', async () => {
     const user = userEvent.setup()
 
-    render(
+    renderWithQuery(
       <MemoryRouter>
         <CheckoutPage />
       </MemoryRouter>,
@@ -237,7 +249,7 @@ describe('checkout saved-address flow', () => {
   })
 
   it('keeps saved-address controls hidden until the guest chooses to continue', async () => {
-    render(
+    renderWithQuery(
       <MemoryRouter>
         <CheckoutPage />
       </MemoryRouter>,
@@ -251,7 +263,7 @@ describe('checkout saved-address flow', () => {
   it('creates a customer account for guests when the checkbox is selected', async () => {
     const user = userEvent.setup()
 
-    render(
+    renderWithQuery(
       <MemoryRouter>
         <CheckoutPage />
       </MemoryRouter>,
@@ -292,7 +304,7 @@ describe('checkout saved-address flow', () => {
       email: 'jane.smith@example.com',
     })
 
-    render(
+    renderWithQuery(
       <MemoryRouter>
         <CheckoutPage />
       </MemoryRouter>,
@@ -303,5 +315,106 @@ describe('checkout saved-address flow', () => {
       expect(screen.getByLabelText(/Full Name/i)).toHaveValue('Jane Smith')
       expect(screen.getByLabelText(/Email/i)).toHaveValue('jane.smith@example.com')
     })
+  })
+
+  it('shows a retry-safe timeout message when payment verification stalls', async () => {
+    vi.useFakeTimers()
+    try {
+      loadPendingCheckout.mockReturnValue({ checkoutRef: 'chk_pending_001', statusToken: 'tok_pending_001' })
+      getOnsiteCheckoutStatus.mockResolvedValue({ status: 'processing' })
+
+      renderWithQuery(
+        <MemoryRouter>
+          <CheckoutPage />
+        </MemoryRouter>,
+      )
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(125000)
+      })
+
+      expect(screen.getByText(/still being verified/i)).toBeInTheDocument()
+      expect(screen.getByRole('status')).toHaveTextContent(/still being verified/i)
+      expect(screen.getByRole('button', { name: /clear and retry/i })).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('prevents duplicate payment-intent requests while preparation is pending', async () => {
+    const user = userEvent.setup()
+    let resolvePaymentIntent
+    let paymentIntentOptions
+    createOnsitePaymentIntent.mockImplementationOnce(
+      (_items, checkoutRef, _customer, options) => new Promise((resolve) => {
+        paymentIntentOptions = { checkoutRef, options }
+        resolvePaymentIntent = resolve
+      }),
+    )
+    getAccountBootstrap.mockResolvedValue({
+      fullName: 'Jane Doe',
+      email: 'jane@example.com',
+    })
+
+    renderWithQuery(
+      <MemoryRouter>
+        <CheckoutPage />
+      </MemoryRouter>,
+    )
+
+    await screen.findByText(/Signed in as/i)
+    const prepareButton = await screen.findByRole('button', { name: /Prepare Secure Payment/i })
+    await user.click(prepareButton)
+    await user.click(prepareButton)
+
+    expect(createOnsitePaymentIntent).toHaveBeenCalledTimes(1)
+    expect(prepareButton).toBeDisabled()
+
+    await act(async () => {
+      resolvePaymentIntent({
+        checkoutRef: paymentIntentOptions.checkoutRef,
+        statusToken: paymentIntentOptions.options.statusToken,
+        claimToken: paymentIntentOptions.options.claimToken,
+        clientSecret: 'secret',
+        amountTotalCents: 1000,
+        currency: 'EUR',
+      })
+      await Promise.resolve()
+    })
+  })
+
+  it('keeps checkout details available after a network failure so payment preparation can be retried', async () => {
+    const user = userEvent.setup()
+    getAccountBootstrap.mockResolvedValue({
+      fullName: 'Jane Doe',
+      email: 'jane@example.com',
+    })
+    createOnsitePaymentIntent
+      .mockRejectedValueOnce(new Error('Failed to fetch'))
+      .mockImplementationOnce(async (_items, checkoutRef, _customer, options) => ({
+        checkoutRef,
+        statusToken: options.statusToken,
+        claimToken: options.claimToken,
+        clientSecret: 'secret',
+        amountTotalCents: 1000,
+        currency: 'EUR',
+      }))
+
+    renderWithQuery(
+      <MemoryRouter>
+        <CheckoutPage />
+      </MemoryRouter>,
+    )
+
+    await screen.findByText(/Signed in as/i)
+    const prepareButton = await screen.findByRole('button', { name: /Prepare Secure Payment/i })
+    await user.click(prepareButton)
+    expect(await screen.findByText(/could not reach checkout/i)).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent(/could not reach checkout/i)
+    expect(screen.getByLabelText(/Full Name/i)).toHaveValue('Jane Doe')
+
+    await user.click(screen.getByRole('button', { name: /Prepare Secure Payment/i }))
+    expect(await screen.findByText(/Secure payment details loaded/i)).toBeInTheDocument()
+    expect(createOnsitePaymentIntent).toHaveBeenCalledTimes(2)
   })
 })

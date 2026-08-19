@@ -1,12 +1,13 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import CustomerListSection from '../components/CustomerListSection'
 import EmployeeControlsSection from '../components/EmployeeControlsSection'
 import EquipmentTableSection from '../components/EquipmentTableSection'
 import Modal from '../components/Modal'
 import PaginationControls from '../components/PaginationControls'
 import PortalToast from '../components/PortalToast'
+import PortalCatalogManagementPanel from '../components/PortalCatalogManagementPanel'
 import PendingApprovalsSection from '../components/PendingApprovalsSection'
 import PortalLayout from '../components/PortalLayout'
 import {
@@ -16,6 +17,14 @@ import {
   EquipmentActivitySkeleton,
 } from '../components/PortalLoadingSkeletons'
 import usePageMeta from '../utils/usePageMeta'
+import { invalidatePortalOrderQueries } from '../queryInvalidation'
+import { queryKeys } from '../queryKeys'
+import { useFulfillmentOrdersQuery, usePortalCustomerOrdersQuery } from '../hooks/usePortalOrderQueries'
+import {
+  useEquipmentActivityQuery,
+  useEquipmentReportsQuery,
+  useGeneratedCertificatesQuery,
+} from '../hooks/usePortalReadQueries'
 import { exportRowsToCsv } from '../utils/csvExport'
 import {
   createPortalSite,
@@ -29,7 +38,6 @@ import {
   clearPortalSession,
   createEquipmentReport,
   deleteReport,
-  getAccountOrders,
   getEquipmentActivity,
   getEquipmentReports,
   getPortalCompanies,
@@ -38,8 +46,6 @@ import {
   getPortalEquipment,
   getPortalMe,
   getPortalOrderDetail,
-  getPortalOrders,
-  getSiteCertificates,
   getAccessToken,
   getPendingReportApprovals,
   generateSiteCertificates,
@@ -54,6 +60,8 @@ import {
   updatePortalCustomer,
   updatePortalSite,
   updatePortalOrderStatus,
+  cancelPortalOrder,
+  requestPortalOrderRefund,
   updateStaffAssignment,
   updateReport,
   updatePortalEquipment,
@@ -94,34 +102,19 @@ function formatOrderDate(value) {
 }
 
 const portalQueryKeys = {
-  profile: () => ['portal-profile'],
-  companies: () => ['portal-companies'],
-  companyHeader: (companyId = '') => ['portal-company-header', String(companyId || '')],
-  equipment: ({ companyId = '', siteId = '', search = '' } = {}) => [
-    'portal-equipment',
-    String(companyId || ''),
-    String(siteId || ''),
-    String(search || ''),
-  ],
-  equipmentRoot: () => ['portal-equipment'],
-  reports: (equipmentId = '') => ['portal-reports', String(equipmentId || '')],
-  reportsRoot: () => ['portal-reports'],
-  equipmentActivity: (equipmentId = '') => ['portal-equipment-activity', String(equipmentId || '')],
-  equipmentActivityRoot: () => ['portal-equipment-activity'],
-  generatedCertificates: (siteId = '') => ['portal-generated-certificates', String(siteId || '')],
-  generatedCertificatesRoot: () => ['portal-generated-certificates'],
-  pendingApprovals: (role = '') => ['portal-pending-approvals', String(role || '')],
-  pendingApprovalsRoot: () => ['portal-pending-approvals'],
-  dashboardStats: (role = '') => ['portal-dashboard-stats', String(role || '')],
-  dashboardStatsRoot: () => ['portal-dashboard-stats'],
-  staffAssignments: (status = '') => ['portal-staff-assignments', String(status || '')],
-  staffAssignmentsRoot: () => ['portal-staff-assignments'],
-  fulfillmentOrders: (bucket = '', page = 1, pageSize = 3) => [
-    'portal-fulfillment-orders',
-    String(bucket || ''),
-    Number(page || 1),
-    Number(pageSize || 3),
-  ],
+  reports: queryKeys.portalReports,
+  reportsRoot: queryKeys.portalReportsRoot,
+  equipmentActivity: queryKeys.portalEquipmentActivity,
+  equipmentActivityRoot: queryKeys.portalEquipmentActivityRoot,
+  generatedCertificates: queryKeys.portalGeneratedCertificates,
+  generatedCertificatesRoot: queryKeys.portalGeneratedCertificatesRoot,
+  pendingApprovals: queryKeys.portalPendingApprovals,
+  pendingApprovalsRoot: queryKeys.portalPendingApprovalsRoot,
+  dashboardStats: queryKeys.portalDashboardStats,
+  dashboardStatsRoot: queryKeys.portalDashboardStatsRoot,
+  staffAssignments: queryKeys.portalStaffAssignments,
+  staffAssignmentsRoot: queryKeys.portalStaffAssignmentsRoot,
+  equipmentRoot: queryKeys.portalEquipmentRoot,
 }
 const REPORT_SUBMISSION_CONFIRMATION_ITEMS = [
   'We have undertaken the test / thorough examination as prescribed.',
@@ -1483,39 +1476,20 @@ export default function PortalDashboardPage() {
     if (!selectedEquipment) return null
     return equipment.find((item) => String(item.id) === String(selectedEquipment.id)) || null
   }, [equipment, selectedEquipment])
-  const reportsQuery = useQuery({
-    queryKey: portalQueryKeys.reports(activeSelectedEquipment?.id),
-    queryFn: () => getEquipmentReports(activeSelectedEquipment.id),
-    enabled: Boolean(activeSelectedEquipment?.id),
-    staleTime: 30 * 1000,
-  })
+  const reportsQuery = useEquipmentReportsQuery(activeSelectedEquipment?.id, Boolean(activeSelectedEquipment?.id))
   const reportsLoading = reportsQuery.isLoading || reportsQuery.isFetching
   const requestedPanel = String(searchParams.get('panel') || '').trim().toLowerCase()
   const fulfillmentPanelRef = useRef(null)
 
-  const customerOrdersQuery = useQuery({
-    queryKey: ['portal-customer-orders'],
-    queryFn: getAccountOrders,
-    enabled: isPortalCustomer,
-    staleTime: 5 * 60 * 1000,
-  })
+  const customerOrdersQuery = usePortalCustomerOrdersQuery(isPortalCustomer)
   const customerOrders = customerOrdersQuery.data || []
   const customerOrdersLoading = customerOrdersQuery.isLoading || customerOrdersQuery.isFetching
 
-  const fulfillmentOrdersQuery = useQuery({
-    queryKey: portalQueryKeys.fulfillmentOrders(
-      fulfillmentOrdersTab,
-      fulfillmentOrdersPage,
-      fulfillmentOrdersPageSize,
-    ),
-    queryFn: () =>
-      getPortalOrders({
-        bucket: fulfillmentOrdersTab,
-        page: fulfillmentOrdersPage,
-        pageSize: fulfillmentOrdersPageSize,
-      }),
+  const fulfillmentOrdersQuery = useFulfillmentOrdersQuery({
+    bucket: fulfillmentOrdersTab,
+    page: fulfillmentOrdersPage,
+    pageSize: fulfillmentOrdersPageSize,
     enabled: canFulfillOrders,
-    staleTime: 60 * 1000,
   })
   const fulfillmentOrders = Array.isArray(fulfillmentOrdersQuery.data?.results)
     ? fulfillmentOrdersQuery.data.results
@@ -1527,12 +1501,28 @@ export default function PortalDashboardPage() {
     mutationFn: ({ orderNumber, status }) => updatePortalOrderStatus(orderNumber, status),
     onSuccess: async (updatedOrder) => {
       setFulfillmentOrderDetail(updatedOrder)
-      await queryClient.invalidateQueries({ queryKey: ['portal-fulfillment-orders'] })
+      await invalidatePortalOrderQueries(queryClient, updatedOrder?.orderNumber)
       setFulfillmentOrderActionError('')
     },
     onError: (error) => {
       setFulfillmentOrderActionError(String(error?.message || 'Unable to update order status.'))
     },
+  })
+  const cancelOrderMutation = useMutation({
+    mutationFn: ({ orderNumber, reason }) => cancelPortalOrder(orderNumber, reason),
+    onSuccess: async (updatedOrder) => {
+      setFulfillmentOrderDetail(updatedOrder)
+      await invalidatePortalOrderQueries(queryClient, updatedOrder?.orderNumber)
+    },
+    onError: (error) => setFulfillmentOrderActionError(String(error?.message || 'Unable to cancel order.')),
+  })
+  const refundOrderMutation = useMutation({
+    mutationFn: ({ orderNumber, amountCents, reason }) => requestPortalOrderRefund(orderNumber, amountCents, reason),
+    onSuccess: async (updatedOrder) => {
+      setFulfillmentOrderDetail(updatedOrder)
+      await invalidatePortalOrderQueries(queryClient, updatedOrder?.orderNumber)
+    },
+    onError: (error) => setFulfillmentOrderActionError(String(error?.message || 'Unable to request refund.')),
   })
 
   const openFulfillmentOrder = useCallback(async (orderNumber) => {
@@ -1543,7 +1533,10 @@ export default function PortalDashboardPage() {
     setLoadingFulfillmentOrderDetail(true)
     setFulfillmentOrderActionError('')
     try {
-      const detail = await getPortalOrderDetail(normalizedOrderNumber)
+      const detail = await queryClient.fetchQuery({
+        queryKey: queryKeys.portalOrder(normalizedOrderNumber),
+        queryFn: () => getPortalOrderDetail(normalizedOrderNumber),
+      })
       setFulfillmentOrderDetail(detail)
     } catch (error) {
       setFulfillmentOrderDetail(null)
@@ -1551,20 +1544,13 @@ export default function PortalDashboardPage() {
     } finally {
       setLoadingFulfillmentOrderDetail(false)
     }
-  }, [])
+  }, [queryClient])
 
-  const equipmentActivityQuery = useQuery({
-    queryKey: portalQueryKeys.equipmentActivity(activeSelectedEquipment?.id),
-    queryFn: () => getEquipmentActivity(activeSelectedEquipment.id),
-    enabled: Boolean(activeSelectedEquipment?.id && canViewEquipmentActivity),
-    staleTime: 60 * 1000,
-  })
-  const generatedCertificatesQuery = useQuery({
-    queryKey: portalQueryKeys.generatedCertificates(generatedCertificatesSiteId),
-    queryFn: () => getSiteCertificates(generatedCertificatesSiteId),
-    enabled: Boolean(generatedCertificatesSiteId),
-    staleTime: 5 * 60 * 1000,
-  })
+  const equipmentActivityQuery = useEquipmentActivityQuery(
+    activeSelectedEquipment?.id,
+    canViewEquipmentActivity,
+  )
+  const generatedCertificatesQuery = useGeneratedCertificatesQuery(generatedCertificatesSiteId, true)
   const generatedCertificates = generatedCertificatesQuery.data || []
   const generatedCertificatesLoading = generatedCertificatesQuery.isLoading || generatedCertificatesQuery.isFetching
 
@@ -1813,7 +1799,7 @@ export default function PortalDashboardPage() {
     },
     onSuccess: async (updated, variables) => {
       await invalidatePortalCaches([
-        portalQueryKeys.companies(),
+        queryKeys.portalCompanies(),
       ])
       const refreshedCompanies = await fetchPortalCompanies()
       setCompanies(refreshedCompanies)
@@ -1991,7 +1977,7 @@ export default function PortalDashboardPage() {
     },
     onSuccess: async (created) => {
       await invalidatePortalCaches([
-        portalQueryKeys.companies(),
+        queryKeys.portalCompanies(),
       ])
       const refreshedCompanies = await fetchPortalCompanies()
       setCompanies(refreshedCompanies)
@@ -2024,7 +2010,7 @@ export default function PortalDashboardPage() {
     },
     onSuccess: async (createdSite, variables) => {
       await invalidatePortalCaches([
-        portalQueryKeys.companyHeader(variables.companyId),
+        queryKeys.portalCompanyHeader(variables.companyId),
         portalQueryKeys.equipmentRoot(),
       ])
       const nextCompany = await fetchPortalCompanyHeader(variables.companyId)
@@ -2055,7 +2041,7 @@ export default function PortalDashboardPage() {
     },
     onSuccess: async (updatedSite, variables) => {
       await invalidatePortalCaches([
-        portalQueryKeys.companyHeader(variables.companyId),
+        queryKeys.portalCompanyHeader(variables.companyId),
         portalQueryKeys.equipmentRoot(),
       ])
       const nextCompany = await fetchPortalCompanyHeader(variables.companyId)
@@ -2079,7 +2065,7 @@ export default function PortalDashboardPage() {
     },
     onSuccess: async (_result, variables) => {
       await invalidatePortalCaches([
-        portalQueryKeys.companyHeader(variables.companyId),
+        queryKeys.portalCompanyHeader(variables.companyId),
         portalQueryKeys.equipmentRoot(),
       ])
       const nextCompany = await fetchPortalCompanyHeader(variables.companyId)
@@ -2568,7 +2554,7 @@ export default function PortalDashboardPage() {
       )
 
       await invalidatePortalCaches([
-        portalQueryKeys.companies(),
+        queryKeys.portalCompanies(),
         portalQueryKeys.dashboardStatsRoot(),
       ])
 
@@ -3701,7 +3687,7 @@ export default function PortalDashboardPage() {
   }
 
   async function fetchPortalCompanies({ force = false } = {}) {
-    const companiesQueryKey = portalQueryKeys.companies()
+    const companiesQueryKey = queryKeys.portalCompanies()
     if (force) {
       await queryClient.invalidateQueries({ queryKey: companiesQueryKey, exact: true })
     }
@@ -3714,7 +3700,7 @@ export default function PortalDashboardPage() {
   }
 
   async function fetchPortalProfile({ force = false } = {}) {
-    const profileQueryKey = portalQueryKeys.profile()
+    const profileQueryKey = queryKeys.portalProfile()
     if (force) {
       await queryClient.invalidateQueries({ queryKey: profileQueryKey, exact: true })
     }
@@ -3727,7 +3713,7 @@ export default function PortalDashboardPage() {
   }
 
   async function fetchPortalCompanyHeader(companyId, { force = false } = {}) {
-    const companyHeaderQueryKey = portalQueryKeys.companyHeader(companyId)
+    const companyHeaderQueryKey = queryKeys.portalCompanyHeader(companyId)
     if (force) {
       await queryClient.invalidateQueries({ queryKey: companyHeaderQueryKey, exact: true })
     }
@@ -3743,7 +3729,7 @@ export default function PortalDashboardPage() {
     { companyId, siteId = '', search = '' },
     { force = false } = {},
   ) {
-    const equipmentQueryKey = portalQueryKeys.equipment({ companyId, siteId, search })
+    const equipmentQueryKey = queryKeys.portalEquipment({ companyId, siteId, search })
     if (force) {
       await queryClient.invalidateQueries({ queryKey: equipmentQueryKey, exact: true })
     }
@@ -3872,7 +3858,7 @@ export default function PortalDashboardPage() {
     setErrorMessage('')
 
     try {
-      const equipmentQueryKey = portalQueryKeys.equipment({
+      const equipmentQueryKey = queryKeys.portalEquipment({
         companyId: companyIdForRefresh,
         siteId: selectedSiteId,
         search: searchQuery,
@@ -5677,6 +5663,8 @@ export default function PortalDashboardPage() {
           </section>
         )}
 
+        {isOwner && <PortalCatalogManagementPanel />}
+
         <Modal
           open={showFulfillmentOrderModal}
           panelClassName="max-h-[calc(100vh-2rem)] w-full max-w-3xl overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 shadow-xl sm:max-h-[calc(100vh-3rem)] sm:p-6"
@@ -5799,6 +5787,32 @@ export default function PortalDashboardPage() {
                     )}
                     {fulfillmentOrderDetail.status === 'completed' && (
                       <p className="text-sm text-emerald-700">This order is already completed.</p>
+                    )}
+                    {(fulfillmentOrderDetail.status === 'paid' || fulfillmentOrderDetail.status === 'shipped') && (
+                      <button
+                        type="button"
+                        disabled={cancelOrderMutation.isPending}
+                        onClick={() => {
+                          const reason = window.prompt('Cancellation reason')
+                          if (reason?.trim()) cancelOrderMutation.mutate({ orderNumber: fulfillmentOrderDetail.orderNumber, reason })
+                        }}
+                        className="min-h-11 w-full rounded-md border border-red-600 bg-white px-4 py-2 text-left text-sm font-semibold text-red-700 sm:w-auto sm:text-center"
+                      >
+                        Cancel order
+                      </button>
+                    )}
+                    {profile?.role === 'owner' && fulfillmentOrderDetail.paymentStatus === 'paid' && (
+                      <button
+                        type="button"
+                        disabled={refundOrderMutation.isPending}
+                        onClick={() => {
+                          const reason = window.prompt('Refund reason')
+                          if (reason?.trim()) refundOrderMutation.mutate({ orderNumber: fulfillmentOrderDetail.orderNumber, amountCents: fulfillmentOrderDetail.amountTotalCents, reason })
+                        }}
+                        className="min-h-11 w-full rounded-md border border-amber-600 bg-white px-4 py-2 text-left text-sm font-semibold text-amber-700 sm:w-auto sm:text-center"
+                      >
+                        Request full refund
+                      </button>
                     )}
                   </div>
                 )}

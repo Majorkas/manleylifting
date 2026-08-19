@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { User } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { hasPortalSession, SESSION_CHANGED_EVENT } from '../utils/portalApi'
+import { prefetchRoute } from '../utils/routePreloads'
 
 export default function SiteHeader({
   navbarLogo,
@@ -61,6 +62,7 @@ export default function SiteHeader({
               <img
                 src={navbarLogo}
                 alt="Manley Lifting logo"
+                decoding="async"
                 className={`h-12 w-auto transition-all duration-200 delay-75 ${
                   logoVisible
                     ? 'opacity-100 scale-100'
@@ -74,7 +76,13 @@ export default function SiteHeader({
             <nav className="hidden items-center gap-8 text-sm font-semibold md:flex">
               {items.map((item) =>
                 item.to ? (
-                  <Link key={item.label} to={item.to} className="nav-link">
+                  <Link
+                    key={item.label}
+                    to={item.to}
+                    className="nav-link"
+                    onMouseEnter={() => prefetchRoute(item.to)}
+                    onFocus={() => prefetchRoute(item.to)}
+                  >
                     {item.label}
                   </Link>
                 ) : (
@@ -146,7 +154,13 @@ export default function SiteHeader({
         <nav className={`mobile-nav md:hidden ${isMobileMenuOpen ? 'open' : ''}`}>
           {items.map((item) =>
             item.to ? (
-              <Link key={item.label} to={item.to} onClick={onCloseMobileMenu}>
+              <Link
+                key={item.label}
+                to={item.to}
+                onClick={onCloseMobileMenu}
+                onMouseEnter={() => prefetchRoute(item.to)}
+                onFocus={() => prefetchRoute(item.to)}
+              >
                 {item.label}
               </Link>
             ) : (

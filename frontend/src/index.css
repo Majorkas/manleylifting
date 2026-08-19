@@ -22,3 +22,90 @@ body,
 a {
   text-decoration: none;
 }
+
+/* Accessible focus indicators - visible on keyboard, subtle on mouse */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 3px solid #4A90E2;
+  outline-offset: 2px;
+}
+
+/* Remove focus outline on mouse click (only show on keyboard Tab) */
+button:focus:not(:focus-visible),
+input:focus:not(:focus-visible),
+select:focus:not(:focus-visible),
+textarea:focus:not(:focus-visible),
+a:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Accessible error and success messages */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+[role="alert"],
+[aria-live="polite"],
+[aria-live="assertive"] {
+  min-height: 1.5em;
+  padding: 0.5rem;
+  margin: 0.5rem 0;
+  border-radius: 4px;
+}
+
+[role="alert"] {
+  background: #FEE;
+  color: #C00;
+  border: 1px solid #C00;
+}
+
+[role="status"] {
+  background: #EFF;
+  color: #006;
+  border: 1px solid #006;
+}
+
+/* Skeleton loading */
+.skeleton {
+  animation: pulse 2s infinite;
+}
+
+.skeleton-line {
+  height: 1rem;
+  background: #E0E0E0;
+  border-radius: 4px;
+  margin: 0.5rem 0;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.empty-state {
+  text-align: center;
+  padding: 2rem;
+  border: 1px dashed #CCC;
+  border-radius: 4px;
+  background: #F9F9F9;
+}
+
+.empty-state p {
+  color: #666;
+  margin: 0 0 1rem 0;
+}

@@ -1,13 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import QuantityAddToCart from '../components/QuantityAddToCart'
 import ShopPageLayout from '../components/ShopPageLayout'
 import { CollectionGridSkeleton } from '../components/ShopSkeleton'
 import { useCart } from '../context/CartContext'
+import { useCollectionQuery } from '../hooks/useCatalogQueries'
 import {
   buildProductPath,
   formatCurrency,
-  getCollectionByHandle,
   getUserFacingErrorMessage,
   shopRoutes,
 } from '../utils/shopConfig'
@@ -16,9 +16,15 @@ import usePageMeta from '../utils/usePageMeta'
 export default function ShopCollectionPage() {
   const { handle } = useParams()
   const { addItem } = useCart()
-  const [collection, setCollection] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [errorMessage, setErrorMessage] = useState('')
+  const collectionQuery = useCollectionQuery(handle)
+  const collection = collectionQuery.data
+  const loading = collectionQuery.isPending
+  const errorMessage = collectionQuery.error
+    ? getUserFacingErrorMessage(
+      collectionQuery.error,
+      'We could not load this collection right now. Please try again in a moment.',
+    )
+    : ''
   const [quantityByHandle, setQuantityByHandle] = useState({})
 
   usePageMeta({
@@ -27,40 +33,6 @@ export default function ShopCollectionPage() {
       collection?.description ||
       'Explore lifting products in this collection from Manley Lifting.',
   })
-
-  useEffect(() => {
-    let cancelled = false
-
-    async function load() {
-      setLoading(true)
-      setErrorMessage('')
-
-      try {
-        const nextCollection = await getCollectionByHandle(handle)
-        if (cancelled) return
-        setCollection(nextCollection)
-      } catch (error) {
-        if (cancelled) return
-        console.error('Failed to load collection page', {
-          handle,
-          error,
-        })
-        setErrorMessage(
-          getUserFacingErrorMessage(
-            error,
-            'We could not load this collection right now. Please try again in a moment.',
-          ),
-        )
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-
-    load()
-    return () => {
-      cancelled = true
-    }
-  }, [handle])
 
   function getDisplayPrice(product) {
     const unitPrice = Number(product?.price || 0)
@@ -135,6 +107,8 @@ export default function ShopCollectionPage() {
                         <img
                           src={product.imageUrl}
                           alt={product.imageAlt || product.title}
+                          loading="lazy"
+                          decoding="async"
                           className="aspect-[4/3] w-full rounded-lg object-cover"
                         />
                       ) : (
@@ -152,11 +126,13 @@ export default function ShopCollectionPage() {
                     <div className="mt-6 flex items-center gap-3">
                       <QuantityAddToCart
                         unitPrice={Number(product.price || 0)}
+                        max={product.inventoryTracked ? Math.max(1, product.availableQty) : 99}
+                        disabled={product.stockPolicy === 'unavailable' || (product.inventoryTracked && product.availableQty <= 0) || (product.stockPolicy === 'finite' && product.availableQty <= 0)}
                         onQuantityChange={(quantity) =>
                           handleQuantityChange(product.handle, quantity)
                         }
                         onAdd={(quantity) => addItem(product, quantity)}
-                        buttonLabel="Add to Cart"
+                        buttonLabel={product.stockPolicy === 'unavailable' || (product.inventoryTracked && product.availableQty <= 0) || (product.stockPolicy === 'finite' && product.availableQty <= 0) ? 'Unavailable' : 'Add to Cart'}
                       />
                     </div>
                   </article>

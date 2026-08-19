@@ -6,6 +6,7 @@ from django.utils import timezone
 
 
 class PendingCheckout(models.Model):
+    """Retained legacy provider-checkout state; new store orders use OnsiteOrder."""
     STATUS_PENDING = "pending"
     STATUS_CONFIRMED = "confirmed"
     STATUS_EXPIRED = "expired"
@@ -98,10 +99,63 @@ class OnsiteOrder(models.Model):
         (STATUS_CANCELED, "Canceled"),
     ]
 
+    # New payment and fulfillment status constants
+    PAYMENT_STATUS_PENDING = "pending"
+    PAYMENT_STATUS_PROCESSING = "processing"
+    PAYMENT_STATUS_PAID = "paid"
+    PAYMENT_STATUS_FAILED = "failed"
+    PAYMENT_STATUS_CANCELED = "canceled"
+    PAYMENT_STATUS_PARTIALLY_REFUNDED = "partially_refunded"
+    PAYMENT_STATUS_REFUNDED = "refunded"
+    PAYMENT_STATUS_DISPUTED = "disputed"
+    PAYMENT_STATUS_CHARGEBACK = "chargeback"
+
+    PAYMENT_STATUS_CHOICES = [
+        (PAYMENT_STATUS_PENDING, "Pending"),
+        (PAYMENT_STATUS_PROCESSING, "Processing"),
+        (PAYMENT_STATUS_PAID, "Paid"),
+        (PAYMENT_STATUS_FAILED, "Failed"),
+        (PAYMENT_STATUS_CANCELED, "Canceled"),
+        (PAYMENT_STATUS_PARTIALLY_REFUNDED, "Partially refunded"),
+        (PAYMENT_STATUS_REFUNDED, "Refunded"),
+        (PAYMENT_STATUS_DISPUTED, "Disputed"),
+        (PAYMENT_STATUS_CHARGEBACK, "Chargeback"),
+    ]
+
+    FULFILLMENT_STATUS_UNFULFILLED = "unfulfilled"
+    FULFILLMENT_STATUS_PROCESSING = "processing"
+    FULFILLMENT_STATUS_SHIPPED = "shipped"
+    FULFILLMENT_STATUS_DELIVERED = "delivered"
+    FULFILLMENT_STATUS_CANCELED = "canceled"
+
+    FULFILLMENT_STATUS_CHOICES = [
+        (FULFILLMENT_STATUS_UNFULFILLED, "Unfulfilled"),
+        (FULFILLMENT_STATUS_PROCESSING, "Processing"),
+        (FULFILLMENT_STATUS_SHIPPED, "Shipped"),
+        (FULFILLMENT_STATUS_DELIVERED, "Delivered"),
+        (FULFILLMENT_STATUS_CANCELED, "Canceled"),
+    ]
+
     checkout_ref = models.CharField(max_length=100, unique=True)
     order_number = models.CharField(max_length=32, unique=True, blank=True, default="", db_index=True)
     status_token = models.CharField(max_length=128, default="", db_index=True)
+    status_token_expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    status_token_revoked_at = models.DateTimeField(null=True, blank=True, db_index=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    payment_status = models.CharField(
+        max_length=20,
+        choices=PAYMENT_STATUS_CHOICES,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    fulfillment_status = models.CharField(
+        max_length=20,
+        choices=FULFILLMENT_STATUS_CHOICES,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
     user = models.ForeignKey(
         "auth.User",
         null=True,
@@ -112,6 +166,25 @@ class OnsiteOrder(models.Model):
     line_items = models.JSONField(default=list, blank=True)
     amount_total_cents = models.PositiveIntegerField(default=0)
     currency = models.CharField(max_length=8, default="EUR")
+    # Financial breakdown (M2: for future payment/fulfillment separation)
+    subtotal_cents = models.PositiveIntegerField(null=True, blank=True, db_index=False)
+    discount_cents = models.PositiveIntegerField(default=0, null=True, blank=True)
+    shipping_cents = models.PositiveIntegerField(null=True, blank=True)
+    tax_cents = models.PositiveIntegerField(null=True, blank=True)
+    company = models.ForeignKey(
+        "Company",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="onsite_orders",
+    )
+    fulfillment_actor = models.ForeignKey(
+        "auth.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="fulfilled_onsite_orders",
+    )
     customer_name = models.CharField(max_length=150, blank=True, default="")
     customer_email = models.EmailField(blank=True, default="")
     shipping_name = models.CharField(max_length=150, blank=True, default="")
@@ -123,13 +196,45 @@ class OnsiteOrder(models.Model):
     shipping_postcode = models.CharField(max_length=40, blank=True, default="")
     shipping_country_code = models.CharField(max_length=2, blank=True, default="")
     payment_intent_id = models.CharField(max_length=128, blank=True, default="", db_index=True)
-    payment_client_secret = models.CharField(max_length=255, blank=True, default="")
     paid_at = models.DateTimeField(null=True, blank=True)
+    processing_at = models.DateTimeField(null=True, blank=True)
+    shipped_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    canceled_at = models.DateTimeField(null=True, blank=True)
+    cancellation_reason = models.CharField(max_length=255, blank=True, default="")
+    refund_total_cents = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["-created_at"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    models.Q(subtotal_cents__isnull=True)
+                    | models.Q(discount_cents__isnull=True)
+                    | models.Q(shipping_cents__isnull=True)
+                    | models.Q(tax_cents__isnull=True)
+                    | models.Q(
+                        amount_total_cents=(
+                            models.F("subtotal_cents")
+                            - models.F("discount_cents")
+                            + models.F("shipping_cents")
+                            + models.F("tax_cents")
+                        )
+                    )
+                ),
+                name="onsite_order_financial_totals_match",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(refund_total_cents__gte=0),
+                name="onsite_order_refund_total_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(refund_total_cents__lte=models.F("amount_total_cents")),
+                name="onsite_order_refund_lte_total",
+            ),
+        ]
 
     def save(self, *args, **kwargs):
         if not self.order_number:
@@ -146,13 +251,199 @@ class OnsiteOrder(models.Model):
                 return candidate
         return f"{prefix}-{timezone.now().strftime('%y%m%d')}-{secrets.token_hex(4).upper()}"
 
+    def get_payment_status_from_legacy(self):
+        """Map legacy single status field to new payment_status for backward compatibility."""
+        status_to_payment = {
+            self.STATUS_PENDING: self.PAYMENT_STATUS_PENDING,
+            self.STATUS_PROCESSING: self.PAYMENT_STATUS_PROCESSING,
+            self.STATUS_PAID: self.PAYMENT_STATUS_PAID,
+            self.STATUS_SHIPPED: self.PAYMENT_STATUS_PAID,
+            self.STATUS_COMPLETED: self.PAYMENT_STATUS_PAID,
+            self.STATUS_FAILED: self.PAYMENT_STATUS_FAILED,
+            self.STATUS_CANCELED: self.PAYMENT_STATUS_CANCELED,
+        }
+        return status_to_payment.get(self.status, self.PAYMENT_STATUS_PENDING)
+
+    def get_fulfillment_status_from_legacy(self):
+        """Map legacy single status field to new fulfillment_status for backward compatibility."""
+        status_to_fulfillment = {
+            self.STATUS_PENDING: self.FULFILLMENT_STATUS_UNFULFILLED,
+            self.STATUS_PROCESSING: self.FULFILLMENT_STATUS_PROCESSING,
+            self.STATUS_PAID: self.FULFILLMENT_STATUS_UNFULFILLED,
+            self.STATUS_SHIPPED: self.FULFILLMENT_STATUS_SHIPPED,
+            self.STATUS_COMPLETED: self.FULFILLMENT_STATUS_DELIVERED,
+            self.STATUS_FAILED: self.FULFILLMENT_STATUS_CANCELED,
+            self.STATUS_CANCELED: self.FULFILLMENT_STATUS_CANCELED,
+        }
+        return status_to_fulfillment.get(self.status, self.FULFILLMENT_STATUS_UNFULFILLED)
+
+    def validate_financial_totals(self):
+        """
+        Validate that financial totals sum correctly if all components are present.
+        Returns (is_valid, error_message) tuple.
+        Allows partial data (some fields null) for backward compatibility.
+        """
+        # If all breakdown fields are present, verify the grand total
+        if all(v is not None for v in [self.subtotal_cents, self.discount_cents, self.shipping_cents, self.tax_cents]):
+            calculated_total = self.subtotal_cents - self.discount_cents + self.shipping_cents + self.tax_cents
+            if calculated_total != self.amount_total_cents:
+                return (
+                    False,
+                    f"Financial total mismatch: subtotal({self.subtotal_cents}) - discount({self.discount_cents}) + shipping({self.shipping_cents}) + tax({self.tax_cents}) = {calculated_total}, but amount_total_cents = {self.amount_total_cents}",
+                )
+        return (True, None)
+
     def __str__(self):
         return f"{self.checkout_ref} ({self.status})"
 
 
+class OrderItem(models.Model):
+    """
+    Normalized snapshot of a line item from an order.
+    Created when an order is placed, immutable after creation.
+    """
+    order = models.ForeignKey(
+        OnsiteOrder,
+        on_delete=models.CASCADE,
+        related_name="order_items",
+    )
+    sku = models.CharField(max_length=100, db_index=True)
+    title = models.CharField(max_length=255)
+    variant_ref = models.CharField(max_length=100, blank=True, default="")
+    unit_price_cents = models.PositiveIntegerField()
+    quantity = models.PositiveIntegerField()
+    line_total_cents = models.PositiveIntegerField()
+    weight_grams = models.PositiveIntegerField(null=True, blank=True)
+    shipping_class = models.CharField(max_length=80, null=True, blank=True)
+    tax_code = models.CharField(max_length=80, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["order", "created_at"]),
+            models.Index(fields=["sku"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(line_total_cents=models.F("unit_price_cents") * models.F("quantity")),
+                name="orderitem_line_total_matches_qty",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.sku} x{self.quantity} ({self.order.checkout_ref})"
+
+
+class InventoryReservation(models.Model):
+    """
+    Captures inventory reserved during checkout.
+    Created when payment intent is created, released if order is canceled.
+    """
+    STATUS_RESERVED = "reserved"
+    STATUS_RELEASED = "released"
+    STATUS_FULFILLED = "fulfilled"
+
+    STATUS_CHOICES = [
+        (STATUS_RESERVED, "Reserved"),
+        (STATUS_RELEASED, "Released"),
+        (STATUS_FULFILLED, "Fulfilled"),
+    ]
+
+    order = models.ForeignKey(
+        OnsiteOrder,
+        on_delete=models.PROTECT,
+        related_name="inventory_reservations",
+    )
+    product = models.ForeignKey(
+        "CatalogProduct",
+        on_delete=models.PROTECT,
+        related_name="reservations",
+    )
+    quantity = models.PositiveIntegerField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_RESERVED, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    released_at = models.DateTimeField(null=True, blank=True)
+    fulfilled_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["order", "status"]),
+            models.Index(fields=["product", "status"]),
+        ]
+
+    def __str__(self):
+        return f"Reserve {self.quantity}x {self.product.sku} for {self.order.checkout_ref} ({self.status})"
+
+
+class InventoryTransaction(models.Model):
+    """
+    Audit log for inventory movements (fulfillment, adjustments, returns).
+    Immutable record of what happened and when.
+    """
+    TYPE_FULFILL = "fulfill"
+    TYPE_ADJUST = "adjust"
+    TYPE_RETURN = "return"
+
+    TYPE_CHOICES = [
+        (TYPE_FULFILL, "Fulfillment"),
+        (TYPE_ADJUST, "Adjustment"),
+        (TYPE_RETURN, "Return"),
+    ]
+
+    product = models.ForeignKey(
+        "CatalogProduct",
+        on_delete=models.PROTECT,
+        related_name="transactions",
+    )
+    order = models.ForeignKey(
+        OnsiteOrder,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="inventory_transactions",
+    )
+    transaction_type = models.CharField(max_length=20, choices=TYPE_CHOICES, db_index=True)
+    quantity_change = models.IntegerField()  # Positive or negative
+    reason = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["product", "created_at"]),
+            models.Index(fields=["transaction_type"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=~models.Q(quantity_change=0),
+                name="inventory_transaction_nonzero_change",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.get_transaction_type_display()} {self.product.sku}: {self.quantity_change:+d}"
+
+
 class ProcessedStripeEvent(models.Model):
+    STATUS_PROCESSING = "processing"
+    STATUS_PROCESSED = "processed"
+    STATUS_REJECTED = "rejected"
+    STATUS_ERROR = "error"
+    STATUS_CHOICES = [
+        (STATUS_PROCESSING, "Processing"),
+        (STATUS_PROCESSED, "Processed"),
+        (STATUS_REJECTED, "Rejected"),
+        (STATUS_ERROR, "Error"),
+    ]
     event_id = models.CharField(max_length=128, unique=True)
     event_type = models.CharField(max_length=80, blank=True, default="")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PROCESSING, db_index=True)
+    attempts = models.PositiveIntegerField(default=0)
+    error_message = models.CharField(max_length=500, blank=True, default="")
+    processed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -198,11 +489,53 @@ class CatalogProduct(models.Model):
     )
     sort_order = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)
+    # Inventory fields (M2)
+    sku = models.CharField(max_length=100, null=True, blank=True, db_index=True)
+    inventory_tracked = models.BooleanField(default=False)
+    STOCK_POLICY_UNTRACKED = "untracked"
+    STOCK_POLICY_FINITE = "finite"
+    STOCK_POLICY_UNAVAILABLE = "unavailable"
+    STOCK_POLICY_CHOICES = [
+        (STOCK_POLICY_UNTRACKED, "Untracked"),
+        (STOCK_POLICY_FINITE, "Finite"),
+        (STOCK_POLICY_UNAVAILABLE, "Unavailable"),
+    ]
+    stock_policy = models.CharField(
+        max_length=20,
+        choices=STOCK_POLICY_CHOICES,
+        default=STOCK_POLICY_UNTRACKED,
+    )
+    weight_grams = models.PositiveIntegerField(null=True, blank=True)
+    shipping_class = models.CharField(max_length=80, null=True, blank=True)
+    tax_code = models.CharField(max_length=80, null=True, blank=True)
+    available_qty = models.PositiveIntegerField(default=0)
+    reserved_qty = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["sort_order", "title", "handle"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sku"],
+                condition=models.Q(sku__isnull=False),
+                name="catalog_product_unique_nonnull_sku",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(reserved_qty__lte=models.F("available_qty")),
+                name="catalog_product_reserved_lte_available",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(
+                    stock_policy__in=[
+                        "untracked",
+                        "finite",
+                        "unavailable",
+                    ]
+                ),
+                name="catalog_product_stock_policy_valid",
+            ),
+        ]
 
     def __str__(self):
         return self.title or self.handle
@@ -287,6 +620,9 @@ class CommerceCustomerProfile(models.Model):
     terms_version = models.CharField(max_length=64, blank=True, default="")
     privacy_version = models.CharField(max_length=64, blank=True, default="")
     disabled_at = models.DateTimeField(null=True, blank=True)
+    deletion_requested_at = models.DateTimeField(null=True, blank=True)
+    deletion_expires_at = models.DateTimeField(null=True, blank=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
     anonymized_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -306,6 +642,23 @@ class CommerceCustomerProfile(models.Model):
             and verified_email
             and current_email == verified_email
         )
+
+
+class CookieConsentRecord(models.Model):
+    """Records user cookie consent decisions with versioning and withdrawal."""
+
+    user = models.ForeignKey("auth.User", on_delete=models.CASCADE, related_name="consent_records")
+    consent_version = models.CharField(max_length=20)
+    consent_categories = models.JSONField(default=list)
+    consented_at = models.DateTimeField()
+    withdrawn_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-consented_at"]
+
+    def __str__(self):
+        return f"{self.user} consent v{self.consent_version} ({self.consented_at})"
 
 
 class SavedAddress(models.Model):
@@ -610,3 +963,30 @@ class AuditLog(models.Model):
 
     def __str__(self):
         return f"{self.action} ({self.target_type}:{self.target_id})"
+
+
+class OrderEmailDelivery(models.Model):
+    PURPOSE_CONFIRMED = "confirmed"
+    PURPOSE_SHIPPED = "shipped"
+    PURPOSE_DELIVERED = "delivered"
+    PURPOSE_CANCELED = "canceled"
+    PURPOSE_REFUNDED = "refunded"
+    PURPOSE_CHOICES = [(value, value.title()) for value in (PURPOSE_CONFIRMED, PURPOSE_SHIPPED, PURPOSE_DELIVERED, PURPOSE_CANCELED, PURPOSE_REFUNDED)]
+    STATUS_PENDING = "pending"
+    STATUS_SENT = "sent"
+    STATUS_ERROR = "error"
+    STATUS_CHOICES = [(STATUS_PENDING, "Pending"), (STATUS_SENT, "Sent"), (STATUS_ERROR, "Error")]
+
+    order = models.ForeignKey(OnsiteOrder, on_delete=models.CASCADE, related_name="email_deliveries")
+    purpose = models.CharField(max_length=20, choices=PURPOSE_CHOICES)
+    idempotency_key = models.CharField(max_length=160, unique=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True)
+    attempts = models.PositiveIntegerField(default=0)
+    error_message = models.CharField(max_length=500, blank=True, default="")
+    sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [models.UniqueConstraint(fields=["order", "purpose"], name="unique_order_email_purpose")]

@@ -447,6 +447,8 @@ async function authFetch(path, options = {}) {
   }
 }
 
+export { authFetch, parseResponse }
+
 export async function portalLogin(username, password, mfaCode = '') {
   const path = '/auth/token/'
   const csrfToken = await getCsrfToken()
@@ -629,10 +631,17 @@ export async function getAccountOrders() {
     checkoutRef: String(order?.checkoutRef || ''),
     orderNumber: String(order?.orderNumber || ''),
     status: String(order?.status || ''),
+    paymentStatus: String(order?.paymentStatus || ''),
+    fulfillmentStatus: String(order?.fulfillmentStatus || ''),
     customerName: String(order?.customerName || ''),
     customerEmail: String(order?.customerEmail || ''),
     lineItems: Array.isArray(order?.lineItems) ? order.lineItems : [],
     amountTotalCents: Number(order?.amountTotalCents || 0),
+    subtotalCents: Number(order?.subtotalCents || 0),
+    discountCents: Number(order?.discountCents || 0),
+    shippingCents: Number(order?.shippingCents || 0),
+    taxCents: Number(order?.taxCents || 0),
+    orderItems: Array.isArray(order?.orderItems) ? order.orderItems : [],
     currency: String(order?.currency || ''),
     paidAt: String(order?.paidAt || ''),
     createdAt: String(order?.createdAt || ''),
@@ -663,10 +672,16 @@ export async function getPortalOrders({ bucket = 'recent', page = 1, pageSize = 
       checkoutRef: String(order?.checkoutRef || ''),
       orderNumber: String(order?.orderNumber || ''),
       status: String(order?.status || ''),
+      paymentStatus: String(order?.paymentStatus || ''),
+      fulfillmentStatus: String(order?.fulfillmentStatus || ''),
       customerName: String(order?.customerName || ''),
       customerEmail: String(order?.customerEmail || ''),
       lineItemCount: Number(order?.lineItemCount || 0),
       amountTotalCents: Number(order?.amountTotalCents || 0),
+      subtotalCents: Number(order?.subtotalCents || 0),
+      discountCents: Number(order?.discountCents || 0),
+      shippingCents: Number(order?.shippingCents || 0),
+      taxCents: Number(order?.taxCents || 0),
       currency: String(order?.currency || ''),
       createdAt: String(order?.createdAt || ''),
       paidAt: String(order?.paidAt || ''),
@@ -695,11 +710,18 @@ export async function getPortalOrderDetail(orderNumber) {
     checkoutRef: String(order?.checkoutRef || ''),
     orderNumber: String(order?.orderNumber || ''),
     status: String(order?.status || ''),
+    paymentStatus: String(order?.paymentStatus || ''),
+    fulfillmentStatus: String(order?.fulfillmentStatus || ''),
     customerName: String(order?.customerName || ''),
     customerEmail: String(order?.customerEmail || ''),
     lineItemCount: Number(order?.lineItemCount || 0),
     lineItems: Array.isArray(order?.lineItems) ? order.lineItems : [],
     amountTotalCents: Number(order?.amountTotalCents || 0),
+    subtotalCents: Number(order?.subtotalCents || 0),
+    discountCents: Number(order?.discountCents || 0),
+    shippingCents: Number(order?.shippingCents || 0),
+    taxCents: Number(order?.taxCents || 0),
+    orderItems: Array.isArray(order?.orderItems) ? order.orderItems : [],
     currency: String(order?.currency || ''),
     createdAt: String(order?.createdAt || ''),
     paidAt: String(order?.paidAt || ''),
@@ -729,11 +751,18 @@ export async function updatePortalOrderStatus(orderNumber, statusValue) {
     checkoutRef: String(order?.checkoutRef || ''),
     orderNumber: String(order?.orderNumber || ''),
     status: String(order?.status || ''),
+    paymentStatus: String(order?.paymentStatus || ''),
+    fulfillmentStatus: String(order?.fulfillmentStatus || ''),
     customerName: String(order?.customerName || ''),
     customerEmail: String(order?.customerEmail || ''),
     lineItemCount: Number(order?.lineItemCount || 0),
     lineItems: Array.isArray(order?.lineItems) ? order.lineItems : [],
     amountTotalCents: Number(order?.amountTotalCents || 0),
+    subtotalCents: Number(order?.subtotalCents || 0),
+    discountCents: Number(order?.discountCents || 0),
+    shippingCents: Number(order?.shippingCents || 0),
+    taxCents: Number(order?.taxCents || 0),
+    orderItems: Array.isArray(order?.orderItems) ? order.orderItems : [],
     currency: String(order?.currency || ''),
     createdAt: String(order?.createdAt || ''),
     paidAt: String(order?.paidAt || ''),
@@ -746,6 +775,26 @@ export async function updatePortalOrderStatus(orderNumber, statusValue) {
     shippingPostcode: String(order?.shippingPostcode || ''),
     shippingCountryCode: String(order?.shippingCountryCode || ''),
   }
+}
+
+export async function cancelPortalOrder(orderNumber, reason) {
+  const path = '/portal/orders/' + encodeURIComponent(String(orderNumber || '').trim()) + '/'
+  const response = await authFetch(path, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'cancel', reason: String(reason || '').trim() }),
+  })
+  return parseResponse(response, path)
+}
+
+export async function requestPortalOrderRefund(orderNumber, amountCents, reason) {
+  const path = '/portal/orders/' + encodeURIComponent(String(orderNumber || '').trim()) + '/'
+  const response = await authFetch(path, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'refund', amountCents: Number(amountCents), reason: String(reason || '').trim(), confirmed: true }),
+  })
+  return parseResponse(response, path)
 }
 
 export async function getAccountAddresses() {

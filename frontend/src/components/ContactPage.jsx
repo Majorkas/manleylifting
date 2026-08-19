@@ -86,6 +86,7 @@ export default function ContactPage() {
             <img
               src="/logo-navbar.png"
               alt="Manley Lifting logo"
+              decoding="async"
               className="h-12 w-auto md:h-14"
             />
           </Link>

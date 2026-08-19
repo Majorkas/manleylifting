@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import AccountOverviewPage from '../pages/AccountOverviewPage'
 import * as portalApi from '../utils/portalApi'
+import * as shopConfig from '../utils/shopConfig'
 
 vi.mock('../components/AccountLayout', () => ({
   default: ({ children, title }) => (
@@ -26,6 +27,11 @@ vi.mock('../utils/portalApi', () => ({
   portalLogout: vi.fn(),
 }))
 
+vi.mock('../utils/shopConfig', () => ({
+  clearPendingOrderClaim: vi.fn(),
+  loadPendingOrderClaim: vi.fn(),
+}))
+
 describe('AccountOverviewPage shell', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -44,6 +50,7 @@ describe('AccountOverviewPage shell', () => {
     portalApi.getAccountSessions.mockResolvedValue([
       { id: 'session-1', isActive: true, isRevoked: false },
     ])
+    shopConfig.loadPendingOrderClaim.mockReturnValue(null)
   })
 
   it('shows direct account action cards for customer accounts', async () => {
@@ -113,5 +120,46 @@ describe('AccountOverviewPage shell', () => {
     )
 
     await waitFor(() => expect(screen.getByText('Account Login')).toBeInTheDocument())
+  })
+
+  it('claims a pending guest order for a verified account and clears the capability', async () => {
+    shopConfig.loadPendingOrderClaim.mockReturnValue({
+      orderNumber: 'MNL-CLAIM-1',
+      claimToken: 'claim-token-1',
+    })
+    portalApi.claimGuestOrder.mockResolvedValue({ ok: true })
+
+    render(
+      <MemoryRouter>
+        <AccountOverviewPage />
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => {
+      expect(portalApi.claimGuestOrder).toHaveBeenCalledWith('MNL-CLAIM-1', 'claim-token-1')
+      expect(shopConfig.clearPendingOrderClaim).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('does not claim a pending order before email verification', async () => {
+    shopConfig.loadPendingOrderClaim.mockReturnValue({
+      orderNumber: 'MNL-CLAIM-2',
+      claimToken: 'claim-token-2',
+    })
+    portalApi.getAccountBootstrap.mockResolvedValue({
+      email: 'pending@example.com',
+      fullName: 'Pending Customer',
+      emailVerified: false,
+      capabilities: { canShop: false, canAccessPortal: false },
+    })
+
+    render(
+      <MemoryRouter>
+        <AccountOverviewPage />
+      </MemoryRouter>,
+    )
+
+    await screen.findByText('Pending Customer')
+    expect(portalApi.claimGuestOrder).not.toHaveBeenCalled()
   })
 })

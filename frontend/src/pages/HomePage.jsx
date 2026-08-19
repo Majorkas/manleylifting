@@ -65,7 +65,7 @@ export default function HomePage() {
         navItems={navItems}
       />
 
-      <main>
+      <main id="main-content">
         <HeroSection heroLogo={heroLogo} />
         <ServicesSection />
         <TrustSection />

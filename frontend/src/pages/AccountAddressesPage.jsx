@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, MapPin, Plus, Trash2 } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import AccountLayout from '../components/AccountLayout'
 import AccountSectionTabs from '../components/AccountSectionTabs'
 import PortalToast from '../components/PortalToast'
-import { createAccountAddress, deleteAccountAddress, getAccountAddresses, updateAccountAddress } from '../utils/portalApi'
+import { useAccountAddressesQuery } from '../hooks/useAccountQueries'
+import { invalidateAccountAddresses } from '../queryInvalidation'
+import { createAccountAddress, deleteAccountAddress, updateAccountAddress } from '../utils/portalApi'
 import usePageMeta from '../utils/usePageMeta'
 
 const blankForm = {
@@ -64,11 +67,13 @@ function readRecentAddressFromStorage() {
 export default function AccountAddressesPage() {
   usePageMeta({ title: 'Saved addresses', description: 'Manage your Manley Lifting saved addresses.', noIndex: true })
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const addressesQuery = useAccountAddressesQuery()
   const [addresses, setAddresses] = useState(() => {
     const recentAddress = readRecentAddressFromStorage()
     return recentAddress ? [recentAddress] : []
   })
-  const [loading, setLoading] = useState(true)
+  const loading = addressesQuery.isPending
   const [saving, setSaving] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [validationMessage, setValidationMessage] = useState('')
@@ -78,7 +83,6 @@ export default function AccountAddressesPage() {
   const [addressToRemove, setAddressToRemove] = useState(null)
 
   useEffect(() => {
-    let cancelled = false
     const recentAddress = readRecentAddressFromStorage()
 
     if (recentAddress) {
@@ -89,41 +93,31 @@ export default function AccountAddressesPage() {
       })
     }
 
-    getAccountAddresses()
-      .then((result) => {
-        if (!cancelled) {
-          setAddresses(() => {
-            const merged = Array.isArray(result) ? [...result] : []
-            if (recentAddress) {
-              const alreadyExists = merged.some((address) => String(address.id) === String(recentAddress.id))
-              if (!alreadyExists) {
-                merged.unshift(recentAddress)
-              }
-            }
-            return merged
-          })
-
-          if (typeof window !== 'undefined') {
-            window.localStorage.removeItem('manley-recent-account-address')
-          }
-        }
-      })
-      .catch((error) => {
-        if (cancelled) return
-        if (error?.status === 401) {
-          navigate('/account/login?redirect=/account/addresses', { replace: true })
-          return
-        }
-        setErrorMessage(String(error?.message || 'Addresses could not be loaded.'))
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-
-    return () => {
-      cancelled = true
+    if (addressesQuery.error?.status === 401) {
+      navigate('/account/login?redirect=/account/addresses', { replace: true })
+      return undefined
     }
-  }, [navigate])
+    if (addressesQuery.error) {
+      setErrorMessage(String(addressesQuery.error.message || 'Addresses could not be loaded.'))
+      return undefined
+    }
+    if (!addressesQuery.isSuccess) return undefined
+    setErrorMessage('')
+
+    setAddresses(() => {
+      const merged = Array.isArray(addressesQuery.data) ? [...addressesQuery.data] : []
+      if (recentAddress) {
+        const alreadyExists = merged.some((address) => String(address.id) === String(recentAddress.id))
+        if (!alreadyExists) merged.unshift(recentAddress)
+      }
+      return merged
+    })
+
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem('manley-recent-account-address')
+    }
+    return undefined
+  }, [addressesQuery.data, addressesQuery.error, addressesQuery.isSuccess, navigate])
 
   useEffect(() => {
     if (!toast) return
@@ -153,9 +147,11 @@ export default function AccountAddressesPage() {
       if (editingAddressId) {
         const updated = await updateAccountAddress(editingAddressId, form)
         setAddresses((current) => current.map((address) => (address.id === updated.id ? updated : address)))
+        await invalidateAccountAddresses(queryClient)
       } else {
         const created = await createAccountAddress(form)
         setAddresses((current) => [created, ...current])
+        await invalidateAccountAddresses(queryClient)
       }
       setForm(blankForm)
       setEditingAddressId(null)
@@ -176,6 +172,7 @@ export default function AccountAddressesPage() {
     try {
       await deleteAccountAddress(addressId)
       setAddresses((current) => current.filter((address) => address.id !== addressId))
+      await invalidateAccountAddresses(queryClient)
       if (editingAddressId === addressId) {
         setEditingAddressId(null)
         setForm(blankForm)

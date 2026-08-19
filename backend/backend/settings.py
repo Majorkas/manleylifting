@@ -78,6 +78,20 @@ def validate_account_registration_configuration(
         )
 
 
+def validate_shop_turnstile_configuration(
+    *,
+    debug: bool,
+    turnstile_required: bool,
+    secret_key: str,
+) -> None:
+    if debug or not turnstile_required:
+        return
+    if not str(secret_key or "").strip():
+        raise ValueError(
+            "Shop Turnstile is required but missing environment variable: "
+            "SHOP_TURNSTILE_SECRET_KEY"
+        )
+
 def database_config():
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url:
@@ -133,6 +147,8 @@ DEFAULT_DEV_FRONTEND_ORIGINS = [
 ]
 
 DEFAULT_PROD_FRONTEND_ORIGINS = [
+    "https://a-rich-web.dev",
+    "https://www.a-rich-web.dev",
     "https://manleylifting.onrender.com",
     "https://manleylifting.ie",
     "https://www.manleylifting.ie",
@@ -161,6 +177,8 @@ ACCOUNT_VERIFY_TOKEN_LIFETIME = timedelta(
 )
 ACCOUNT_TERMS_VERSION = os.getenv("ACCOUNT_TERMS_VERSION", "draft").strip() or "draft"
 ACCOUNT_PRIVACY_VERSION = os.getenv("ACCOUNT_PRIVACY_VERSION", "draft").strip() or "draft"
+SHOP_REQUIRE_TURNSTILE = env_bool("SHOP_REQUIRE_TURNSTILE", not DEBUG)
+SHOP_TURNSTILE_SECRET_KEY = os.getenv("SHOP_TURNSTILE_SECRET_KEY", "").strip()
 
 ALLOWED_HOSTS = env_list(
     "DJANGO_ALLOWED_HOSTS",
@@ -195,6 +213,7 @@ if USE_R2_STORAGE:
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "api.middleware.CorrelationIdMiddleware",
     "api.middleware.ContentSecurityPolicyReportOnlyMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
@@ -283,6 +302,7 @@ USE_TZ = True
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+WHITENOISE_MAX_AGE = 31536000
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
@@ -427,6 +447,12 @@ validate_account_registration_configuration(
         "ACCOUNT_TERMS_VERSION": ACCOUNT_TERMS_VERSION,
         "ACCOUNT_PRIVACY_VERSION": ACCOUNT_PRIVACY_VERSION,
     },
+)
+
+validate_shop_turnstile_configuration(
+    debug=DEBUG,
+    turnstile_required=SHOP_REQUIRE_TURNSTILE,
+    secret_key=SHOP_TURNSTILE_SECRET_KEY,
 )
 
 if cloudinary:

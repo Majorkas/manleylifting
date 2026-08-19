@@ -20,23 +20,22 @@ const portalFeatures = [
 
 export default function PortalPlatformSection() {
   return (
-    <section id="portal-platform" className="border-b border-slate-200 bg-white">
+    <section id="portal-platform" aria-labelledby="portal-platform-heading" className="border-b border-slate-200 bg-white">
       <div className="mx-auto w-full max-w-7xl px-6 py-16">
         <div className="grid gap-8 md:grid-cols-[1.1fr,0.9fr] md:items-start">
           <div>
             <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">Customer Portal</p>
-            <h2 className="mt-2 text-3xl font-extrabold text-[#123A7A] md:text-4xl">
-              A Full Digital Workspace for Compliance and Inspection Operations
+            <h2 id="portal-platform-heading" className="mt-2 text-balance text-3xl font-extrabold text-[#123A7A] md:text-4xl">
+              Keep your inspection work in one secure workspace
             </h2>
             <p className="mt-4 max-w-3xl text-slate-600">
-              The Manley Lifting portal gives your team a professional environment to manage inspection activity,
-              monitor equipment readiness, and keep certification records organized and accessible.
+              Track equipment, review reports, and retrieve certification records without chasing paperwork or email threads.
             </p>
             <div className="mt-6">
               <PortalEntryLink
                 className="rounded-md bg-[#123A7A] px-5 py-3 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-[#0f3168]"
               >
-                Open Customer Portal
+                Open customer portal
               </PortalEntryLink>
             </div>
           </div>

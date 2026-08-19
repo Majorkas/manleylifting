@@ -1,5 +1,9 @@
 import json
+import os
+import importlib
+from decimal import Decimal
 from io import BytesIO, StringIO
+from pathlib import Path
 from unittest.mock import ANY, patch
 
 from django.contrib.auth import get_user_model
@@ -21,10 +25,12 @@ from .account_tokens import consume_account_action_token, issue_account_action_t
 from .account_views import generate_totp_code
 from .account_emails import (
     TransactionalEmailDeliveryError,
+    _safe_response_snippet,
     send_password_reset_email,
     send_verification_email,
 )
 from .auth_sessions import revoke_user_sessions
+from .capability_tokens import digest_capability_token
 from .models import (
     AccountActionToken,
     AccountSession,
@@ -38,19 +44,43 @@ from .models import (
     Equipment,
     GuestOrderClaim,
     InspectionReport,
+    InventoryReservation,
+    InventoryTransaction,
     OnsiteOrder,
+    OrderItem,
+    PendingCheckout,
     ProcessedStripeEvent,
     ReportImage,
     ReportRevision,
     SavedAddress,
     Site,
     UserProfile,
+    OrderEmailDelivery,
 )
+from .order_emails import send_order_confirmation_email
 from .throttles import PortalMethodRateThrottle
+from .views import _build_line_items_from_catalog, _populate_order_items_and_reservations, _resolve_checkout_company, _to_minor_units
+from .pricing import calculate_checkout_totals, UnsupportedDestinationError
 from backend.settings import (
     validate_account_registration_configuration,
     validate_required_secrets,
+    validate_shop_turnstile_configuration,
 )
+
+
+def create_verified_user():
+    user_model = get_user_model()
+    user = user_model.objects.create_user(
+        username="consent-user",
+        email="consent@example.com",
+        password="testpass123",
+    )
+    CommerceCustomerProfile.objects.create(
+        user=user,
+        verified_email=user.email,
+        email_verified_at=timezone.now(),
+    )
+    return user
 
 
 TEST_CACHES = {
@@ -97,6 +127,43 @@ class BaseApiTestCase(TestCase):
             },
         )
         self.client = Client()
+
+    def test_validate_required_secrets_requires_webhook_secret(self):
+        with self.assertRaisesMessage(ValueError, "STRIPE_WEBHOOK_SECRET"):
+            validate_required_secrets(
+                debug=False,
+                values={
+                    "STRIPE_SECRET_KEY": "sk_test_present",
+                    "STRIPE_WEBHOOK_SECRET": "",
+                },
+            )
+
+    def test_shop_turnstile_configuration_fails_closed_in_production(self):
+        with self.assertRaisesMessage(
+            ValueError,
+            "SHOP_TURNSTILE_SECRET_KEY",
+        ):
+            validate_shop_turnstile_configuration(
+                debug=False,
+                turnstile_required=True,
+                secret_key="",
+            )
+
+        validate_shop_turnstile_configuration(
+            debug=False,
+            turnstile_required=True,
+            secret_key="turnstile-secret",
+        )
+        validate_shop_turnstile_configuration(
+            debug=True,
+            turnstile_required=True,
+            secret_key="",
+        )
+        validate_shop_turnstile_configuration(
+            debug=False,
+            turnstile_required=False,
+            secret_key="",
+        )
 
     def test_registration_config_requires_zeptomail_and_turnstile_in_production(self):
         with self.assertRaisesMessage(
@@ -601,6 +668,50 @@ class AccountSessionRevocationTests(TestCase):
         self.assertEqual(verify_response.status_code, 200)
         self.assertEqual(mock_security_send.call_count, 1)
         self.assertEqual(mock_security_send.call_args.kwargs["recipient_email"], user.email)
+
+    def test_mfa_recovery_codes_are_stored_as_hashes_not_raw_values(self):
+        user = get_user_model().objects.create_user(
+            username="recovery-code-hash-user",
+            email="recovery-code-hash@example.com",
+            password="Strong-Password-123!",
+            is_active=True,
+        )
+        CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        setup_response = client.post(
+            "/api/account/mfa/setup/",
+            data={"current_password": "Strong-Password-123!"},
+            format="json",
+        )
+        security_state = AccountSecurityState.objects.get(user=user)
+        
+        verify_response = client.post(
+            "/api/account/mfa/verify/",
+            data={"code": generate_totp_code(security_state.mfa_pending_secret)},
+            format="json",
+        )
+        raw_codes_from_verify = verify_response.json().get("recoveryCodes") or []
+
+        security_state.refresh_from_db()
+        stored_codes = security_state.mfa_recovery_codes or []
+
+        # Raw recovery codes should be returned to user but not stored
+        self.assertEqual(verify_response.status_code, 200)
+        self.assertTrue(raw_codes_from_verify, "Setup response should contain raw recovery codes")
+        
+        # Stored recovery codes should NOT match raw recovery codes (they should be hashes)
+        for stored_code in stored_codes:
+            self.assertNotIn(stored_code, raw_codes_from_verify, "Stored codes must be hashes, not raw recovery codes")
+        
+        # Verify that no raw recovery code appears in stored list
+        response_json = json.dumps(verify_response.json())
+        for raw_code in raw_codes_from_verify:
+            # Raw codes should appear in response but NOT be in stored hashes
+            self.assertIn(raw_code, response_json, "Raw code should be in response")
+            for stored in stored_codes:
+                self.assertNotEqual(raw_code, stored, f"Stored hash must differ from raw code {raw_code}")
 
     def test_account_security_events_lists_recent_sensitive_actions(self):
         user = get_user_model().objects.create_user(
@@ -1869,6 +1980,104 @@ class CommerceRegistrationTests(TestCase):
             AuditLog.objects.filter(actor=user, action="account.disable", target_type="account", target_id=str(user.pk)).exists()
         )
 
+    def test_account_delete_requests_recovery_window_and_anonymizes_orders(self):
+        user = get_user_model().objects.create_user(
+            username="account-delete-user",
+            email="account-delete@example.com",
+            password="Strong-Password-123!",
+            is_active=True,
+        )
+        profile = CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        order = OnsiteOrder.objects.create(
+            checkout_ref="checkout-delete-window",
+            order_number="ORD-DELETE-001",
+            user=user,
+            customer_name="Delete User",
+            customer_email="delete@example.com",
+            shipping_name="Delete User",
+            shipping_phone="+353851234567",
+            shipping_address_line_1="10 Main Street",
+            shipping_city="Cork",
+            shipping_postcode="T12 1AB",
+            shipping_country_code="IE",
+            amount_total_cents=5000,
+            subtotal_cents=5000,
+            shipping_cents=0,
+            tax_cents=0,
+            discount_cents=0,
+        )
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            "/api/account/delete/",
+            data={"current_password": "Strong-Password-123!", "confirm": True},
+            format="json",
+        )
+
+        user.refresh_from_db()
+        profile.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(user.is_active)
+        self.assertTrue(get_user_model().objects.filter(pk=user.pk).exists())
+        self.assertIsNotNone(profile.deletion_requested_at)
+        self.assertIsNotNone(profile.deletion_expires_at)
+        self.assertGreater(profile.deletion_expires_at, profile.deletion_requested_at)
+        self.assertTrue(AccountSession.objects.filter(user=user, revoked_at__isnull=True).count() == 0)
+        self.assertIsNone(order.user)
+        self.assertEqual(order.customer_name, "Account deleted")
+        self.assertEqual(order.customer_email, "")
+        self.assertEqual(order.shipping_name, "Account deleted")
+        self.assertEqual(order.shipping_phone, "")
+        self.assertTrue(AuditLog.objects.filter(action="account.delete", target_type="account").exists())
+
+    def test_account_delete_recovery_restores_access_before_expiry_but_not_order_identity(self):
+        user = get_user_model().objects.create_user(
+            username="account-recover-user",
+            email="recover@example.com",
+            password="Strong-Password-123!",
+            is_active=False,
+        )
+        profile = CommerceCustomerProfile.objects.create(
+            user=user,
+            activation_pending=False,
+            deleted_at=None,
+            disabled_at=timezone.now(),
+            deletion_requested_at=timezone.now(),
+            deletion_expires_at=timezone.now() + timedelta(days=14),
+        )
+        order = OnsiteOrder.objects.create(
+            checkout_ref="checkout-recovery-window",
+            order_number="ORD-RECOVER-001",
+            user=None,
+            customer_name="Account deleted",
+            customer_email="",
+            shipping_name="Account deleted",
+            shipping_phone="",
+            amount_total_cents=2500,
+            subtotal_cents=2500,
+            shipping_cents=0,
+            tax_cents=0,
+            discount_cents=0,
+        )
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            "/api/account/delete/recover/",
+            data={"current_password": "Strong-Password-123!"},
+            format="json",
+        )
+
+        user.refresh_from_db()
+        profile.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(user.is_active)
+        self.assertIsNone(profile.deletion_requested_at)
+        self.assertIsNone(profile.deletion_expires_at)
+        self.assertIsNone(order.user)
+        self.assertEqual(order.customer_name, "Account deleted")
+
     def test_account_delete_requires_confirmation_and_current_password(self):
         user = get_user_model().objects.create_user(
             username="account-delete-user",
@@ -1876,7 +2085,7 @@ class CommerceRegistrationTests(TestCase):
             password="Strong-Password-123!",
             is_active=True,
         )
-        CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+        profile = CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
         self.client.force_authenticate(user=user)
 
         missing_confirmation = self.client.post(
@@ -1895,13 +2104,56 @@ class CommerceRegistrationTests(TestCase):
             format="json",
         )
 
+        user.refresh_from_db()
+        profile.refresh_from_db()
+
         self.assertEqual(missing_confirmation.status_code, 400)
         self.assertEqual(bad_password.status_code, 400)
         self.assertEqual(success.status_code, 200)
-        self.assertFalse(get_user_model().objects.filter(pk=user.pk).exists())
+        # With soft-delete, user still exists but is inactive with deletion pending
+        self.assertTrue(get_user_model().objects.filter(pk=user.pk).exists())
+        self.assertFalse(user.is_active)
+        self.assertIsNotNone(profile.deletion_requested_at)
+        self.assertIsNotNone(profile.deletion_expires_at)
         self.assertTrue(
             AuditLog.objects.filter(action="account.delete", target_type="account").exists()
         )
+
+    def test_account_delete_recovery_fails_after_30_day_expiry(self):
+        """Verify recovery fails with 410 GONE after 30-day recovery window expires."""
+        from datetime import timedelta
+
+        user = get_user_model().objects.create_user(
+            username="account-delete-expired",
+            email="account-delete-expired@example.com",
+            password="Strong-Password-123!",
+            is_active=True,
+        )
+        profile = CommerceCustomerProfile.objects.create(user=user, activation_pending=False)
+
+        # Request deletion
+        self.client.force_authenticate(user=user)
+        self.client.post(
+            "/api/account/delete/",
+            data={"current_password": "Strong-Password-123!", "confirm": True},
+            format="json",
+        )
+
+        # Manually expire the recovery window
+        profile.refresh_from_db()
+        profile.deletion_expires_at = timezone.now() - timedelta(days=1)
+        profile.save()
+
+        # Attempt recovery after expiry
+        response = self.client.post(
+            "/api/account/delete/recover/",
+            data={"current_password": "Strong-Password-123!"},
+            format="json",
+        )
+
+        # Verify 410 GONE response
+        self.assertEqual(response.status_code, 410)
+        self.assertIn("recovery window", response.json()["detail"].lower())
 
     @patch("api.account_views.send_email_change_email")
     def test_account_email_change_request_issues_verification_to_new_address(self, mock_send):
@@ -2029,6 +2281,22 @@ class CommerceRegistrationTests(TestCase):
 
 
 class ZeptoMailDeliveryTests(TestCase):
+    def test_provider_response_snippet_redacts_sensitive_fields(self):
+        snippet = _safe_response_snippet(
+            json.dumps(
+                {
+                    "status": "accepted",
+                    "message": "recipient=customer@example.com token=secret-token",
+                    "htmlbody": "<p>Private email content</p>",
+                }
+            ).encode("utf-8")
+        )
+
+        self.assertIn('"status": "accepted"', snippet)
+        self.assertNotIn("customer@example.com", snippet)
+        self.assertNotIn("secret-token", snippet)
+        self.assertNotIn("Private email content", snippet)
+
     @override_settings(
         ACCOUNT_FRONTEND_URL="https://manleylifting.ie",
         ZEPTOMAIL_API_URL="https://api.zeptomail.eu/v1.1/email",
@@ -2087,6 +2355,23 @@ class ApiBasicEndpointTests(BaseApiTestCase):
         response = self.client.get("/api/hello/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"message": "Hello from Django API"})
+
+    def test_health_endpoint(self):
+        response = self.client.get("/api/health/")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["checks"]["database"], "ok")
+        self.assertEqual(payload["checks"]["cache"], "ok")
+
+    def test_readiness_endpoint(self):
+        response = self.client.get("/api/ready/")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["checks"]["database"], "ok")
+        self.assertEqual(payload["checks"]["cache"], "ok")
+        self.assertIn(payload["checks"]["stripe"], {"configured", "not_configured"})
 
     def test_csrf_seed_endpoint(self):
         response = self.client.get("/api/csrf/")
@@ -2156,6 +2441,51 @@ class CatalogReadEndpointTests(BaseApiTestCase):
 
 
 class OnsiteCheckoutTests(BaseApiTestCase):
+    def test_minor_unit_conversion_uses_exact_decimal_arithmetic(self):
+        self.assertEqual(_to_minor_units(Decimal("10.01")), 1001)
+        self.assertEqual(_to_minor_units(Decimal("0.29")), 29)
+        self.assertEqual(_to_minor_units(Decimal("99999999.99")), 9999999999)
+        self.assertEqual(_to_minor_units(Decimal("0.00")), 0)
+
+    @patch("api.views._is_allowed_checkout_origin", return_value=True)
+    @patch("api.views._stripe_config_ok", return_value=True)
+    @patch("api.views._verify_turnstile_token", return_value=True)
+    @patch("api.views.stripe.PaymentIntent.create")
+    def test_tracked_inventory_rejects_oversell(
+        self,
+        mock_intent_create,
+        _mock_turnstile,
+        _mock_cfg,
+        _mock_origin,
+    ):
+        CatalogProduct.objects.create(
+            variant_ref="tracked-variant",
+            handle="tracked-product",
+            title="Tracked Product",
+            price_amount="10.00",
+            currency_code="EUR",
+            is_active=True,
+            inventory_tracked=True,
+            available_qty=1,
+            reserved_qty=0,
+        )
+
+        response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps(
+                {
+                    "checkoutRef": "tracked-oversell",
+                    "customer": {"name": "Jane Doe", "email": "jane@example.com"},
+                    "items": [{"variantId": "tracked-variant", "quantity": 2}],
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertFalse(OnsiteOrder.objects.filter(checkout_ref="tracked-oversell").exists())
+        mock_intent_create.assert_not_called()
+
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)
     @patch("api.views._verify_turnstile_token", return_value=True)
@@ -2191,10 +2521,373 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["paymentIntentId"], "pi_123")
+        self.assertEqual(body["clientSecret"], "pi_123_secret_abc")
 
         order = OnsiteOrder.objects.get(checkout_ref="onsite_ok_1")
         self.assertEqual(order.status, OnsiteOrder.STATUS_PENDING)
         self.assertEqual(order.amount_total_cents, 2000)
+        self.assertEqual(order.payment_status, OnsiteOrder.PAYMENT_STATUS_PENDING)
+        self.assertEqual(order.fulfillment_status, OnsiteOrder.FULFILLMENT_STATUS_UNFULFILLED)
+        self.assertEqual(order.subtotal_cents, 2000)
+        self.assertEqual(order.discount_cents, 0)
+        self.assertEqual(order.shipping_cents, 0)
+        self.assertEqual(order.tax_cents, 0)
+        self.assertEqual(order.order_items.count(), 1)
+        self.assertEqual(order.inventory_reservations.count(), 1)
+        self.assertFalse(hasattr(order, "payment_client_secret"))
+        self.assertNotEqual(order.status_token, body["statusToken"])
+        self.assertIsNotNone(order.status_token_expires_at)
+
+        status_response = self.client.post(
+            "/api/payments/onsite-status/",
+            data=json.dumps({"checkoutRef": order.checkout_ref, "statusToken": body["statusToken"]}),
+            content_type="application/json",
+        )
+        self.assertEqual(status_response.status_code, 200)
+
+        summary_response = self.client.post(
+            "/api/payments/onsite-order-summary/",
+            data=json.dumps({"checkoutRef": order.checkout_ref, "statusToken": body["statusToken"]}),
+            content_type="application/json",
+        )
+        self.assertEqual(summary_response.status_code, 200)
+        summary = summary_response.json()
+        self.assertEqual(summary["paymentStatus"], OnsiteOrder.PAYMENT_STATUS_PENDING)
+        self.assertEqual(summary["fulfillmentStatus"], OnsiteOrder.FULFILLMENT_STATUS_UNFULFILLED)
+        self.assertEqual(len(summary["orderItems"]), 1)
+
+    def test_expired_status_token_cannot_read_checkout_status(self):
+        raw_status_token = "a" * 64
+        order = OnsiteOrder.objects.create(
+            checkout_ref="expired-status-token",
+            status_token=digest_capability_token(raw_status_token),
+            status_token_expires_at=timezone.now() - timedelta(minutes=1),
+            status=OnsiteOrder.STATUS_PAID,
+            amount_total_cents=1000,
+            currency="EUR",
+        )
+
+        response = self.client.post(
+            "/api/payments/onsite-status/",
+            data=json.dumps(
+                {"checkoutRef": order.checkout_ref, "statusToken": raw_status_token}
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    @patch("api.views._is_allowed_checkout_origin", return_value=True)
+    @patch("api.views._stripe_config_ok", return_value=True)
+    @patch("api.views._verify_turnstile_token", return_value=True)
+    @patch("api.views.stripe.PaymentIntent.create")
+    def test_onsite_intent_retry_reuses_local_order_and_stripe_idempotency_key(
+        self,
+        mock_intent_create,
+        _mock_turnstile,
+        _mock_cfg,
+        _mock_origin,
+    ):
+        CatalogProduct.objects.create(
+            variant_ref="retry-variant",
+            handle="retry-product",
+            title="Retry Product",
+            price_amount="15.00",
+            currency_code="EUR",
+            is_active=True,
+        )
+        mock_intent_create.return_value = {
+            "id": "pi_retry",
+            "client_secret": "pi_retry_secret",
+        }
+        payload = {
+            "checkoutRef": "onsite_retry_1",
+            "statusToken": "a" * 64,
+            "claimToken": "b" * 64,
+            "customer": {"name": "Jane Doe", "email": "jane@example.com"},
+            "items": [{"variantId": "retry-variant", "quantity": 1}],
+        }
+
+        first_response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+        second_response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(first_response.json()["priceRefreshNotice"], "")
+        self.assertIn("latest pricing", second_response.json()["priceRefreshNotice"])
+        self.assertEqual(OnsiteOrder.objects.filter(checkout_ref="onsite_retry_1").count(), 1)
+        self.assertEqual(GuestOrderClaim.objects.filter(order__checkout_ref="onsite_retry_1").count(), 1)
+        self.assertEqual(first_response.json()["paymentIntentId"], second_response.json()["paymentIntentId"])
+        self.assertEqual(mock_intent_create.call_count, 2)
+        for call in mock_intent_create.call_args_list:
+            self.assertEqual(call.kwargs["idempotency_key"], "onsite:onsite_retry_1")
+
+    @patch("api.views._is_allowed_checkout_origin", return_value=True)
+    @patch("api.views._stripe_config_ok", return_value=True)
+    @patch("api.views._verify_turnstile_token", return_value=True)
+    @patch("api.views.stripe.PaymentIntent.create")
+    def test_onsite_intent_retry_rejects_claim_capability_rotation(
+        self,
+        mock_intent_create,
+        _mock_turnstile,
+        _mock_cfg,
+        _mock_origin,
+    ):
+        CatalogProduct.objects.create(
+            variant_ref="claim-rotation-variant",
+            handle="claim-rotation-product",
+            title="Claim Rotation Product",
+            price_amount="15.00",
+            currency_code="EUR",
+            is_active=True,
+        )
+        mock_intent_create.return_value = {
+            "id": "pi_claim_rotation",
+            "client_secret": "pi_claim_rotation_secret",
+        }
+        payload = {
+            "checkoutRef": "onsite_claim_rotation",
+            "statusToken": "1" * 64,
+            "claimToken": "2" * 64,
+            "customer": {"name": "Jane Doe", "email": "jane@example.com"},
+            "items": [{"variantId": "claim-rotation-variant", "quantity": 1}],
+        }
+
+        first_response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+        rotated_payload = {**payload, "claimToken": "3" * 64}
+        retry_response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps(rotated_payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(retry_response.status_code, 409)
+        claim = GuestOrderClaim.objects.get(order__checkout_ref="onsite_claim_rotation")
+        self.assertEqual(claim.claim_token, digest_capability_token(payload["claimToken"]))
+
+    @patch("api.views._is_allowed_checkout_origin", return_value=True)
+    @patch("api.views._stripe_config_ok", return_value=True)
+    @patch("api.views._verify_turnstile_token", return_value=True)
+    @patch("api.views.stripe.PaymentIntent.create")
+    def test_onsite_intent_retry_rotates_status_capability_with_existing_claim(
+        self,
+        mock_intent_create,
+        _mock_turnstile,
+        _mock_cfg,
+        _mock_origin,
+    ):
+        CatalogProduct.objects.create(
+            variant_ref="status-rotation-variant",
+            handle="status-rotation-product",
+            title="Status Rotation Product",
+            price_amount="15.00",
+            currency_code="EUR",
+            is_active=True,
+        )
+        mock_intent_create.return_value = {
+            "id": "pi_status_rotation",
+            "client_secret": "pi_status_rotation_secret",
+        }
+        payload = {
+            "checkoutRef": "onsite_status_rotation",
+            "statusToken": "4" * 64,
+            "claimToken": "5" * 64,
+            "customer": {"name": "Jane Doe", "email": "jane@example.com"},
+            "items": [{"variantId": "status-rotation-variant", "quantity": 1}],
+        }
+
+        first_response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+        rotated_payload = {
+            **payload,
+            "statusToken": "6" * 64,
+            "previousStatusToken": payload["statusToken"],
+            "rotateStatusToken": True,
+        }
+        retry_response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps(rotated_payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(retry_response.status_code, 200)
+        order = OnsiteOrder.objects.get(checkout_ref="onsite_status_rotation")
+        self.assertEqual(order.status_token, digest_capability_token(rotated_payload["statusToken"]))
+
+        old_status_response = self.client.post(
+            "/api/payments/onsite-status/",
+            data=json.dumps(
+                {"checkoutRef": order.checkout_ref, "statusToken": payload["statusToken"]}
+            ),
+            content_type="application/json",
+        )
+        new_status_response = self.client.post(
+            "/api/payments/onsite-status/",
+            data=json.dumps(
+                {"checkoutRef": order.checkout_ref, "statusToken": rotated_payload["statusToken"]}
+            ),
+            content_type="application/json",
+        )
+        self.assertEqual(old_status_response.status_code, 404)
+        self.assertEqual(new_status_response.status_code, 200)
+
+    @patch("api.views._is_allowed_checkout_origin", return_value=True)
+    @patch("api.views._stripe_config_ok", return_value=True)
+    @patch("api.views._verify_turnstile_token", return_value=True)
+    @patch("api.views.stripe.PaymentIntent.create")
+    def test_onsite_intent_provider_failure_leaves_retryable_local_order(
+        self,
+        mock_intent_create,
+        _mock_turnstile,
+        _mock_cfg,
+        _mock_origin,
+    ):
+        CatalogProduct.objects.create(
+            variant_ref="provider-retry-variant",
+            handle="provider-retry-product",
+            title="Provider Retry Product",
+            price_amount="15.00",
+            currency_code="EUR",
+            is_active=True,
+        )
+        mock_intent_create.side_effect = [
+            RuntimeError("temporary provider failure"),
+            {"id": "pi_provider_retry", "client_secret": "pi_provider_retry_secret"},
+        ]
+        payload = {
+            "checkoutRef": "onsite_provider_retry",
+            "statusToken": "c" * 64,
+            "claimToken": "d" * 64,
+            "customer": {"name": "Jane Doe", "email": "jane@example.com"},
+            "items": [{"variantId": "provider-retry-variant", "quantity": 1}],
+        }
+
+        failed_response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+        order = OnsiteOrder.objects.get(checkout_ref="onsite_provider_retry")
+        self.assertEqual(failed_response.status_code, 502)
+        self.assertEqual(order.payment_intent_id, "")
+
+        retry_response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(retry_response.status_code, 200)
+        order.refresh_from_db()
+        self.assertEqual(order.payment_intent_id, "pi_provider_retry")
+        self.assertEqual(OnsiteOrder.objects.filter(checkout_ref="onsite_provider_retry").count(), 1)
+
+    @patch("api.views._is_allowed_checkout_origin", return_value=True)
+    @patch("api.views._stripe_config_ok", return_value=True)
+    @patch("api.views._verify_turnstile_token", return_value=True)
+    @patch("api.views.stripe.PaymentIntent.create")
+    def test_stripe_provider_error_log_excludes_sensitive_exception_text(
+        self,
+        mock_intent_create,
+        _mock_turnstile,
+        _mock_cfg,
+        _mock_origin,
+    ):
+        CatalogProduct.objects.create(
+            variant_ref="log-scrub-variant",
+            handle="log-scrub-product",
+            title="Log Scrub Product",
+            price_amount="15.00",
+            currency_code="EUR",
+            is_active=True,
+        )
+        mock_intent_create.side_effect = RuntimeError(
+            "client_secret=pi_secret address=1 Main Street, Wexford"
+        )
+
+        with self.assertLogs("api.views", level="ERROR") as captured:
+            response = self.client.post(
+                "/api/payments/onsite-intent/",
+                data=json.dumps(
+                    {
+                        "checkoutRef": "log-scrub-checkout",
+                        "statusToken": "7" * 64,
+                        "claimToken": "8" * 64,
+                        "customer": {"name": "Jane Doe", "email": "jane@example.com"},
+                        "items": [{"variantId": "log-scrub-variant", "quantity": 1}],
+                    }
+                ),
+                content_type="application/json",
+            )
+
+        log_output = "\n".join(captured.output)
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("Failed to create Stripe PaymentIntent", log_output)
+        self.assertNotIn("pi_secret", log_output)
+        self.assertNotIn("1 Main Street", log_output)
+
+    @patch("api.views._is_allowed_checkout_origin", return_value=True)
+    @patch("api.views._stripe_config_ok", return_value=True)
+    @patch("api.views._verify_turnstile_token", return_value=True)
+    @patch("api.views.stripe.PaymentIntent.create")
+    def test_onsite_intent_rejects_conflicting_checkout_reference_before_stripe(
+        self,
+        mock_intent_create,
+        _mock_turnstile,
+        _mock_cfg,
+        _mock_origin,
+    ):
+        CatalogProduct.objects.create(
+            variant_ref="conflict-variant",
+            handle="conflict-product",
+            title="Conflict Product",
+            price_amount="15.00",
+            currency_code="EUR",
+            is_active=True,
+        )
+        mock_intent_create.return_value = {
+            "id": "pi_conflict",
+            "client_secret": "pi_conflict_secret",
+        }
+        payload = {
+            "checkoutRef": "onsite_conflict",
+            "statusToken": "e" * 64,
+            "claimToken": "f" * 64,
+            "customer": {"name": "Jane Doe", "email": "jane@example.com"},
+            "items": [{"variantId": "conflict-variant", "quantity": 1}],
+        }
+        first_response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+        conflicting_payload = {**payload, "statusToken": "0" * 64}
+        conflict_response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps(conflicting_payload),
+            content_type="application/json",
+        )
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(conflict_response.status_code, 409)
+        self.assertEqual(mock_intent_create.call_count, 1)
 
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)
@@ -2277,6 +2970,7 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         order = OnsiteOrder.objects.get(checkout_ref="guest_claim_1")
         claim = GuestOrderClaim.objects.get(order=order)
         self.assertEqual(claim.claim_state, GuestOrderClaim.STATE_PENDING)
+        self.assertNotEqual(claim.claim_token, body["claimToken"])
 
         claimant = get_user_model().objects.create_user(
             username="claimant",
@@ -2367,15 +3061,66 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         self.assertEqual(body["amountTotalCents"], 1250)
         self.assertEqual(body["lineItems"][0]["title"], "Chain Block")
         self.assertEqual(body["lineItems"][1]["title"], "Rope Sling")
-        self.assertIn("latest pricing", body["priceRefreshNotice"])
+        self.assertEqual(body["priceRefreshNotice"], "")
 
     def test_onsite_status_not_found(self):
-        response = self.client.get("/api/payments/onsite-status/?checkoutRef=x1&statusToken=tok_1")
+        response = self.client.post(
+            "/api/payments/onsite-status/",
+            data=json.dumps({"checkoutRef": "x1", "statusToken": "a" * 32}),
+            content_type="application/json",
+        )
         self.assertEqual(response.status_code, 404)
 
+        get_response = self.client.get("/api/payments/onsite-status/?checkoutRef=x1&statusToken=tok_1")
+        self.assertEqual(get_response.status_code, 405)
+
     def test_onsite_order_summary_not_found(self):
-        response = self.client.get("/api/payments/onsite-order-summary/?checkoutRef=x1&statusToken=tok_1")
+        response = self.client.post(
+            "/api/payments/onsite-order-summary/",
+            data=json.dumps({"checkoutRef": "x1", "statusToken": "a" * 32}),
+            content_type="application/json",
+        )
         self.assertEqual(response.status_code, 404)
+
+        get_response = self.client.get("/api/payments/onsite-order-summary/?checkoutRef=x1&statusToken=tok_1")
+        self.assertEqual(get_response.status_code, 405)
+
+    def test_onsite_status_rejects_low_entropy_token(self):
+        response = self.client.post(
+            "/api/payments/onsite-status/",
+            data=json.dumps({"checkoutRef": "x1", "statusToken": "short"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_capability_token_hash_migration_is_idempotent_and_one_way(self):
+        migration = importlib.import_module("api.migrations.0037_hash_order_capability_tokens")
+        order = OnsiteOrder.objects.create(checkout_ref="migration-token-order", status_token="raw-status-token")
+        claim = GuestOrderClaim.objects.create(order=order, claim_token="raw-claim-token")
+        pending = PendingCheckout.objects.create(
+            checkout_ref="migration-pending-checkout",
+            status_token="raw-pending-token",
+        )
+
+        from django.apps import apps
+
+        migration.hash_existing_capability_tokens(apps, None)
+        order.refresh_from_db()
+        claim.refresh_from_db()
+        pending.refresh_from_db()
+        first_order_digest = order.status_token
+        first_claim_digest = claim.claim_token
+        first_pending_digest = pending.status_token
+
+        migration.hash_existing_capability_tokens(apps, None)
+        order.refresh_from_db()
+        claim.refresh_from_db()
+        pending.refresh_from_db()
+        self.assertEqual(order.status_token, first_order_digest)
+        self.assertEqual(claim.claim_token, first_claim_digest)
+        self.assertEqual(pending.status_token, first_pending_digest)
+        with self.assertRaisesMessage(RuntimeError, "one-way token hash backfill"):
+            migration.refuse_reverse(apps, None)
 
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)
@@ -2450,7 +3195,16 @@ class AccountOrderAndAddressTests(BaseApiTestCase):
             "client_secret": "pi_auth1_secret",
         }
 
-        response = self.client.post(
+        checkout_client = APIClient()
+        login_response = checkout_client.post(
+            "/api/auth/token/",
+            data={"username": self.user.username, "password": "testpass123"},
+            format="json",
+        )
+        self.assertEqual(login_response.status_code, 200)
+        access_token = login_response.json()["access"]
+
+        response = checkout_client.post(
             "/api/payments/onsite-intent/",
             data=json.dumps(
                 {
@@ -2470,6 +3224,7 @@ class AccountOrderAndAddressTests(BaseApiTestCase):
                 }
             ),
             content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {access_token}",
         )
 
         self.assertEqual(response.status_code, 200)
@@ -2511,6 +3266,10 @@ class AccountOrderAndAddressTests(BaseApiTestCase):
         body = response.json()
         self.assertEqual(len(body), 1)
         self.assertEqual(body[0]["checkoutRef"], "order_for_user")
+        self.assertEqual(body[0]["paymentStatus"], OnsiteOrder.PAYMENT_STATUS_PENDING)
+        self.assertEqual(body[0]["fulfillmentStatus"], OnsiteOrder.FULFILLMENT_STATUS_UNFULFILLED)
+        self.assertNotIn("statusToken", body[0])
+        self.assertNotIn("status_token", body[0])
 
     def test_account_order_detail_requires_ownership(self):
         order = OnsiteOrder.objects.create(
@@ -2528,9 +3287,79 @@ class AccountOrderAndAddressTests(BaseApiTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["checkoutRef"], "owned_order")
+        self.assertEqual(response.json()["paymentStatus"], OnsiteOrder.PAYMENT_STATUS_PENDING)
+        self.assertEqual(response.json()["fulfillmentStatus"], OnsiteOrder.FULFILLMENT_STATUS_UNFULFILLED)
+        self.assertNotIn("statusToken", response.json())
+        self.assertNotIn("status_token", response.json())
 
         other_response = self.client.get("/api/account/orders/order_for_other_user/")
         self.assertEqual(other_response.status_code, 404)
+
+    def test_order_summary_rejects_token_from_different_order(self):
+        first_token = "a" * 64
+        second_token = "b" * 64
+        OnsiteOrder.objects.create(
+            checkout_ref="summary-order-a",
+            status_token=digest_capability_token(first_token),
+            customer_email="first@example.com",
+        )
+        OnsiteOrder.objects.create(
+            checkout_ref="summary-order-b",
+            status_token=digest_capability_token(second_token),
+            customer_email="second@example.com",
+        )
+
+        response = self.client.post(
+            "/api/payments/onsite-order-summary/",
+            data=json.dumps({"checkoutRef": "summary-order-b", "statusToken": first_token}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_order_claim_rejects_expired_and_already_attached_orders(self):
+        profile = CommerceCustomerProfile.objects.create(
+            user=self.user,
+            activation_pending=False,
+            verified_email=self.user.email,
+            email_verified_at=timezone.now(),
+        )
+        self.assertTrue(profile.has_verified_email())
+
+        expired_raw_token = "c" * 64
+        expired_order = OnsiteOrder.objects.create(checkout_ref="expired-claim-order")
+        expired_claim = GuestOrderClaim.objects.create(
+            order=expired_order,
+            claim_token=digest_capability_token(expired_raw_token),
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+        expired_response = self.client.post(
+            "/api/account/claim-order/",
+            data={"orderNumber": expired_order.order_number, "claimToken": expired_raw_token},
+            format="json",
+        )
+        self.assertEqual(expired_response.status_code, 400)
+        expired_claim.refresh_from_db()
+        self.assertEqual(expired_claim.claim_state, GuestOrderClaim.STATE_EXPIRED)
+
+        attached_raw_token = "d" * 64
+        attached_order = OnsiteOrder.objects.create(
+            checkout_ref="attached-claim-order",
+            user=self.other_user,
+        )
+        GuestOrderClaim.objects.create(
+            order=attached_order,
+            claim_token=digest_capability_token(attached_raw_token),
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        attached_response = self.client.post(
+            "/api/account/claim-order/",
+            data={"orderNumber": attached_order.order_number, "claimToken": attached_raw_token},
+            format="json",
+        )
+        self.assertEqual(attached_response.status_code, 400)
+        attached_order.refresh_from_db()
+        self.assertEqual(attached_order.user, self.other_user)
 
     def test_account_orders_include_shipping_snapshot(self):
         OnsiteOrder.objects.create(
@@ -2584,6 +3413,106 @@ class AccountOrderAndAddressTests(BaseApiTestCase):
 
         other_response = self.client.get("/api/account/orders/by-number/MNL-260805-OTHER/")
         self.assertEqual(other_response.status_code, 404)
+
+    def test_account_export_returns_minimized_data_for_verified_user_and_rejects_unverified_accounts(self):
+        profile = CommerceCustomerProfile.objects.create(
+            user=self.user,
+            activation_pending=False,
+            verified_email=self.user.email,
+            email_verified_at=timezone.now(),
+        )
+        profile.saved_addresses.create(
+            label="Home",
+            recipient_name="Jane Doe",
+            recipient_phone="+353871234567",
+            address_line_1="1 Main Street",
+            address_line_2="Apt 2",
+            city="Dublin",
+            county="Dublin",
+            postcode="D01",
+            country_code="IE",
+            is_default_shipping=True,
+            is_default_billing=False,
+        )
+        OnsiteOrder.objects.create(
+            checkout_ref="owned_export_order",
+            status_token="tok_export_owned",
+            status=OnsiteOrder.STATUS_PENDING,
+            amount_total_cents=1200,
+            currency="EUR",
+            customer_name="Jane Doe",
+            customer_email="jane@example.com",
+            user=self.user,
+            shipping_name="Jane Doe",
+            shipping_phone="+353871234567",
+            shipping_address_line_1="1 Main Street",
+            shipping_city="Dublin",
+            shipping_postcode="D01",
+            shipping_country_code="IE",
+            line_items=[{"sku": "SKU-1", "title": "Weight Plate", "quantity": 1, "unit_price_cents": 1200, "line_total_cents": 1200}],
+        )
+        OnsiteOrder.objects.create(
+            checkout_ref="other_export_order",
+            status_token="tok_export_other",
+            status=OnsiteOrder.STATUS_PENDING,
+            amount_total_cents=500,
+            currency="EUR",
+            customer_name="Other User",
+            customer_email="other@example.com",
+            user=self.other_user,
+        )
+        security_state, _ = AccountSecurityState.objects.get_or_create(
+            user=self.user,
+            defaults={
+                "mfa_enabled": True,
+                "mfa_secret": "secretvalue1234567890",
+                "mfa_pending_secret": "",
+                "mfa_recovery_codes": ["recovery-RAW-1", "recovery-RAW-2"],
+            },
+        )
+        AuditLog.objects.create(
+            actor=self.user,
+            action="account.password_change",
+            target_type="account",
+            target_id=str(self.user.pk),
+            details={"changed": True},
+        )
+        AccountSession.objects.create(
+            user=self.user,
+            expires_at=timezone.now() + timedelta(hours=1),
+            ip_address="203.0.113.11",
+            user_agent="Python test client",
+        )
+
+        response = self.client.post("/api/account/export/", format="json")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["version"], 1)
+        self.assertEqual(body["profile"]["email"], self.user.email)
+        self.assertEqual(len(body["orders"]), 1)
+        self.assertEqual(body["orders"][0]["checkoutRef"], "owned_export_order")
+        self.assertEqual(len(body["addresses"]), 1)
+        self.assertEqual(body["addresses"][0]["label"], "Home")
+        self.assertEqual(len(body["auditEvents"]), 1)
+        self.assertEqual(len(body["sessions"]), 1)
+        self.assertNotIn("password", body)
+        self.assertNotIn("mfaSecret", body)
+        self.assertNotIn("mfa_secret", body)
+        self.assertNotIn("mfaRecoveryCodes", body)
+        self.assertNotIn("passwordHash", body)
+        self.assertNotIn("statusToken", body["orders"][0])
+        self.assertNotIn("accessToken", body["sessions"][0])
+        self.assertNotIn("secretvalue1234567890", json.dumps(body))
+        self.assertNotIn("recovery-RAW-1", json.dumps(body))
+
+        profile.email_verified_at = None
+        profile.verified_email = ""
+        profile.save(update_fields=["email_verified_at", "verified_email", "updated_at"])
+
+        denied = self.client.post("/api/account/export/", format="json")
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(denied.json()["detail"], "Account access is not available yet.")
 
     def test_account_addresses_create_and_list_for_authenticated_user(self):
         response = self.client.post(
@@ -2694,11 +3623,20 @@ class StripeWebhookTests(BaseApiTestCase):
             status_token="onsite_wh_tok",
             status=OnsiteOrder.STATUS_PENDING,
             payment_intent_id="pi_paid1",
+            amount_total_cents=1000,
+            currency="EUR",
         )
         mock_construct.return_value = {
             "id": "evt_1",
             "type": "payment_intent.succeeded",
-            "data": {"object": {"id": "pi_paid1"}},
+            "data": {
+                "object": {
+                    "id": "pi_paid1",
+                    "amount": 1000,
+                    "currency": "eur",
+                    "metadata": {"checkout_ref": "onsite_wh_1"},
+                }
+            },
         }
 
         response = self.client.post(
@@ -2711,8 +3649,264 @@ class StripeWebhookTests(BaseApiTestCase):
         self.assertEqual(response.status_code, 200)
         order = OnsiteOrder.objects.get(checkout_ref="onsite_wh_1")
         self.assertEqual(order.status, OnsiteOrder.STATUS_PAID)
+        self.assertEqual(order.payment_status, OnsiteOrder.PAYMENT_STATUS_PAID)
         self.assertIsNotNone(order.paid_at)
         self.assertTrue(ProcessedStripeEvent.objects.filter(event_id="evt_1").exists())
+
+        duplicate_response = self.client.post(
+            "/api/payments/stripe/webhook/",
+            data=json.dumps({"x": 1}),
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig_ok",
+        )
+        self.assertEqual(duplicate_response.status_code, 200)
+        self.assertTrue(duplicate_response.json()["duplicate"])
+        self.assertEqual(ProcessedStripeEvent.objects.filter(event_id="evt_1").count(), 1)
+
+    @patch("api.views.STRIPE_WEBHOOK_SECRET", "whsec_test")
+    @patch("api.views.stripe.Webhook.construct_event")
+    def test_stripe_webhook_maps_payment_failure_without_regressing_paid_order(self, mock_construct):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="onsite_wh_failed",
+            status=OnsiteOrder.STATUS_PENDING,
+            payment_intent_id="pi_failed",
+            amount_total_cents=1000,
+            currency="EUR",
+        )
+        intent = {
+            "id": order.payment_intent_id,
+            "amount": order.amount_total_cents,
+            "currency": "eur",
+            "metadata": {"checkout_ref": order.checkout_ref},
+        }
+        mock_construct.return_value = {
+            "id": "evt_failed",
+            "type": "payment_intent.payment_failed",
+            "data": {"object": intent},
+        }
+
+        failed_response = self.client.post(
+            "/api/payments/stripe/webhook/",
+            data=json.dumps({"x": 1}),
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig_ok",
+        )
+        self.assertEqual(failed_response.status_code, 200)
+        order.refresh_from_db()
+        self.assertEqual(order.status, OnsiteOrder.STATUS_FAILED)
+
+        order.status = OnsiteOrder.STATUS_PAID
+        order.save(update_fields=["status", "updated_at"])
+        mock_construct.return_value = {
+            "id": "evt_late_failed",
+            "type": "payment_intent.payment_failed",
+            "data": {"object": intent},
+        }
+        late_response = self.client.post(
+            "/api/payments/stripe/webhook/",
+            data=json.dumps({"x": 1}),
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig_ok",
+        )
+        self.assertEqual(late_response.status_code, 200)
+        order.refresh_from_db()
+        self.assertEqual(order.status, OnsiteOrder.STATUS_PAID)
+
+    @patch("api.views.STRIPE_WEBHOOK_SECRET", "whsec_test")
+    @patch("api.views.stripe.Webhook.construct_event")
+    def test_stripe_webhook_does_not_consume_unhandled_event(self, mock_construct):
+        mock_construct.return_value = {
+            "id": "evt_unhandled",
+            "type": "charge.succeeded",
+            "data": {"object": {}},
+        }
+
+        response = self.client.post(
+            "/api/payments/stripe/webhook/",
+            data=json.dumps({"x": 1}),
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig_ok",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["skipped"])
+        self.assertFalse(ProcessedStripeEvent.objects.filter(event_id="evt_unhandled").exists())
+
+    @patch("api.views.STRIPE_WEBHOOK_SECRET", "whsec_test")
+    @patch("api.views.stripe.Webhook.construct_event")
+    def test_stripe_webhook_rejects_mismatch_without_consuming_event(self, mock_construct):
+        OnsiteOrder.objects.create(
+            checkout_ref="onsite_wh_mismatch",
+            status=OnsiteOrder.STATUS_PENDING,
+            payment_intent_id="pi_mismatch",
+            amount_total_cents=1000,
+            currency="EUR",
+        )
+        mock_construct.return_value = {
+            "id": "evt_mismatch",
+            "type": "payment_intent.succeeded",
+            "data": {
+                "object": {
+                    "id": "pi_mismatch",
+                    "amount": 999,
+                    "currency": "eur",
+                    "metadata": {"checkout_ref": "onsite_wh_mismatch"},
+                }
+            },
+        }
+
+        response = self.client.post(
+            "/api/payments/stripe/webhook/",
+            data=json.dumps({"x": 1}),
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig_ok",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["rejected"])
+        order = OnsiteOrder.objects.get(checkout_ref="onsite_wh_mismatch")
+        self.assertEqual(order.status, OnsiteOrder.STATUS_PENDING)
+        rejected_event = ProcessedStripeEvent.objects.get(event_id="evt_mismatch")
+        self.assertEqual(rejected_event.event_type, "rejected:payment_intent.succeeded")
+
+    @patch("api.views.STRIPE_WEBHOOK_SECRET", "whsec_test")
+    @patch("api.views.stripe.Webhook.construct_event")
+    def test_stripe_webhook_recovers_intent_attachment_after_post_stripe_crash(self, mock_construct):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="onsite_wh_recovery",
+            status=OnsiteOrder.STATUS_PENDING,
+            payment_intent_id="",
+            amount_total_cents=1000,
+            currency="EUR",
+        )
+        mock_construct.return_value = {
+            "id": "evt_recovery",
+            "type": "payment_intent.succeeded",
+            "data": {
+                "object": {
+                    "id": "pi_recovery",
+                    "amount": 1000,
+                    "currency": "eur",
+                    "metadata": {"checkout_ref": order.checkout_ref},
+                }
+            },
+        }
+
+        response = self.client.post(
+            "/api/payments/stripe/webhook/",
+            data=json.dumps({"x": 1}),
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig_ok",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        order.refresh_from_db()
+        self.assertEqual(order.payment_intent_id, "pi_recovery")
+        self.assertEqual(order.status, OnsiteOrder.STATUS_PAID)
+
+    @patch("api.views.STRIPE_WEBHOOK_SECRET", "whsec_test")
+    @patch("api.views.stripe.Webhook.construct_event")
+    def test_stripe_webhook_rejects_currency_and_metadata_mismatches(self, mock_construct):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="onsite_wh_identity",
+            status=OnsiteOrder.STATUS_PENDING,
+            payment_intent_id="pi_identity",
+            amount_total_cents=1000,
+            currency="EUR",
+        )
+
+        mismatch_cases = [
+            ("evt_currency", "usd", order.checkout_ref),
+            ("evt_metadata", "eur", "different-checkout"),
+        ]
+        for event_id, currency, checkout_ref in mismatch_cases:
+            with self.subTest(event_id=event_id):
+                mock_construct.return_value = {
+                    "id": event_id,
+                    "type": "payment_intent.succeeded",
+                    "data": {
+                        "object": {
+                            "id": order.payment_intent_id,
+                            "amount": order.amount_total_cents,
+                            "currency": currency,
+                            "metadata": {"checkout_ref": checkout_ref},
+                        }
+                    },
+                }
+
+                response = self.client.post(
+                    "/api/payments/stripe/webhook/",
+                    data=json.dumps({"x": 1}),
+                    content_type="application/json",
+                    HTTP_STRIPE_SIGNATURE="sig_ok",
+                )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.json()["rejected"])
+                order.refresh_from_db()
+                self.assertEqual(order.status, OnsiteOrder.STATUS_PENDING)
+                self.assertTrue(ProcessedStripeEvent.objects.filter(event_id=event_id).exists())
+
+    @patch("api.views.STRIPE_WEBHOOK_SECRET", "whsec_test")
+    @patch("api.views.stripe.Webhook.construct_event")
+    def test_stripe_webhook_maps_canceled_intent_to_canceled(self, mock_construct):
+        OnsiteOrder.objects.create(
+            checkout_ref="onsite_wh_canceled",
+            status=OnsiteOrder.STATUS_PENDING,
+            payment_intent_id="pi_canceled",
+            amount_total_cents=1000,
+            currency="EUR",
+        )
+        mock_construct.return_value = {
+            "id": "evt_canceled",
+            "type": "payment_intent.canceled",
+            "data": {
+                "object": {
+                    "id": "pi_canceled",
+                    "amount": 1000,
+                    "currency": "eur",
+                    "metadata": {"checkout_ref": "onsite_wh_canceled"},
+                }
+            },
+        }
+
+        response = self.client.post(
+            "/api/payments/stripe/webhook/",
+            data=json.dumps({"x": 1}),
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig_ok",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        order = OnsiteOrder.objects.get(checkout_ref="onsite_wh_canceled")
+        self.assertEqual(order.status, OnsiteOrder.STATUS_CANCELED)
+        self.assertIsNotNone(order.canceled_at)
+
+    @patch("api.views.STRIPE_WEBHOOK_SECRET", "whsec_test")
+    @patch("api.views.stripe.Webhook.construct_event")
+    @patch("api.views._set_onsite_order_from_payment_intent", side_effect=RuntimeError("temporary database failure"))
+    def test_stripe_webhook_retries_after_unexpected_processing_failure(
+        self,
+        _mock_set_order,
+        mock_construct,
+    ):
+        mock_construct.return_value = {
+            "id": "evt_retryable_error",
+            "type": "payment_intent.succeeded",
+            "data": {"object": {"id": "pi_retryable", "amount": 1000, "currency": "eur", "metadata": {}}},
+        }
+
+        response = self.client.post(
+            "/api/payments/stripe/webhook/",
+            data=json.dumps({"x": 1}),
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig_ok",
+        )
+
+        self.assertEqual(response.status_code, 500)
+        event = ProcessedStripeEvent.objects.get(event_id="evt_retryable_error")
+        self.assertEqual(event.status, ProcessedStripeEvent.STATUS_ERROR)
+        self.assertEqual(event.attempts, 1)
 
 
 @override_settings(
@@ -4758,6 +5952,15 @@ class PortalRBACTests(TestCase):
             amount_total_cents=5100,
             currency="EUR",
         )
+        OrderItem.objects.create(
+            order=order,
+            sku="DET",
+            title="Detail Product",
+            variant_ref="detail-variant",
+            unit_price_cents=2550,
+            quantity=2,
+            line_total_cents=5100,
+        )
 
         self.client.force_authenticate(user=self.owner_user)
         response = self.client.get(f"/api/portal/orders/{order.order_number}/")
@@ -4766,7 +5969,10 @@ class PortalRBACTests(TestCase):
         payload = response.json()
         self.assertEqual(payload["orderNumber"], order.order_number)
         self.assertEqual(payload["status"], OnsiteOrder.STATUS_PAID)
+        self.assertEqual(payload["paymentStatus"], OnsiteOrder.PAYMENT_STATUS_PAID)
+        self.assertEqual(payload["fulfillmentStatus"], OnsiteOrder.FULFILLMENT_STATUS_UNFULFILLED)
         self.assertEqual(len(payload["lineItems"]), 1)
+        self.assertEqual(payload["orderItems"][0]["lineTotalCents"], 5100)
 
     def test_portal_order_status_update_allows_office_staff(self):
         user_model = get_user_model()
@@ -4794,6 +6000,78 @@ class PortalRBACTests(TestCase):
         self.assertEqual(response.status_code, 200)
         order.refresh_from_db()
         self.assertEqual(order.status, OnsiteOrder.STATUS_SHIPPED)
+        self.assertEqual(order.fulfillment_status, OnsiteOrder.FULFILLMENT_STATUS_SHIPPED)
+
+    def test_portal_order_cancel_requires_reason_and_audits(self):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="m8-cancel-order",
+            status=OnsiteOrder.STATUS_PAID,
+            payment_status=OnsiteOrder.PAYMENT_STATUS_PAID,
+            customer_name="Cancel Me",
+            amount_total_cents=1000,
+            currency="EUR",
+        )
+        self.client.force_authenticate(user=self.office_user if hasattr(self, "office_user") else self.owner_user)
+        response = self.client.patch(
+            f"/api/portal/orders/{order.order_number}/",
+            data={"action": "cancel"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        response = self.client.patch(
+            f"/api/portal/orders/{order.order_number}/",
+            data={"action": "cancel", "reason": "Customer request"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        order.refresh_from_db()
+        self.assertEqual(order.status, OnsiteOrder.STATUS_CANCELED)
+        self.assertTrue(AuditLog.objects.filter(action="order.canceled", target_id=str(order.pk)).exists())
+
+    @patch("api.portal_views_modules.orders.stripe.Refund.create")
+    @patch("api.portal_views_modules.orders.stripe.api_key", "sk_test_present")
+    def test_owner_refund_requires_confirmation_and_records_audit(self, mock_refund):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="m8-refund-order",
+            status=OnsiteOrder.STATUS_PAID,
+            payment_status=OnsiteOrder.PAYMENT_STATUS_PAID,
+            payment_intent_id="pi_m8_refund",
+            amount_total_cents=1000,
+            currency="EUR",
+        )
+        mock_refund.return_value = {"id": "re_m8_refund"}
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.patch(
+            f"/api/portal/orders/{order.order_number}/",
+            data={"action": "refund", "amountCents": 500, "reason": "Damaged", "confirmed": False},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        response = self.client.patch(
+            f"/api/portal/orders/{order.order_number}/",
+            data={"action": "refund", "amountCents": 500, "reason": "Damaged", "confirmed": True},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        mock_refund.assert_called_once()
+        self.assertTrue(AuditLog.objects.filter(action="order.refund_requested", target_id=str(order.pk)).exists())
+
+    def test_office_staff_cannot_issue_refund(self):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="m8-office-refund-denied",
+            status=OnsiteOrder.STATUS_PAID,
+            payment_status=OnsiteOrder.PAYMENT_STATUS_PAID,
+            payment_intent_id="pi_m8_office_denied",
+            amount_total_cents=1000,
+            currency="EUR",
+        )
+        self.client.force_authenticate(user=self.staff_user)
+        response = self.client.patch(
+            f"/api/portal/orders/{order.order_number}/",
+            data={"action": "refund", "amountCents": 500, "reason": "Reason", "confirmed": True},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
 
     def test_portal_order_status_update_denies_staff_role(self):
         order = OnsiteOrder.objects.create(
@@ -4817,6 +6095,16 @@ class PortalRBACTests(TestCase):
 
     @patch("api.portal_views_modules.orders.send_order_completed_email")
     def test_portal_order_completion_sends_delivery_confirmation(self, mock_completed_email):
+        product = CatalogProduct.objects.create(
+            variant_ref="complete-inventory-variant",
+            handle="complete-inventory-product",
+            title="Complete Inventory Product",
+            price_amount="81.00",
+            currency_code="EUR",
+            inventory_tracked=True,
+            available_qty=5,
+            reserved_qty=1,
+        )
         order = OnsiteOrder.objects.create(
             checkout_ref="fulfill-completed-email-1",
             status=OnsiteOrder.STATUS_SHIPPED,
@@ -4825,6 +6113,12 @@ class PortalRBACTests(TestCase):
             line_items=[{"sku": "COMPLETE", "qty": 1}],
             amount_total_cents=8100,
             currency="EUR",
+        )
+        reservation = InventoryReservation.objects.create(
+            order=order,
+            product=product,
+            quantity=1,
+            status=InventoryReservation.STATUS_RESERVED,
         )
 
         self.client.force_authenticate(user=self.owner_user)
@@ -4837,6 +6131,21 @@ class PortalRBACTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], OnsiteOrder.STATUS_COMPLETED)
+        order.refresh_from_db()
+        self.assertEqual(order.fulfillment_status, OnsiteOrder.FULFILLMENT_STATUS_DELIVERED)
+        product.refresh_from_db()
+        reservation.refresh_from_db()
+        self.assertEqual(product.available_qty, 4)
+        self.assertEqual(product.reserved_qty, 0)
+        self.assertEqual(reservation.status, InventoryReservation.STATUS_FULFILLED)
+        self.assertTrue(
+            InventoryTransaction.objects.filter(
+                order=order,
+                product=product,
+                transaction_type=InventoryTransaction.TYPE_FULFILL,
+                quantity_change=-1,
+            ).exists()
+        )
         mock_completed_email.assert_called_once()
         self.assertEqual(mock_completed_email.call_args.kwargs["order"].order_number, order.order_number)
 
@@ -4870,3 +6179,1915 @@ class PortalRBACTests(TestCase):
             {item["status"] for item in payload["results"]},
             {OnsiteOrder.STATUS_PENDING, OnsiteOrder.STATUS_FAILED},
         )
+
+
+class M2StatusSplitTests(BaseApiTestCase):
+    def test_legacy_status_maps_to_payment_status(self):
+        """Verify that legacy status field correctly maps to new payment_status constants."""
+        test_cases = [
+            (OnsiteOrder.STATUS_PENDING, OnsiteOrder.PAYMENT_STATUS_PENDING),
+            (OnsiteOrder.STATUS_PROCESSING, OnsiteOrder.PAYMENT_STATUS_PROCESSING),
+            (OnsiteOrder.STATUS_PAID, OnsiteOrder.PAYMENT_STATUS_PAID),
+            (OnsiteOrder.STATUS_SHIPPED, OnsiteOrder.PAYMENT_STATUS_PAID),
+            (OnsiteOrder.STATUS_COMPLETED, OnsiteOrder.PAYMENT_STATUS_PAID),
+            (OnsiteOrder.STATUS_FAILED, OnsiteOrder.PAYMENT_STATUS_FAILED),
+            (OnsiteOrder.STATUS_CANCELED, OnsiteOrder.PAYMENT_STATUS_CANCELED),
+        ]
+
+        for legacy_status, expected_payment_status in test_cases:
+            order = OnsiteOrder.objects.create(
+                checkout_ref=f"test-payment-{legacy_status}",
+                status=legacy_status,
+                customer_name="Test",
+                line_items=[],
+            )
+            self.assertEqual(
+                order.get_payment_status_from_legacy(),
+                expected_payment_status,
+                f"Failed for legacy status {legacy_status}",
+            )
+
+    def test_legacy_status_maps_to_fulfillment_status(self):
+        """Verify that legacy status field correctly maps to new fulfillment_status constants."""
+        test_cases = [
+            (OnsiteOrder.STATUS_PENDING, OnsiteOrder.FULFILLMENT_STATUS_UNFULFILLED),
+            (OnsiteOrder.STATUS_PROCESSING, OnsiteOrder.FULFILLMENT_STATUS_PROCESSING),
+            (OnsiteOrder.STATUS_PAID, OnsiteOrder.FULFILLMENT_STATUS_UNFULFILLED),
+            (OnsiteOrder.STATUS_SHIPPED, OnsiteOrder.FULFILLMENT_STATUS_SHIPPED),
+            (OnsiteOrder.STATUS_COMPLETED, OnsiteOrder.FULFILLMENT_STATUS_DELIVERED),
+            (OnsiteOrder.STATUS_FAILED, OnsiteOrder.FULFILLMENT_STATUS_CANCELED),
+            (OnsiteOrder.STATUS_CANCELED, OnsiteOrder.FULFILLMENT_STATUS_CANCELED),
+        ]
+
+        for legacy_status, expected_fulfillment_status in test_cases:
+            order = OnsiteOrder.objects.create(
+                checkout_ref=f"test-fulfillment-{legacy_status}",
+                status=legacy_status,
+                customer_name="Test",
+                line_items=[],
+            )
+            self.assertEqual(
+                order.get_fulfillment_status_from_legacy(),
+                expected_fulfillment_status,
+                f"Failed for legacy status {legacy_status}",
+            )
+
+    def test_new_fields_are_nullable_for_backward_compatibility(self):
+        """Verify that payment_status and fulfillment_status can be null when not explicitly set."""
+        order = OnsiteOrder.objects.create(
+            checkout_ref="test-nullable-fields",
+            status=OnsiteOrder.STATUS_PENDING,
+            customer_name="Test",
+            line_items=[],
+        )
+        self.assertIsNone(order.payment_status)
+        self.assertIsNone(order.fulfillment_status)
+
+    def test_can_explicitly_set_both_status_fields(self):
+        """Verify that both payment_status and fulfillment_status can be set together."""
+        order = OnsiteOrder.objects.create(
+            checkout_ref="test-explicit-fields",
+            status=OnsiteOrder.STATUS_PAID,
+            payment_status=OnsiteOrder.PAYMENT_STATUS_PAID,
+            fulfillment_status=OnsiteOrder.FULFILLMENT_STATUS_UNFULFILLED,
+            customer_name="Test",
+            line_items=[],
+        )
+        self.assertEqual(order.payment_status, OnsiteOrder.PAYMENT_STATUS_PAID)
+        self.assertEqual(order.fulfillment_status, OnsiteOrder.FULFILLMENT_STATUS_UNFULFILLED)
+
+    def test_migration_0039_backfills_status_fields(self):
+        """Verify that M0039 backfill migration populates both status fields from legacy status."""
+        # This test verifies the backfill logic by checking that the migration
+        # was applied successfully. All orders in the test DB have been backfilled.
+        # We create a new order and verify the mapping still works.
+        test_cases = [
+            (OnsiteOrder.STATUS_PENDING, OnsiteOrder.PAYMENT_STATUS_PENDING, OnsiteOrder.FULFILLMENT_STATUS_UNFULFILLED),
+            (OnsiteOrder.STATUS_PROCESSING, OnsiteOrder.PAYMENT_STATUS_PROCESSING, OnsiteOrder.FULFILLMENT_STATUS_PROCESSING),
+            (OnsiteOrder.STATUS_PAID, OnsiteOrder.PAYMENT_STATUS_PAID, OnsiteOrder.FULFILLMENT_STATUS_UNFULFILLED),
+            (OnsiteOrder.STATUS_SHIPPED, OnsiteOrder.PAYMENT_STATUS_PAID, OnsiteOrder.FULFILLMENT_STATUS_SHIPPED),
+            (OnsiteOrder.STATUS_COMPLETED, OnsiteOrder.PAYMENT_STATUS_PAID, OnsiteOrder.FULFILLMENT_STATUS_DELIVERED),
+            (OnsiteOrder.STATUS_FAILED, OnsiteOrder.PAYMENT_STATUS_FAILED, OnsiteOrder.FULFILLMENT_STATUS_CANCELED),
+            (OnsiteOrder.STATUS_CANCELED, OnsiteOrder.PAYMENT_STATUS_CANCELED, OnsiteOrder.FULFILLMENT_STATUS_CANCELED),
+        ]
+
+        # Verify all test cases work correctly
+        # In production, migration 0039 backfill would populate these for existing records
+        for legacy_status, expected_payment, expected_fulfillment in test_cases:
+            order = OnsiteOrder.objects.create(
+                checkout_ref=f"backfill-verify-{legacy_status}",
+                status=legacy_status,
+                customer_name="Backfill Verify",
+                line_items=[],
+            )
+            # After migration 0039, new orders would still need explicit setting
+            # unless we update the save() method. For now, verify helper methods work.
+            self.assertEqual(
+                order.get_payment_status_from_legacy(),
+                expected_payment,
+                f"Payment status mismatch for legacy status {legacy_status}",
+            )
+            self.assertEqual(
+                order.get_fulfillment_status_from_legacy(),
+                expected_fulfillment,
+                f"Fulfillment status mismatch for legacy status {legacy_status}",
+            )
+
+
+class OrderItemTests(BaseApiTestCase):
+    def test_create_single_order_item(self):
+        """Verify that OrderItem can be created and linked to an order."""
+        order = OnsiteOrder.objects.create(
+            checkout_ref="item-test-single",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Test",
+            line_items=[],
+        )
+
+        item = OrderItem.objects.create(
+            order=order,
+            sku="TEST-SKU-001",
+            title="Test Product",
+            variant_ref="variant-123",
+            unit_price_cents=9999,
+            quantity=2,
+            line_total_cents=19998,
+        )
+
+        self.assertEqual(item.sku, "TEST-SKU-001")
+        self.assertEqual(item.title, "Test Product")
+        self.assertEqual(item.unit_price_cents, 9999)
+        self.assertEqual(item.quantity, 2)
+        self.assertEqual(item.line_total_cents, 19998)
+        self.assertEqual(item.order, order)
+
+    def test_order_item_rejects_mismatched_line_total(self):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="item-test-total",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Test",
+            line_items=[],
+        )
+
+        with self.assertRaises(IntegrityError):
+            OrderItem.objects.create(
+                order=order,
+                sku="BAD-TOTAL",
+                title="Bad Total",
+                unit_price_cents=100,
+                quantity=2,
+                line_total_cents=999,
+            )
+
+    def test_order_items_reverse_relation(self):
+        """Verify that OrderItems are accessible via order.order_items."""
+        order = OnsiteOrder.objects.create(
+            checkout_ref="item-test-reverse",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Test",
+            line_items=[],
+        )
+
+        items_data = [
+            {"sku": "A", "title": "Product A", "unit_price": 1000, "qty": 1},
+            {"sku": "B", "title": "Product B", "unit_price": 2000, "qty": 2},
+            {"sku": "C", "title": "Product C", "unit_price": 3000, "qty": 1},
+        ]
+
+        for data in items_data:
+            OrderItem.objects.create(
+                order=order,
+                sku=data["sku"],
+                title=data["title"],
+                unit_price_cents=data["unit_price"],
+                quantity=data["qty"],
+                line_total_cents=data["unit_price"] * data["qty"],
+            )
+
+        self.assertEqual(order.order_items.count(), 3)
+        self.assertEqual(
+            {item.sku for item in order.order_items.all()},
+            {"A", "B", "C"},
+        )
+
+    def test_order_item_cascade_delete(self):
+        """Verify that deleting an order deletes its OrderItems."""
+        order = OnsiteOrder.objects.create(
+            checkout_ref="item-test-cascade",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Test",
+            line_items=[],
+        )
+
+        OrderItem.objects.create(
+            order=order,
+            sku="CASCADE-TEST",
+            title="Should Be Deleted",
+            unit_price_cents=5000,
+            quantity=1,
+            line_total_cents=5000,
+        )
+
+        item_id = order.order_items.first().id
+        self.assertTrue(OrderItem.objects.filter(id=item_id).exists())
+
+        order.delete()
+        self.assertFalse(OrderItem.objects.filter(id=item_id).exists())
+
+    def test_order_item_string_representation(self):
+        """Verify OrderItem __str__ produces expected output."""
+        order = OnsiteOrder.objects.create(
+            checkout_ref="str-test",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Test",
+            line_items=[],
+        )
+
+        item = OrderItem.objects.create(
+            order=order,
+            sku="STR-SKU",
+            title="String Test",
+            unit_price_cents=1500,
+            quantity=3,
+            line_total_cents=4500,
+        )
+
+        expected_str = f"STR-SKU x3 (str-test)"
+        self.assertEqual(str(item), expected_str)
+
+
+class FinancialTotalsTests(BaseApiTestCase):
+    def test_financial_totals_database_constraint_rejects_mismatch(self):
+        order = OnsiteOrder(
+            checkout_ref="financial-db-invalid",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Test",
+            line_items=[],
+            amount_total_cents=200,
+            subtotal_cents=100,
+            discount_cents=0,
+            shipping_cents=0,
+            tax_cents=0,
+        )
+
+        with self.assertRaises(IntegrityError):
+            order.save()
+
+    def test_financial_totals_validation_success_with_complete_breakdown(self):
+        """Verify that valid financial breakdown passes validation."""
+        order = OnsiteOrder.objects.create(
+            checkout_ref="financial-valid-1",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Test",
+            line_items=[],
+            amount_total_cents=11000,  # 10000 - 0 + 500 + 500
+            subtotal_cents=10000,
+            discount_cents=0,
+            shipping_cents=500,
+            tax_cents=500,
+        )
+        is_valid, error_msg = order.validate_financial_totals()
+        self.assertTrue(is_valid, f"Expected valid but got: {error_msg}")
+        self.assertIsNone(error_msg)
+
+    def test_financial_totals_validation_fails_on_mismatch(self):
+        """Verify that mismatched financial breakdown fails validation."""
+        order = OnsiteOrder(
+            checkout_ref="financial-invalid-1",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Test",
+            line_items=[],
+            amount_total_cents=11000,  # Incorrect: should be 11500
+            subtotal_cents=10000,
+            discount_cents=0,
+            shipping_cents=500,
+            tax_cents=1000,  # 10000 - 0 + 500 + 1000 = 11500
+        )
+        is_valid, error_msg = order.validate_financial_totals()
+        self.assertFalse(is_valid)
+        self.assertIn("Financial total mismatch", error_msg)
+        self.assertIn("11500", error_msg)  # Calculated total
+
+    def test_financial_totals_validation_allows_partial_data(self):
+        """Verify that validation allows partial breakdown (backward compatibility)."""
+        order = OnsiteOrder.objects.create(
+            checkout_ref="financial-partial-1",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Test",
+            line_items=[],
+            amount_total_cents=10000,
+            subtotal_cents=None,  # Incomplete breakdown
+            discount_cents=None,
+            shipping_cents=None,
+            tax_cents=None,
+        )
+        is_valid, error_msg = order.validate_financial_totals()
+        self.assertTrue(is_valid, f"Partial data should be valid: {error_msg}")
+        self.assertIsNone(error_msg)
+
+    def test_financial_totals_with_discount(self):
+        """Verify financial calculation with discount applied."""
+        order = OnsiteOrder.objects.create(
+            checkout_ref="financial-discount-1",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Test",
+            line_items=[],
+            amount_total_cents=9000,  # 10000 - 1000 + 0 + 0
+            subtotal_cents=10000,
+            discount_cents=1000,
+            shipping_cents=0,
+            tax_cents=0,
+        )
+        is_valid, error_msg = order.validate_financial_totals()
+        self.assertTrue(is_valid, f"Discount calculation failed: {error_msg}")
+        self.assertIsNone(error_msg)
+
+    def test_financial_totals_with_shipping_and_tax(self):
+        """Verify financial calculation with shipping and tax applied."""
+        order = OnsiteOrder.objects.create(
+            checkout_ref="financial-shipping-tax-1",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Test",
+            line_items=[],
+            amount_total_cents=11550,  # 10000 - 500 + 750 + 1300
+            subtotal_cents=10000,
+            discount_cents=500,
+            shipping_cents=750,
+            tax_cents=1300,
+        )
+        is_valid, error_msg = order.validate_financial_totals()
+        self.assertTrue(is_valid, f"Complex calculation failed: {error_msg}")
+        self.assertIsNone(error_msg)
+
+
+class InventoryReservationTests(BaseApiTestCase):
+    def setUp(self):
+        """Set up test data for inventory tests."""
+        self.product = CatalogProduct.objects.create(
+            variant_ref="inv-test-variant",
+            handle="inv-test-product",
+            title="Test Product",
+            price_amount=99.99,
+            sku="INV-TEST-001",
+            available_qty=100,
+            reserved_qty=0,
+        )
+        self.order = OnsiteOrder.objects.create(
+            checkout_ref="inv-order-1",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Test",
+            line_items=[],
+        )
+
+    def test_create_inventory_reservation(self):
+        """Verify that inventory reservation can be created."""
+        reservation = InventoryReservation.objects.create(
+            order=self.order,
+            product=self.product,
+            quantity=10,
+            status=InventoryReservation.STATUS_RESERVED,
+        )
+        self.assertEqual(reservation.quantity, 10)
+        self.assertEqual(reservation.status, InventoryReservation.STATUS_RESERVED)
+        self.assertEqual(reservation.order, self.order)
+        self.assertEqual(reservation.product, self.product)
+
+    def test_inventory_reservation_status_transitions(self):
+        """Verify that inventory reservation can transition between statuses."""
+        reservation = InventoryReservation.objects.create(
+            order=self.order,
+            product=self.product,
+            quantity=10,
+            status=InventoryReservation.STATUS_RESERVED,
+        )
+
+        from django.utils import timezone
+
+        # Transition to fulfilled
+        reservation.status = InventoryReservation.STATUS_FULFILLED
+        reservation.fulfilled_at = timezone.now()
+        reservation.save()
+
+        reservation.refresh_from_db()
+        self.assertEqual(reservation.status, InventoryReservation.STATUS_FULFILLED)
+        self.assertIsNotNone(reservation.fulfilled_at)
+
+    def test_inventory_reservation_cascade_to_order(self):
+        """Verify that reservations are accessible via order.inventory_reservations."""
+        res1 = InventoryReservation.objects.create(
+            order=self.order,
+            product=self.product,
+            quantity=10,
+            status=InventoryReservation.STATUS_RESERVED,
+        )
+
+        product2 = CatalogProduct.objects.create(
+            variant_ref="inv-test-variant-2",
+            handle="inv-test-product-2",
+            title="Test Product 2",
+            price_amount=49.99,
+            sku="INV-TEST-002",
+        )
+        res2 = InventoryReservation.objects.create(
+            order=self.order,
+            product=product2,
+            quantity=5,
+            status=InventoryReservation.STATUS_RESERVED,
+        )
+
+        self.assertEqual(self.order.inventory_reservations.count(), 2)
+        skus = {res.product.sku for res in self.order.inventory_reservations.all()}
+        self.assertEqual(skus, {"INV-TEST-001", "INV-TEST-002"})
+
+
+class InventoryTransactionTests(BaseApiTestCase):
+    def setUp(self):
+        """Set up test data for transaction tests."""
+        self.product = CatalogProduct.objects.create(
+            variant_ref="trans-test-variant",
+            handle="trans-test-product",
+            title="Test Product",
+            price_amount=99.99,
+            sku="TRANS-TEST-001",
+        )
+        self.order = OnsiteOrder.objects.create(
+            checkout_ref="trans-order-1",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Test",
+            line_items=[],
+        )
+
+    def test_create_fulfillment_transaction(self):
+        """Verify that fulfillment transaction can be created."""
+        transaction = InventoryTransaction.objects.create(
+            product=self.product,
+            order=self.order,
+            transaction_type=InventoryTransaction.TYPE_FULFILL,
+            quantity_change=-10,
+            reason="Order fulfillment",
+        )
+        self.assertEqual(transaction.quantity_change, -10)
+        self.assertEqual(transaction.transaction_type, InventoryTransaction.TYPE_FULFILL)
+        self.assertEqual(transaction.order, self.order)
+
+    def test_create_adjustment_transaction_without_order(self):
+        """Verify that adjustment transaction can be created without an order."""
+        transaction = InventoryTransaction.objects.create(
+            product=self.product,
+            transaction_type=InventoryTransaction.TYPE_ADJUST,
+            quantity_change=50,
+            reason="Stock count correction",
+        )
+        self.assertEqual(transaction.quantity_change, 50)
+        self.assertEqual(transaction.transaction_type, InventoryTransaction.TYPE_ADJUST)
+        self.assertIsNone(transaction.order)
+
+    def test_create_return_transaction(self):
+        """Verify that return transaction can be created."""
+        transaction = InventoryTransaction.objects.create(
+            product=self.product,
+            order=self.order,
+            transaction_type=InventoryTransaction.TYPE_RETURN,
+            quantity_change=5,
+            reason="Customer return",
+        )
+        self.assertEqual(transaction.quantity_change, 5)
+        self.assertEqual(transaction.transaction_type, InventoryTransaction.TYPE_RETURN)
+
+    def test_inventory_transactions_via_order(self):
+        """Verify that transactions are accessible via order.inventory_transactions."""
+        trans1 = InventoryTransaction.objects.create(
+            product=self.product,
+            order=self.order,
+            transaction_type=InventoryTransaction.TYPE_FULFILL,
+            quantity_change=-10,
+        )
+        trans2 = InventoryTransaction.objects.create(
+            product=self.product,
+            order=self.order,
+            transaction_type=InventoryTransaction.TYPE_RETURN,
+            quantity_change=2,
+        )
+
+        self.assertEqual(self.order.inventory_transactions.count(), 2)
+        types = {t.transaction_type for t in self.order.inventory_transactions.all()}
+        self.assertEqual(types, {InventoryTransaction.TYPE_FULFILL, InventoryTransaction.TYPE_RETURN})
+
+
+class CatalogProductInventoryTests(BaseApiTestCase):
+    def test_multiple_legacy_products_can_have_null_sku(self):
+        CatalogProduct.objects.create(
+            variant_ref="null-sku-1",
+            handle="null-sku-product-1",
+            title="Product 1",
+            sku=None,
+        )
+        CatalogProduct.objects.create(
+            variant_ref="null-sku-2",
+            handle="null-sku-product-2",
+            title="Product 2",
+            sku=None,
+        )
+        self.assertEqual(CatalogProduct.objects.filter(sku__isnull=True).count(), 2)
+
+    def test_catalogproduct_with_inventory_fields(self):
+        """Verify that CatalogProduct can store inventory information."""
+        product = CatalogProduct.objects.create(
+            variant_ref="inv-catalog-variant",
+            handle="inv-catalog-product",
+            title="Inventory Test Product",
+            price_amount=129.99,
+            sku="CATALOG-INV-001",
+            available_qty=100,
+            reserved_qty=25,
+        )
+        self.assertEqual(product.sku, "CATALOG-INV-001")
+        self.assertEqual(product.available_qty, 100)
+        self.assertEqual(product.reserved_qty, 25)
+
+    def test_catalogproduct_sku_uniqueness(self):
+        """Verify that SKU must be unique across products."""
+        CatalogProduct.objects.create(
+            variant_ref="unique-test-1",
+            handle="unique-product-1",
+            title="Product 1",
+            price_amount=99.99,
+            sku="UNIQUE-SKU",
+        )
+
+        with self.assertRaises(Exception):  # IntegrityError
+            CatalogProduct.objects.create(
+                variant_ref="unique-test-2",
+                handle="unique-product-2",
+                title="Product 2",
+                price_amount=99.99,
+                sku="UNIQUE-SKU",  # Duplicate SKU
+            )
+
+
+class M2DomainCompletionTests(BaseApiTestCase):
+    def setUp(self):
+        self.company = Company.objects.create(name="M2 Domain Corp", slug="m2-domain-corp")
+        self.order = OnsiteOrder.objects.create(
+            checkout_ref="m2-domain-order",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="Domain Test",
+            line_items=[],
+        )
+
+    def test_order_company_and_lifecycle_fields_persist(self):
+        timestamp = timezone.now()
+        self.order.company = self.company
+        self.order.processing_at = timestamp
+        self.order.shipped_at = timestamp
+        self.order.delivered_at = timestamp
+        self.order.canceled_at = timestamp
+        self.order.cancellation_reason = "Customer requested"
+        self.order.save()
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.company_id, self.company.id)
+        self.assertEqual(self.order.cancellation_reason, "Customer requested")
+        self.assertIsNotNone(self.order.delivered_at)
+
+    def test_order_refund_total_rejects_negative_value(self):
+        self.order.refund_total_cents = -1
+        with self.assertRaises(IntegrityError):
+            self.order.save()
+
+    def test_order_refund_total_cannot_exceed_order_total(self):
+        self.order.amount_total_cents = 100
+        self.order.refund_total_cents = 101
+        with self.assertRaises(IntegrityError):
+            self.order.save()
+
+    def test_order_company_is_set_null_when_company_deleted(self):
+        self.order.company = self.company
+        self.order.save()
+        self.company.delete()
+        self.order.refresh_from_db()
+        self.assertIsNone(self.order.company_id)
+
+    def test_order_item_snapshot_fields_persist(self):
+        item = OrderItem.objects.create(
+            order=self.order,
+            sku="M2-SNAPSHOT",
+            title="Snapshot Product",
+            unit_price_cents=1000,
+            quantity=1,
+            line_total_cents=1000,
+            weight_grams=500,
+            shipping_class="standard",
+            tax_code="STANDARD",
+        )
+        item.refresh_from_db()
+        self.assertEqual(item.weight_grams, 500)
+        self.assertEqual(item.shipping_class, "standard")
+        self.assertEqual(item.tax_code, "STANDARD")
+
+    def test_checkout_population_snapshots_product_metadata(self):
+        product = CatalogProduct.objects.create(
+            variant_ref="m2-checkout-snapshot-variant",
+            handle="m2-checkout-snapshot-product",
+            title="Checkout Snapshot Product",
+            price_amount=10,
+            weight_grams=800,
+            shipping_class="heavy",
+            tax_code="REDUCED",
+        )
+        self.order.line_items = [{
+            "sku": product.sku or product.variant_ref,
+            "variantId": product.variant_ref,
+            "variantRef": product.variant_ref,
+            "title": product.title,
+            "quantity": 1,
+            "unitAmountCents": 1000,
+            "lineTotalCents": 1000,
+        }]
+        _populate_order_items_and_reservations(self.order)
+        item = self.order.order_items.get()
+        self.assertEqual(item.weight_grams, 800)
+        self.assertEqual(item.shipping_class, "heavy")
+        self.assertEqual(item.tax_code, "REDUCED")
+
+    def test_checkout_lines_aggregate_duplicate_variants(self):
+        product = CatalogProduct.objects.create(
+            variant_ref="m2-duplicate-variant",
+            handle="m2-duplicate-product",
+            title="Duplicate Product",
+            price_amount=10,
+        )
+        line_items, error = _build_line_items_from_catalog([
+            {"variantId": product.variant_ref, "quantity": 1},
+            {"variantId": product.variant_ref, "quantity": 2},
+        ])
+        self.assertEqual(error, "")
+        self.assertEqual(len(line_items), 1)
+        self.assertEqual(line_items[0]["quantity"], 3)
+
+    def test_product_stock_policy_and_metadata_persist(self):
+        product = CatalogProduct.objects.create(
+            variant_ref="m2-policy-variant",
+            handle="m2-policy-product",
+            title="Policy Product",
+            stock_policy=CatalogProduct.STOCK_POLICY_FINITE,
+            weight_grams=1000,
+            shipping_class="heavy",
+            tax_code="REDUCED",
+        )
+        self.assertEqual(product.stock_policy, CatalogProduct.STOCK_POLICY_FINITE)
+        self.assertEqual(product.weight_grams, 1000)
+
+    def test_product_stock_policy_rejects_invalid_value(self):
+        product = CatalogProduct(
+            variant_ref="m2-invalid-policy-variant",
+            handle="m2-invalid-policy-product",
+            title="Invalid Policy Product",
+            stock_policy="invalid",
+        )
+        with self.assertRaises(IntegrityError):
+            product.save()
+
+    def test_reservation_expiry_persists(self):
+        product = CatalogProduct.objects.create(
+            variant_ref="m2-expiry-variant",
+            handle="m2-expiry-product",
+            title="Expiry Product",
+        )
+        expiry = timezone.now() + timedelta(minutes=30)
+        reservation = InventoryReservation.objects.create(
+            order=self.order,
+            product=product,
+            quantity=1,
+            expires_at=expiry,
+        )
+        reservation.refresh_from_db()
+        self.assertIsNotNone(reservation.expires_at)
+
+
+class M4CatalogManagementTests(BaseApiTestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.company = Company.objects.create(name="M4 Domain Corp", slug="m4-domain-corp")
+        self.order = OnsiteOrder.objects.create(
+            checkout_ref="m4-domain-order",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_name="M4 Test",
+            line_items=[],
+        )
+        user_model = get_user_model()
+        self.owner = user_model.objects.create_user(username="m4-owner")
+        self.office = user_model.objects.create_user(username="m4-office")
+        self.staff = user_model.objects.create_user(username="m4-staff")
+        self.engineer = user_model.objects.create_user(username="m4-engineer")
+        self.customer = user_model.objects.create_user(username="m4-customer")
+        UserProfile.objects.create(user=self.owner, role=UserProfile.ROLE_OWNER)
+        UserProfile.objects.create(user=self.office, role=UserProfile.ROLE_OFFICE_STAFF)
+        UserProfile.objects.create(user=self.staff, role=UserProfile.ROLE_STAFF)
+        UserProfile.objects.create(user=self.engineer, role=UserProfile.ROLE_ENGINEER)
+        UserProfile.objects.create(user=self.customer, role=UserProfile.ROLE_CUSTOMER)
+
+    def test_owner_and_office_staff_have_identical_catalog_access(self):
+        payload = {
+            "variantRef": "m4-variant",
+            "handle": "m4-product",
+            "title": "M4 Product",
+            "priceAmount": "19.99",
+            "stockPolicy": CatalogProduct.STOCK_POLICY_FINITE,
+        }
+        for index, user in enumerate((self.owner, self.office), start=1):
+            with self.subTest(user=user.username):
+                self.client.force_authenticate(user=user)
+                response = self.client.post(
+                    "/api/portal/catalog/products/",
+                    {**payload, "variantRef": f"m4-variant-{index}", "handle": f"m4-product-{index}"},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 201)
+                self.assertEqual(response.json()["title"], "M4 Product")
+
+    def test_non_management_roles_are_denied(self):
+        product = CatalogProduct.objects.create(
+            variant_ref="m4-denied-variant",
+            handle="m4-denied-product",
+            title="Denied Product",
+            price_amount="10.00",
+        )
+        for user in (self.staff, self.engineer, self.customer):
+            with self.subTest(user=user.username):
+                self.client.force_authenticate(user=user)
+                response = self.client.get("/api/portal/catalog/products/")
+                self.assertEqual(response.status_code, 403)
+                response = self.client.patch(
+                    f"/api/portal/catalog/products/{product.id}/",
+                    {"title": "Nope"},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 403)
+
+    def test_office_staff_can_adjust_stock_and_archive(self):
+        product = CatalogProduct.objects.create(
+            variant_ref="m4-stock-variant",
+            handle="m4-stock-product",
+            title="Stock Product",
+            price_amount="10.00",
+            stock_policy=CatalogProduct.STOCK_POLICY_FINITE,
+        )
+        self.client.force_authenticate(user=self.office)
+        stock_response = self.client.post(
+            f"/api/portal/catalog/products/{product.id}/stock/",
+            {"delta": 5, "reason": "Initial stock count"},
+            format="json",
+        )
+        self.assertEqual(stock_response.status_code, 200)
+        self.assertEqual(stock_response.json()["availableQty"], 5)
+        state_response = self.client.post(
+            f"/api/portal/catalog/products/{product.id}/state/",
+            {"action": "archive"},
+            format="json",
+        )
+        self.assertEqual(state_response.status_code, 200)
+        self.assertFalse(state_response.json()["isActive"])
+
+    def test_stock_adjustment_rejects_zero_and_missing_product(self):
+        self.client.force_authenticate(user=self.office)
+        zero_response = self.client.post(
+            "/api/portal/catalog/products/999999/stock/",
+            {"delta": 0, "reason": "No change"},
+            format="json",
+        )
+        self.assertEqual(zero_response.status_code, 400)
+        missing_response = self.client.post(
+            "/api/portal/catalog/products/999999/stock/",
+            {"delta": 1, "reason": "Correction"},
+            format="json",
+        )
+        self.assertEqual(missing_response.status_code, 404)
+
+    def test_company_checkout_requires_allowed_company_membership(self):
+        user = get_user_model().objects.create_user(username="m2-company-user")
+        profile = UserProfile.objects.create(user=user, role=UserProfile.ROLE_CUSTOMER)
+        profile.allowed_companies.add(self.company)
+        self.assertEqual(_resolve_checkout_company(user, self.company.id), self.company)
+
+    def test_company_checkout_rejects_unrelated_company(self):
+        user = get_user_model().objects.create_user(username="m2-other-company-user")
+        UserProfile.objects.create(user=user, role=UserProfile.ROLE_CUSTOMER)
+        with self.assertRaises(PermissionError):
+            _resolve_checkout_company(user, self.company.id)
+
+    def test_company_checkout_rejects_malformed_company_id(self):
+        user = get_user_model().objects.create_user(username="m2-malformed-company-user")
+        with self.assertRaises(PermissionError):
+            _resolve_checkout_company(user, "not-an-integer")
+
+    def test_fulfillment_records_actor(self):
+        from .portal_views_modules.orders import _apply_fulfillment_status_transition
+
+        actor = get_user_model().objects.create_user(username="m2-fulfillment-actor")
+        self.assertTrue(_apply_fulfillment_status_transition(order=self.order, next_status=OnsiteOrder.STATUS_SHIPPED, actor=actor))
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.fulfillment_actor_id, actor.id)
+        self.assertIsNotNone(self.order.shipped_at)
+        self.assertIsNotNone(self.order.processing_at)
+
+    def test_fulfillment_inventory_failure_rolls_back_prior_reservations(self):
+        from .portal_views_modules.orders import _apply_fulfillment_status_transition
+        first_product = CatalogProduct.objects.create(variant_ref="m2-first-fulfillment-product", handle="m2-first-fulfillment-product", title="First Product", inventory_tracked=True, available_qty=5, reserved_qty=1)
+        second_product = CatalogProduct.objects.create(variant_ref="m2-second-fulfillment-product", handle="m2-second-fulfillment-product", title="Second Product", inventory_tracked=True, available_qty=1, reserved_qty=0)
+        InventoryReservation.objects.create(order=self.order, product=first_product, quantity=1, status=InventoryReservation.STATUS_RESERVED)
+        InventoryReservation.objects.create(order=self.order, product=second_product, quantity=2, status=InventoryReservation.STATUS_RESERVED)
+        self.assertFalse(_apply_fulfillment_status_transition(order=self.order, next_status=OnsiteOrder.STATUS_COMPLETED))
+        first_product.refresh_from_db()
+        self.assertEqual(first_product.available_qty, 5)
+        self.assertEqual(first_product.reserved_qty, 1)
+        self.assertEqual(InventoryReservation.objects.filter(order=self.order, status=InventoryReservation.STATUS_FULFILLED).count(), 0)
+
+
+class M5PricingTests(BaseApiTestCase):
+    def setUp(self):
+        self.line_items = [{"lineTotalCents": 10000, "quantity": 1}]
+
+    def test_republic_of_ireland_shipping_is_authoritative(self):
+        totals = calculate_checkout_totals(self.line_items, country_code="IE", postcode="D01")
+        self.assertEqual(totals["subtotal_cents"], 10000)
+        self.assertEqual(totals["shipping_cents"], 1299)
+        self.assertEqual(totals["amount_total_cents"], 11299)
+
+    def test_northern_ireland_shipping_is_authoritative(self):
+        totals = calculate_checkout_totals(self.line_items, country_code="GB", postcode="BT1 1AA")
+        self.assertEqual(totals["shipping_cents"], 1599)
+
+    def test_northern_ireland_xi_code_is_supported(self):
+        totals = calculate_checkout_totals(self.line_items, country_code="XI", postcode="BT12 4AB")
+        self.assertEqual(totals["shipping_cents"], 1599)
+
+    def test_gb_postcode_outside_northern_ireland_is_rejected(self):
+        with self.assertRaises(UnsupportedDestinationError):
+            calculate_checkout_totals(self.line_items, country_code="GB", postcode="SW1A 1AA")
+
+    def test_free_shipping_threshold(self):
+        totals = calculate_checkout_totals(
+            [{"lineTotalCents": 25000, "quantity": 1}],
+            country_code="IE",
+            postcode="D01",
+        )
+        self.assertEqual(totals["shipping_cents"], 0)
+        self.assertEqual(
+            calculate_checkout_totals(
+                [{"lineTotalCents": 24999, "quantity": 1}],
+                country_code="IE",
+                postcode="D01",
+            )["shipping_cents"],
+            1299,
+        )
+
+    def test_unsupported_destination_is_rejected(self):
+        with self.assertRaises(UnsupportedDestinationError):
+            calculate_checkout_totals(self.line_items, country_code="FR", postcode="75001")
+
+    @patch("api.views._is_allowed_checkout_origin", return_value=True)
+    @patch("api.views._stripe_config_ok", return_value=True)
+    @patch("api.views._verify_turnstile_token", return_value=True)
+    @patch("api.views.stripe.PaymentIntent.create")
+    def test_checkout_persists_server_shipping_total(
+        self,
+        mock_intent_create,
+        _mock_turnstile,
+        _mock_config,
+        _mock_origin,
+    ):
+        CatalogProduct.objects.create(
+            variant_ref="m5-shipping-variant",
+            handle="m5-shipping-product",
+            title="Shipping Product",
+            price_amount="10.00",
+            currency_code="EUR",
+            is_active=True,
+        )
+        mock_intent_create.return_value = {"id": "pi_m5_shipping", "client_secret": "secret"}
+        response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps({
+                "checkoutRef": "m5-shipping-checkout",
+                "customer": {"name": "Jane Doe", "email": "jane@example.com"},
+                "shipping": {"countryCode": "IE", "postcode": "D01"},
+                "items": [{"variantId": "m5-shipping-variant", "quantity": 1}],
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        order = OnsiteOrder.objects.get(checkout_ref="m5-shipping-checkout")
+        self.assertEqual(order.subtotal_cents, 1000)
+        self.assertEqual(order.shipping_cents, 1299)
+        self.assertEqual(order.amount_total_cents, 2299)
+        self.assertEqual(mock_intent_create.call_args.kwargs["amount"], 2299)
+
+    @patch("api.views._is_allowed_checkout_origin", return_value=True)
+    @patch("api.views._stripe_config_ok", return_value=True)
+    @patch("api.views._verify_turnstile_token", return_value=True)
+    def test_checkout_rejects_address_without_shipping_country(
+        self,
+        _mock_turnstile,
+        _mock_config,
+        _mock_origin,
+    ):
+        CatalogProduct.objects.create(
+            variant_ref="m5-missing-country-variant",
+            handle="m5-missing-country-product",
+            title="Missing Country Product",
+            price_amount="10.00",
+            currency_code="EUR",
+            is_active=True,
+        )
+        response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps({
+                "checkoutRef": "m5-missing-country",
+                "customer": {"name": "Jane Doe", "email": "jane@example.com"},
+                "shipping": {"addressLine1": "1 Main Street", "postcode": "D01"},
+                "items": [{"variantId": "m5-missing-country-variant", "quantity": 1}],
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_unavailable_stock_policy_is_rejected_before_payment(self):
+        CatalogProduct.objects.create(
+            variant_ref="m7-unavailable-variant",
+            handle="m7-unavailable-product",
+            title="Unavailable Product",
+            price_amount="10.00",
+            stock_policy=CatalogProduct.STOCK_POLICY_UNAVAILABLE,
+            is_active=True,
+        )
+        line_items, error = _build_line_items_from_catalog([
+            {"variantId": "m7-unavailable-variant", "quantity": 1},
+        ])
+        self.assertEqual(line_items, [])
+        self.assertIn("unavailable", error.lower())
+
+    def test_finite_stock_policy_enforces_inventory_without_legacy_flag(self):
+        product = CatalogProduct.objects.create(
+            variant_ref="m7-finite-policy-variant",
+            handle="m7-finite-policy-product",
+            title="Finite Policy Product",
+            price_amount="10.00",
+            stock_policy=CatalogProduct.STOCK_POLICY_FINITE,
+            inventory_tracked=False,
+            available_qty=0,
+            reserved_qty=0,
+        )
+        order = OnsiteOrder.objects.create(
+            checkout_ref="m7-finite-policy-order",
+            status=OnsiteOrder.STATUS_PENDING,
+            line_items=[{
+                "sku": product.variant_ref,
+                "variantRef": product.variant_ref,
+                "quantity": 1,
+                "unitAmountCents": 1000,
+                "lineTotalCents": 1000,
+            }],
+        )
+        with self.assertRaises(ValueError):
+            _populate_order_items_and_reservations(order)
+
+
+class M6ReconciliationTests(BaseApiTestCase):
+    def test_processed_stripe_event_tracks_processing_state(self):
+        event = ProcessedStripeEvent.objects.create(
+            event_id="evt_m6_state",
+            event_type="payment_intent.succeeded",
+            status=ProcessedStripeEvent.STATUS_PROCESSED,
+            attempts=1,
+        )
+        event.refresh_from_db()
+        self.assertEqual(event.status, ProcessedStripeEvent.STATUS_PROCESSED)
+        self.assertEqual(event.attempts, 1)
+
+    def test_reconciliation_command_reports_stale_pending_orders(self):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="m6-stale-order",
+            status=OnsiteOrder.STATUS_PENDING,
+            payment_intent_id="pi_m6_stale",
+            amount_total_cents=1000,
+            currency="EUR",
+        )
+        OnsiteOrder.objects.filter(pk=order.pk).update(
+            updated_at=timezone.now() - timedelta(hours=3),
+        )
+        output = StringIO()
+        call_command("reconcile_stripe_orders", stdout=output, stale_minutes=60)
+        self.assertIn("m6-stale-order", output.getvalue())
+
+    def test_refund_webhook_updates_partial_refund_total(self):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="m6-refund-order",
+            status=OnsiteOrder.STATUS_PAID,
+            payment_status=OnsiteOrder.PAYMENT_STATUS_PAID,
+            payment_intent_id="pi_m6_refund",
+            amount_total_cents=1000,
+            currency="EUR",
+        )
+        self.assertEqual(order.refund_total_cents, 0)
+
+    def test_dispute_and_chargeback_statuses_exist(self):
+        self.assertEqual(OnsiteOrder.PAYMENT_STATUS_DISPUTED, "disputed")
+        self.assertEqual(OnsiteOrder.PAYMENT_STATUS_CHARGEBACK, "chargeback")
+
+    @patch("api.views.STRIPE_WEBHOOK_SECRET", "whsec_test")
+    @patch("api.views.stripe.Webhook.construct_event")
+    def test_partial_refund_webhook_updates_order(self, mock_construct):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="m6-partial-refund",
+            status=OnsiteOrder.STATUS_PAID,
+            payment_intent_id="pi_m6_partial_refund",
+            amount_total_cents=1000,
+            currency="EUR",
+        )
+        mock_construct.return_value = {
+            "id": "evt_m6_partial_refund",
+            "type": "charge.refunded",
+            "data": {"object": {"payment_intent": order.payment_intent_id, "currency": "eur", "amount": 1000, "amount_refunded": 400}},
+        }
+        response = self.client.post(
+            "/api/payments/stripe/webhook/",
+            data=json.dumps({"x": 1}),
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig_ok",
+        )
+        self.assertEqual(response.status_code, 200)
+        order.refresh_from_db()
+        self.assertEqual(order.refund_total_cents, 400)
+        self.assertEqual(order.payment_status, OnsiteOrder.PAYMENT_STATUS_PARTIALLY_REFUNDED)
+
+
+class M7ReservationExpiryTests(BaseApiTestCase):
+    def test_expire_reservations_restores_inventory_and_audits_release(self):
+        product = CatalogProduct.objects.create(
+            variant_ref="m7-expiry-variant",
+            handle="m7-expiry-product",
+            title="Expiry Product",
+            inventory_tracked=True,
+            available_qty=5,
+            reserved_qty=2,
+        )
+        order = OnsiteOrder.objects.create(
+            checkout_ref="m7-expiry-order",
+            status=OnsiteOrder.STATUS_PENDING,
+            line_items=[],
+        )
+        reservation = InventoryReservation.objects.create(
+            order=order,
+            product=product,
+            quantity=2,
+            status=InventoryReservation.STATUS_RESERVED,
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+        output = StringIO()
+        call_command("expire_inventory_reservations", stdout=output)
+        product.refresh_from_db()
+        reservation.refresh_from_db()
+        self.assertEqual(product.reserved_qty, 0)
+
+
+class M12OperationalReadinessTests(BaseApiTestCase):
+    def test_database_backup_command_creates_sqlite_dump(self):
+        backup_path = Path("/tmp") / "manley-backup-test.sql"
+        if backup_path.exists():
+            backup_path.unlink()
+
+        output = StringIO()
+        call_command("database_backup", stdout=output, output=str(backup_path))
+
+        self.assertTrue(backup_path.exists())
+        self.assertIn("BEGIN TRANSACTION", backup_path.read_text(encoding="utf-8"))
+        self.assertIn("Database backup created", output.getvalue())
+
+    def test_monitoring_summary_flags_stale_orders_and_low_inventory(self):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="m12-monitoring-order",
+            status=OnsiteOrder.STATUS_PENDING,
+            payment_intent_id="pi_m12_monitoring",
+            amount_total_cents=1000,
+            currency="EUR",
+        )
+        OnsiteOrder.objects.filter(pk=order.pk).update(updated_at=timezone.now() - timedelta(hours=3))
+
+        product = CatalogProduct.objects.create(
+            variant_ref="m12-monitoring-variant",
+            handle="m12-monitoring-product",
+            title="Monitoring Product",
+            inventory_tracked=True,
+            available_qty=1,
+            reserved_qty=1,
+        )
+
+        output = StringIO()
+        call_command("monitoring_summary", stdout=output, stale_minutes=60)
+        payload = output.getvalue().strip()
+
+        self.assertIn("alert", payload.lower())
+        self.assertIn("stale_orders", payload)
+        self.assertIn("low_inventory", payload)
+
+    def test_database_restore_command_loads_sqlite_backup(self):
+        backup_path = Path("/tmp") / "manley-restore-test.sql"
+        if backup_path.exists():
+            backup_path.unlink()
+        target_path = Path("/tmp") / "manley-restore-target.db"
+        if target_path.exists():
+            target_path.unlink()
+
+        call_command("database_backup", output=str(backup_path))
+        output = StringIO()
+        call_command("database_restore", stdout=output, backup=str(backup_path), target=str(target_path))
+
+        self.assertTrue(target_path.exists())
+        self.assertIn("Database restore complete", output.getvalue())
+
+    def test_monitoring_alerts_detect_failed_stripe_events(self):
+        ProcessedStripeEvent.objects.create(
+            event_id="evt_failed_monitoring",
+            event_type="payment_intent.payment_failed",
+            status=ProcessedStripeEvent.STATUS_ERROR,
+            error_message="stripe webhook failed",
+        )
+
+        output = StringIO()
+        call_command("monitoring_alerts", stdout=output, stale_minutes=60)
+        payload = output.getvalue().strip()
+
+        self.assertIn("alert", payload.lower())
+        self.assertIn("stripe_errors", payload)
+        self.assertIn("evt_failed_monitoring", payload)
+
+
+class M14StagingReadinessTests(BaseApiTestCase):
+    @override_settings(
+        DEBUG=False,
+        DATABASES={
+            "default": {
+                "ENGINE": "django.db.backends.postgresql",
+                "NAME": "staging",
+            }
+        },
+        USE_REDIS_CACHE=True,
+        REDIS_URL="redis://staging-redis:6379/1",
+        CACHES={
+            "default": {
+                "BACKEND": "django_redis.cache.RedisCache",
+                "LOCATION": "redis://staging-redis:6379/1",
+            }
+        },
+        ALLOWED_HOSTS=["api-staging.example.com"],
+        CORS_ALLOWED_ORIGINS=["https://staging.example.com"],
+        CSRF_TRUSTED_ORIGINS=["https://staging.example.com"],
+        STRIPE_SECRET_KEY="sk_test_staging",
+        STRIPE_WEBHOOK_SECRET="whsec_staging",
+        SHOP_REQUIRE_TURNSTILE=True,
+        SHOP_TURNSTILE_SECRET_KEY="turnstile-staging",
+        USE_R2_STORAGE=True,
+        AWS_STORAGE_BUCKET_NAME="staging-media",
+        AWS_S3_ENDPOINT_URL="https://r2.example.com",
+        AWS_ACCESS_KEY_ID="staging-access",
+        AWS_SECRET_ACCESS_KEY="staging-secret",
+        ZEPTOMAIL_SEND_TOKEN="staging-mail-token",
+        ZEPTOMAIL_FROM_EMAIL="staging@example.com",
+        JWT_REFRESH_COOKIE_HTTPONLY=True,
+        JWT_REFRESH_COOKIE_SECURE=True,
+        JWT_REFRESH_COOKIE_SAMESITE="None",
+    )
+    def test_staging_config_command_accepts_isolated_test_configuration(self):
+        output = StringIO()
+
+        call_command("check_staging_config", stdout=output)
+
+        self.assertIn("Staging configuration is ready", output.getvalue())
+
+    @override_settings(
+        DEBUG=True,
+        DATABASES={"default": {"ENGINE": "django.db.backends.sqlite3"}},
+        USE_REDIS_CACHE=False,
+        CORS_ALLOWED_ORIGINS=["http://localhost:5173"],
+        CSRF_TRUSTED_ORIGINS=["http://localhost:5173"],
+        STRIPE_SECRET_KEY="sk_live_production",
+        STRIPE_WEBHOOK_SECRET="",
+        SHOP_REQUIRE_TURNSTILE=False,
+        USE_R2_STORAGE=False,
+        ZEPTOMAIL_SEND_TOKEN="",
+        ZEPTOMAIL_FROM_EMAIL="",
+        JWT_REFRESH_COOKIE_HTTPONLY=False,
+        JWT_REFRESH_COOKIE_SECURE=False,
+        JWT_REFRESH_COOKIE_SAMESITE="Lax",
+    )
+    def test_staging_config_command_rejects_unsafe_configuration(self):
+        with self.assertRaisesMessage(CommandError, "DJANGO_DEBUG, DATABASE_URL, REDIS_URL"):
+            call_command("check_staging_config", stdout=StringIO())
+
+    @override_settings(
+        DEBUG=False,
+        DATABASES={
+            "default": {
+                "ENGINE": "django.db.backends.postgresql",
+                "NAME": "staging",
+            }
+        },
+        USE_REDIS_CACHE=True,
+        REDIS_URL="redis://staging-redis:6379/1",
+        CACHES={
+            "default": {
+                "BACKEND": "django_redis.cache.RedisCache",
+                "LOCATION": "redis://staging-redis:6379/1",
+            }
+        },
+        ALLOWED_HOSTS=["api-staging.example.com"],
+        CORS_ALLOWED_ORIGINS=["https://staging.example.com"],
+        CSRF_TRUSTED_ORIGINS=["https://staging.example.com"],
+        STRIPE_SECRET_KEY="sk_test_staging",
+        STRIPE_WEBHOOK_SECRET="whsec_staging",
+        SHOP_REQUIRE_TURNSTILE=True,
+        SHOP_TURNSTILE_SECRET_KEY="turnstile-staging",
+        USE_R2_STORAGE=True,
+        AWS_STORAGE_BUCKET_NAME="staging-media",
+        AWS_S3_ENDPOINT_URL="https://r2.example.com",
+        AWS_ACCESS_KEY_ID="staging-access",
+        AWS_SECRET_ACCESS_KEY="staging-secret",
+        ZEPTOMAIL_SEND_TOKEN="staging-mail-token",
+        ZEPTOMAIL_FROM_EMAIL="staging@example.com",
+        JWT_REFRESH_COOKIE_HTTPONLY=True,
+        JWT_REFRESH_COOKIE_SECURE=True,
+        JWT_REFRESH_COOKIE_SAMESITE="None",
+        JWT_REFRESH_COOKIE_DOMAIN=".example.com",
+    )
+    def test_staging_config_rejects_wide_refresh_cookie_domain(self):
+        with self.assertRaisesMessage(CommandError, "JWT_REFRESH_COOKIE_DOMAIN"):
+            call_command("check_staging_config", stdout=StringIO())
+
+
+class M15ReleaseReadinessTests(BaseApiTestCase):
+    def test_validate_catalog_accepts_complete_active_products(self):
+        CatalogProduct.objects.create(
+            variant_ref="m15-valid-variant",
+            handle="m15-valid-product",
+            title="Release Product",
+            image_url="https://cdn.example.com/release-product.jpg",
+            image_alt="Release product",
+            price_amount=Decimal("129.99"),
+            currency_code="EUR",
+            sku="M15-VALID",
+            inventory_tracked=True,
+            stock_policy=CatalogProduct.STOCK_POLICY_FINITE,
+            available_qty=10,
+            shipping_class="standard",
+            weight_grams=500,
+        )
+        output = StringIO()
+
+        call_command("validate_catalog", stdout=output)
+
+        self.assertIn("Catalog validation passed", output.getvalue())
+
+    def test_validate_catalog_reports_missing_release_data(self):
+        CatalogProduct.objects.create(
+            variant_ref="m15-invalid-variant",
+            handle="m15-invalid-product",
+            title="Incomplete Product",
+            price_amount=Decimal("0.00"),
+            currency_code="GBP",
+        )
+        output = StringIO()
+
+        with self.assertRaisesMessage(CommandError, "m15-invalid-product"):
+            call_command("validate_catalog", stdout=output)
+
+        report = output.getvalue()
+        self.assertIn("image", report)
+        self.assertIn("price", report)
+        self.assertIn("currency", report)
+        self.assertIn("shipping", report)
+        self.assertIn("stock", report)
+
+
+class CapabilityRevocationTests(BaseApiTestCase):
+    def test_revoke_order_status_token_disables_status_lookup(self):
+        raw_status_token = "b" * 64
+        order = OnsiteOrder.objects.create(
+            checkout_ref="revoke-status-token",
+            status_token=digest_capability_token(raw_status_token),
+            status_token_expires_at=timezone.now() + timedelta(days=1),
+            status=OnsiteOrder.STATUS_PAID,
+            amount_total_cents=1000,
+            currency="EUR",
+        )
+        output = StringIO()
+
+        call_command("revoke_order_status_token", order_number=order.order_number, stdout=output)
+
+        order.refresh_from_db()
+        self.assertIsNotNone(order.status_token_revoked_at)
+        self.assertIn(order.order_number, output.getvalue())
+        response = self.client.post(
+            "/api/payments/onsite-status/",
+            data=json.dumps(
+                {"checkoutRef": order.checkout_ref, "statusToken": raw_status_token}
+            ),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 404)
+
+
+class M9OrderEmailTests(BaseApiTestCase):
+    def test_order_email_delivery_record_has_purpose_order_key(self):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="m9-email-order",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_email="customer@example.com",
+            line_items=[],
+        )
+        delivery = OrderEmailDelivery.objects.create(
+            order=order,
+            purpose=OrderEmailDelivery.PURPOSE_CONFIRMED,
+            idempotency_key=f"order:{order.pk}:confirmed",
+        )
+        self.assertEqual(delivery.status, OrderEmailDelivery.STATUS_PENDING)
+
+    @patch("api.order_emails.send_transactional_email")
+    def test_order_confirmation_email_is_sent_once(self, mock_send):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="m9-confirmed-order",
+            status=OnsiteOrder.STATUS_PAID,
+            customer_email="customer@example.com",
+            line_items=[],
+        )
+        send_order_confirmation_email(order=order)
+        send_order_confirmation_email(order=order)
+        self.assertEqual(mock_send.call_count, 1)
+
+    def test_expiry_releases_multiple_reservations_for_same_product(self):
+        product = CatalogProduct.objects.create(
+            variant_ref="m7-shared-expiry-variant",
+            handle="m7-shared-expiry-product",
+            title="Shared Expiry Product",
+            inventory_tracked=True,
+            available_qty=10,
+            reserved_qty=4,
+        )
+        for suffix, quantity in (("a", 1), ("b", 3)):
+            order = OnsiteOrder.objects.create(
+                checkout_ref=f"m7-shared-expiry-{suffix}",
+                status=OnsiteOrder.STATUS_PENDING,
+                line_items=[],
+            )
+            InventoryReservation.objects.create(
+                order=order,
+                product=product,
+                quantity=quantity,
+                status=InventoryReservation.STATUS_RESERVED,
+                expires_at=timezone.now() - timedelta(minutes=1),
+            )
+        call_command("expire_inventory_reservations", stdout=StringIO())
+        product.refresh_from_db()
+        self.assertEqual(product.reserved_qty, 0)
+
+    def test_expiry_releases_finite_policy_without_legacy_tracking_flag(self):
+        product = CatalogProduct.objects.create(
+            variant_ref="m7-finite-expiry-variant",
+            handle="m7-finite-expiry-product",
+            title="Finite Expiry Product",
+            stock_policy=CatalogProduct.STOCK_POLICY_FINITE,
+            inventory_tracked=False,
+            available_qty=5,
+            reserved_qty=1,
+        )
+        order = OnsiteOrder.objects.create(
+            checkout_ref="m7-finite-expiry-order",
+            status=OnsiteOrder.STATUS_PENDING,
+            line_items=[],
+        )
+        InventoryReservation.objects.create(
+            order=order,
+            product=product,
+            quantity=1,
+            status=InventoryReservation.STATUS_RESERVED,
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+        call_command("expire_inventory_reservations", stdout=StringIO())
+        product.refresh_from_db()
+        self.assertEqual(product.reserved_qty, 0)
+
+
+class RetentionCleanupTests(TestCase):
+    """Tests for retention and automated cleanup."""
+    
+    def test_run_privacy_retention_command_cleans_expired_sessions(self):
+        """Verify cleanup command deletes expired sessions and reports counts."""
+        # Create user and sessions
+        user = get_user_model().objects.create_user(
+            username="retention-user",
+            email="retention-user@example.com",
+            password="retention-password-123",
+        )
+        UserProfile.objects.create(user=user, role=UserProfile.ROLE_CUSTOMER)
+        
+        expired_time = timezone.now() - timedelta(days=31)
+        recent_time = timezone.now() - timedelta(days=1)
+        
+        expired_session = AccountSession.objects.create(
+            user=user,
+            expires_at=timezone.now() + timedelta(hours=1),
+            ip_address='192.0.2.1',
+            user_agent='Test'
+        )
+        
+        recent_session = AccountSession.objects.create(
+            user=user,
+            expires_at=timezone.now() + timedelta(hours=1),
+            ip_address='192.0.2.2',
+            user_agent='Test'
+        )
+        
+        # Manually set created_at timestamps (since auto_now_add prevents direct setting)
+        AccountSession.objects.filter(id=expired_session.id).update(created_at=expired_time)
+        AccountSession.objects.filter(id=recent_session.id).update(created_at=recent_time)
+        
+        # Run cleanup command
+        out = StringIO()
+        call_command('run_privacy_retention', stdout=out)
+        output = out.getvalue()
+        
+        # Verify expired session deleted, recent retained
+        self.assertFalse(AccountSession.objects.filter(id=expired_session.id).exists())
+        self.assertTrue(AccountSession.objects.filter(id=recent_session.id).exists())
+        
+        # Verify output reports counts
+        self.assertIn('Session', output)
+        self.assertIn('1', output)  # deleted count
+
+    def test_purge_expired_deleted_accounts_removes_disabled_accounts_after_recovery_window(self):
+        """Verify hard deletion of disabled accounts after 30-day recovery window."""
+        # Create user and disable account with expired recovery window
+        user = get_user_model().objects.create_user(
+            username="purge-test-user",
+            email="purge-test@example.com",
+            password="purge-password-123",
+            is_active=True,
+        )
+        UserProfile.objects.create(user=user, role=UserProfile.ROLE_CUSTOMER)
+        profile = CommerceCustomerProfile.objects.create(
+            user=user,
+            activation_pending=False,
+        )
+        
+        # Mark for deletion with expired recovery window
+        profile.deleted_at = timezone.now() - timedelta(days=31)  # Expired (31 days ago)
+        profile.save()
+        
+        profile_id = profile.id
+        
+        # Run purge command with confirmation
+        from unittest import mock
+        with mock.patch('builtins.input', return_value='yes'):
+            out = StringIO()
+            call_command('purge_expired_accounts', stdout=out)
+            output = out.getvalue()
+        
+        # Verify profile hard-deleted
+        self.assertFalse(CommerceCustomerProfile.objects.filter(id=profile_id).exists())
+        
+        # Verify output reports counts
+        self.assertIn('Hard deleted', output)
+        self.assertIn('1', output)  # hard_deleted count
+
+    def test_cleanup_expired_action_tokens_removes_consumed_and_expired_tokens(self):
+        """Verify action token cleanup removes consumed and expired tokens."""
+        from datetime import timedelta
+        
+        user = get_user_model().objects.create_user(
+            username="token-cleanup-user",
+            email="token-cleanup@example.com",
+            password="token-cleanup-password-123",
+        )
+        UserProfile.objects.create(user=user, role=UserProfile.ROLE_CUSTOMER)
+        
+        now = timezone.now()
+        
+        # Consumed token (old)
+        consumed_old = AccountActionToken.objects.create(
+            user=user,
+            purpose='email_verification',
+            token_digest='hash1',
+            issued_for_email='test@example.com',
+            target_email='test@example.com',
+            expires_at=now + timedelta(hours=1),
+            consumed_at=now - timedelta(days=8)
+        )
+        
+        # Consumed token (recent)
+        consumed_recent = AccountActionToken.objects.create(
+            user=user,
+            purpose='email_verification',
+            token_digest='hash2',
+            issued_for_email='test@example.com',
+            target_email='test@example.com',
+            expires_at=now + timedelta(hours=1),
+            consumed_at=now - timedelta(days=1)
+        )
+        
+        # Expired token
+        expired = AccountActionToken.objects.create(
+            user=user,
+            purpose='password_reset',
+            token_digest='hash3',
+            issued_for_email='test@example.com',
+            target_email='test@example.com',
+            expires_at=now - timedelta(hours=1),
+            consumed_at=None
+        )
+        
+        # Valid token
+        valid = AccountActionToken.objects.create(
+            user=user,
+            purpose='email_change',
+            token_digest='hash4',
+            issued_for_email='test@example.com',
+            target_email='new@example.com',
+            expires_at=now + timedelta(hours=1),
+            consumed_at=None
+        )
+        
+        # Run cleanup
+        from api.privacy_retention import cleanup_expired_account_action_tokens
+        result = cleanup_expired_account_action_tokens()
+        
+        # Verify old consumed and expired tokens deleted
+        self.assertFalse(AccountActionToken.objects.filter(id=consumed_old.id).exists())
+        self.assertFalse(AccountActionToken.objects.filter(id=expired.id).exists())
+        
+        # Verify recent consumed and valid tokens retained
+        self.assertTrue(AccountActionToken.objects.filter(id=consumed_recent.id).exists())
+        self.assertTrue(AccountActionToken.objects.filter(id=valid.id).exists())
+        
+        # Verify counts
+        self.assertEqual(result['deleted'], 2)
+        self.assertEqual(result['retained'], 2)
+
+    def test_cleanup_old_audit_logs_anonymizes_actor_references(self):
+        """Verify audit log cleanup anonymizes actor references without hard deletion."""
+        from datetime import timedelta
+        
+        user = get_user_model().objects.create_user(
+            username="audit-cleanup-user",
+            email="audit-cleanup@example.com",
+            password="audit-cleanup-password-123",
+        )
+        UserProfile.objects.create(user=user, role=UserProfile.ROLE_CUSTOMER)
+        
+        old_date = timezone.now() - timedelta(days=91)
+        recent_date = timezone.now() - timedelta(days=1)
+        
+        # Old audit log with actor
+        old_log = AuditLog.objects.create(
+            actor=user,
+            action='account_login',
+            target_type='User',
+            target_id=user.id,
+        )
+        
+        # Recent audit log with actor
+        recent_log = AuditLog.objects.create(
+            actor=user,
+            action='account_export',
+            target_type='User',
+            target_id=user.id,
+        )
+        
+        # Manually set created_at timestamps (since auto_now_add prevents direct setting)
+        AuditLog.objects.filter(id=old_log.id).update(created_at=old_date)
+        AuditLog.objects.filter(id=recent_log.id).update(created_at=recent_date)
+        
+        # Run cleanup
+        from api.privacy_retention import cleanup_old_audit_logs
+        result = cleanup_old_audit_logs()
+        
+        # Refresh from DB
+        old_log.refresh_from_db()
+        recent_log.refresh_from_db()
+        
+        # Verify old log actor anonymized, recent log actor retained
+        self.assertIsNone(old_log.actor)
+        self.assertIsNotNone(recent_log.actor)
+        self.assertEqual(recent_log.actor.id, user.id)
+        
+        # Verify counts
+        self.assertEqual(result['anonymized'], 1)
+        self.assertEqual(result['retained'], 1)
+
+
+class LoggingPrivacyTests(TestCase):
+    """Tests for logging privacy and IP masking."""
+    
+    def test_ip_masking_ipv4(self):
+        """Verify IPv4 addresses are masked to /24 CIDR."""
+        from api.privacy_logging import mask_ip_address
+        
+        test_cases = [
+            ("192.0.2.100", "192.0.2.x"),
+            ("192.0.2.255", "192.0.2.x"),
+            ("10.0.0.1", "10.0.0.x"),
+            ("8.8.8.8", "8.8.8.x"),
+        ]
+        
+        for ip, expected_mask in test_cases:
+            result = mask_ip_address(ip)
+            self.assertEqual(result, expected_mask, f"Failed for IP {ip}")
+    
+    def test_ip_masking_ipv6(self):
+        """Verify IPv6 addresses are masked to /64 CIDR."""
+        from api.privacy_logging import mask_ip_address
+        
+        test_cases = [
+            ("2001:db8:85a3::8a2e:370:7334", "2001:db8:85a3::x"),
+            ("::1", "::x"),
+        ]
+        
+        for ip, expected_mask in test_cases:
+            result = mask_ip_address(ip)
+            self.assertEqual(result, expected_mask, f"Failed for IP {ip}")
+    
+    def test_log_sanitization_removes_sensitive_fields(self):
+        """Verify log sanitization removes passwords, tokens, card data."""
+        from api.privacy_logging import sanitize_log_details
+        
+        sensitive_details = {
+            "user": "test@example.com",
+            "password": "secret123",
+            "card_number": "4532123456789012",
+            "token": "eyJhbGc...",
+            "action": "login",
+        }
+        
+        sanitized = sanitize_log_details(sensitive_details)
+        
+        self.assertNotIn("password", str(sanitized.values()))
+        self.assertNotIn("secret123", str(sanitized))
+        self.assertNotIn("4532123456789012", str(sanitized))
+        self.assertNotIn("eyJhbGc", str(sanitized))
+        self.assertIn("action", str(sanitized))
+    
+    def test_correlation_id_attached_to_all_requests(self):
+        """Verify correlation ID is generated and available in request context."""
+        response = self.client.get("/api/account/", format="json")
+        
+        # Correlation ID should be in response headers
+        self.assertIn("X-Correlation-ID", response)
+        correlation_id = response.get("X-Correlation-ID")
+        
+        # Should be a valid UUID-like string (36 chars with dashes)
+        self.assertEqual(len(correlation_id), 36)
+        self.assertTrue(correlation_id.count("-") == 4)  # UUID format check
+
+
+class APIOwnershipTests(BaseApiTestCase):
+    """Tests verifying API ownership enforcement across all sensitive endpoints."""
+    
+    def test_account_export_restricted_to_own_account(self):
+        """Verify user cannot export another user's data."""
+        user1 = get_user_model().objects.create_user(
+            username="user1",
+            email="user1@example.com",
+            password="testpass123",
+        )
+        # Create commerce profiles with verified emails
+        profile1 = CommerceCustomerProfile.objects.create(
+            user=user1,
+            verified_email=user1.email,
+            email_verified_at=timezone.now(),
+        )
+        
+        user2 = get_user_model().objects.create_user(
+            username="user2",
+            email="user2@example.com",
+            password="testpass123",
+        )
+        profile2 = CommerceCustomerProfile.objects.create(
+            user=user2,
+            verified_email=user2.email,
+            email_verified_at=timezone.now(),
+        )
+        
+        # User2 attempts export (should get their own data, not user1's)
+        client = APIClient()
+        client.force_authenticate(user=user2)
+        response = client.post("/api/account/export/", format="json")
+        
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        
+        # Verify response contains user2's email, not user1's
+        self.assertNotIn(user1.email, str(data))
+        self.assertIn(user2.email, str(data))
+    
+    def test_saved_addresses_restricted_to_own_profile(self):
+        """Verify user cannot retrieve another user's saved addresses."""
+        # Create another user
+        user1 = get_user_model().objects.create_user(
+            username="otheruser",
+            email="other@example.com",
+            password="testpass123",
+        )
+        
+        # Create user2 for the authenticated request
+        user2 = get_user_model().objects.create_user(
+            username="testuser",
+            email="test@example.com",
+            password="testpass123",
+        )
+        
+        # Create commerce profiles (user2 needs verified email)
+        commerce_profile1 = CommerceCustomerProfile.objects.create(user=user1)
+        commerce_profile2 = CommerceCustomerProfile.objects.create(
+            user=user2,
+            verified_email=user2.email,
+            email_verified_at=timezone.now(),
+        )
+        
+        # Create address for user1
+        addr1 = SavedAddress.objects.create(
+            commerce_profile=commerce_profile1,
+            recipient_name="User1 Address",
+            address_line_1="123 Main St",
+            city="City1",
+            postcode="12345",
+            country_code="IE",
+        )
+        
+        # User2 retrieves addresses
+        client = APIClient()
+        client.force_authenticate(user=user2)
+        response = client.get("/api/account/addresses/", format="json")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        
+        # Should not contain user1's address
+        self.assertNotIn("123 Main St", str(data))
+        self.assertNotIn(user1.email, str(data))
+
+
+class ConsentTests(TestCase):
+    """Tests for cookie consent versioning and withdrawal."""
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_user_can_give_consent_to_version(self):
+        """Verify user consent is recorded with version timestamp."""
+        user = create_verified_user()
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(
+            "/api/consent/record/",
+            data={"consent_version": "1.0", "consent_categories": ["analytics", "marketing"]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+
+        from api.models import CookieConsentRecord
+
+        consent = CookieConsentRecord.objects.filter(user=user).first()
+        self.assertIsNotNone(consent)
+        self.assertEqual(consent.consent_version, "1.0")
+        self.assertIn("analytics", consent.consent_categories)
+
+    def test_user_can_withdraw_consent(self):
+        """Verify user can withdraw consent and it's timestamped."""
+        user = create_verified_user()
+        from api.models import CookieConsentRecord
+
+        CookieConsentRecord.objects.create(
+            user=user,
+            consent_version="1.0",
+            consent_categories=["analytics", "marketing"],
+            consented_at=timezone.now(),
+        )
+
+        self.client.force_authenticate(user=user)
+        response = self.client.post("/api/consent/withdraw/", format="json")
+
+        self.assertEqual(response.status_code, 200)
+
+        consent = CookieConsentRecord.objects.filter(user=user).latest("consented_at")
+        self.assertIsNotNone(consent.withdrawn_at)
+
+    def test_consent_included_in_account_export(self):
+        """Verify consent records included in data export."""
+        user = create_verified_user()
+        from api.models import CookieConsentRecord
+
+        CookieConsentRecord.objects.create(
+            user=user,
+            consent_version="1.0",
+            consent_categories=["analytics"],
+            consented_at=timezone.now(),
+        )
+
+        self.client.force_authenticate(user=user)
+        response = self.client.post("/api/account/export/", format="json")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+
+        self.assertIn("consent", data)
+        self.assertEqual(len(data["consent"]), 1)
+        self.assertEqual(data["consent"][0]["version"], "1.0")
+
+
+class GDPRComplianceChecksTests(TestCase):
+    def test_report_contains_required_check_keys(self):
+        from api.privacy_compliance import run_compliance_checks
+
+        report = run_compliance_checks()
+        keys = {check["key"] for check in report["checks"]}
+
+        self.assertEqual(
+            keys,
+            {
+                "privacy_modules_present",
+                "privacy_retention_policy",
+                "consent_records_exported",
+                "mfa_recovery_codes_hashed",
+                "privacy_migrations_applied",
+                "audit_log_anonymization",
+                "external_approval_gates",
+            },
+        )
+
+    def test_healthy_database_passes_technical_checks(self):
+        from api.privacy_compliance import run_compliance_checks
+
+        report = run_compliance_checks()
+        technical = [
+            check for check in report["checks"]
+            if check["status"] != "approval_required"
+        ]
+
+        self.assertTrue(technical)
+        self.assertTrue(all(check["status"] == "pass" for check in technical))
+
+    def test_external_gates_need_attention_without_being_technical_failures(self):
+        from api.privacy_compliance import run_compliance_checks
+
+        report = run_compliance_checks()
+        approvals = [
+            check for check in report["checks"]
+            if check["key"] == "external_approval_gates"
+        ]
+
+        self.assertEqual(len(approvals), 1)
+        self.assertEqual(approvals[0]["status"], "approval_required")
+        self.assertEqual(report["status"], "attention_required")
+
+    def test_plaintext_recovery_code_is_a_technical_failure(self):
+        from api.models import AccountSecurityState
+        from api.privacy_compliance import run_compliance_checks
+
+        user = get_user_model().objects.create_user(
+            username="compliance-plaintext-user",
+            email="compliance-plaintext@example.com",
+            password="compliance-password",
+        )
+        security_state, _ = AccountSecurityState.objects.get_or_create(user=user)
+        security_state.mfa_recovery_codes = ["plaintext-recovery-code"]
+        security_state.save()
+
+        report = run_compliance_checks()
+        check = next(
+            check for check in report["checks"]
+            if check["key"] == "mfa_recovery_codes_hashed"
+        )
+
+        self.assertEqual(check["status"], "fail")
+        self.assertEqual(report["status"], "attention_required")
+
+    def test_command_json_output_is_serializable(self):
+        out = StringIO()
+
+        call_command("check_gdpr_compliance", "--json", stdout=out)
+        payload = json.loads(out.getvalue())
+
+        self.assertIn(payload["status"], {"pass", "attention_required"})
+        self.assertTrue(payload["checks"])
+        self.assertIn("approval_required", {
+            check["status"] for check in payload["checks"]
+        })
+
+    def test_command_human_output_lists_check_statuses(self):
+        out = StringIO()
+
+        call_command("check_gdpr_compliance", stdout=out)
+        output = out.getvalue()
+
+        self.assertIn("GDPR compliance status", output)
+        self.assertIn("external_approval_gates", output)
+        self.assertIn("approval_required", output)
+

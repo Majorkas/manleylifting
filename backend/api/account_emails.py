@@ -33,9 +33,40 @@ def _safe_response_snippet(raw_bytes):
     if not raw_bytes:
         return ""
     text = raw_bytes.decode("utf-8", errors="replace").strip()
-    if len(text) > 600:
-        return text[:600] + "..."
-    return text
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return "[REDACTED_PROVIDER_RESPONSE]"
+
+    sensitive_keys = {
+        "address",
+        "authorization",
+        "body",
+        "content",
+        "email",
+        "html",
+        "htmlbody",
+        "message",
+        "phone",
+        "secret",
+        "text",
+        "textbody",
+        "token",
+    }
+
+    def redact(value, key=""):
+        if key.lower() in sensitive_keys:
+            return "[REDACTED]"
+        if isinstance(value, dict):
+            return {name: redact(item, name) for name, item in value.items()}
+        if isinstance(value, list):
+            return [redact(item) for item in value]
+        return value
+
+    snippet = json.dumps(redact(parsed), sort_keys=True)
+    if len(snippet) > 600:
+        return snippet[:600] + "..."
+    return snippet
 
 
 def _normalize_zeptomail_token(raw_token):

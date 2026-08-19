@@ -19,7 +19,12 @@ export const CART_STORAGE_KEY = 'manley-shop-cart-v2'
 const PENDING_CHECKOUT_KEY = 'manley-shop-pending-checkout-v1'
 const COMPLETED_CHECKOUT_KEY = 'manley-shop-completed-checkout-v1'
 const PENDING_ORDER_CLAIM_KEY = 'manley-shop-pending-order-claim-v1'
+const GUEST_CHECKOUT_OFFER_KEY = 'manley-guest-checkout-offer'
 const PENDING_CHECKOUT_MAX_AGE_MS = 2 * 60 * 60 * 1000
+let csrfTokenMemory = ''
+let pendingCheckoutMemory = null
+let pendingOrderClaimMemory = null
+let completedCheckoutMemory = null
 
 function apiUrl(path) {
   const base = shopConfig.apiBaseUrl.replace(/\/+$/, '')
@@ -143,8 +148,27 @@ export function generateCheckoutRef() {
     return crypto.randomUUID()
   }
 
-  const randomPart = Math.random().toString(36).slice(2, 12)
-  return 'chk_' + Date.now() + '_' + randomPart
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16)
+    crypto.getRandomValues(bytes)
+    return 'chk_' + Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+  }
+
+  throw new Error('Secure checkout reference generation is unavailable')
+}
+
+export function generateCapabilityToken() {
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(32)
+    crypto.getRandomValues(bytes)
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
+  }
+
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '')
+  }
+
+  throw new Error('Secure checkout token generation is unavailable')
 }
 
 export function savePendingCheckout(checkoutRef, statusToken) {
@@ -158,43 +182,29 @@ export function savePendingCheckout(checkoutRef, statusToken) {
     createdAt: safeNowIso(),
   }
 
-  window.localStorage.setItem(PENDING_CHECKOUT_KEY, JSON.stringify(payload))
+  window.localStorage.removeItem(PENDING_CHECKOUT_KEY)
+  window.sessionStorage.removeItem(PENDING_CHECKOUT_KEY)
+  pendingCheckoutMemory = payload
 }
 
 export function loadPendingCheckout() {
   if (typeof window === 'undefined') return null
 
-  try {
-    const raw = window.localStorage.getItem(PENDING_CHECKOUT_KEY)
-    if (!raw) return null
-
-    const parsed = JSON.parse(raw)
-    if (
-      !parsed ||
-      typeof parsed.checkoutRef !== 'string' ||
-      !parsed.checkoutRef ||
-      typeof parsed.statusToken !== 'string' ||
-      !parsed.statusToken
-    ) {
-      window.localStorage.removeItem(PENDING_CHECKOUT_KEY)
-      return null
-    }
-
-    if (createdAtIsStale(parsed.createdAt)) {
-      window.localStorage.removeItem(PENDING_CHECKOUT_KEY)
-      return null
-    }
-
-    return parsed
-  } catch {
-    window.localStorage.removeItem(PENDING_CHECKOUT_KEY)
+  window.localStorage.removeItem(PENDING_CHECKOUT_KEY)
+  window.sessionStorage.removeItem(PENDING_CHECKOUT_KEY)
+  if (!pendingCheckoutMemory || createdAtIsStale(pendingCheckoutMemory.createdAt)) {
+    pendingCheckoutMemory = null
     return null
   }
+
+  return pendingCheckoutMemory
 }
 
 export function clearPendingCheckout() {
   if (typeof window === 'undefined') return
   window.localStorage.removeItem(PENDING_CHECKOUT_KEY)
+  window.sessionStorage.removeItem(PENDING_CHECKOUT_KEY)
+  pendingCheckoutMemory = null
 }
 
 export function savePendingOrderClaim(orderNumber, claimToken, checkoutRef = '', statusToken = '') {
@@ -211,32 +221,65 @@ export function savePendingOrderClaim(orderNumber, claimToken, checkoutRef = '',
     createdAt: safeNowIso(),
   }
 
-  window.localStorage.setItem(PENDING_ORDER_CLAIM_KEY, JSON.stringify(payload))
+  window.localStorage.removeItem(PENDING_ORDER_CLAIM_KEY)
+  window.sessionStorage.removeItem(PENDING_ORDER_CLAIM_KEY)
+  pendingOrderClaimMemory = payload
 }
 
 export function loadPendingOrderClaim() {
   if (typeof window === 'undefined') return null
 
-  try {
-    const raw = window.localStorage.getItem(PENDING_ORDER_CLAIM_KEY)
-    if (!raw) return null
-
-    const parsed = JSON.parse(raw)
-    if (!parsed || typeof parsed.orderNumber !== 'string' || !parsed.orderNumber || typeof parsed.claimToken !== 'string' || !parsed.claimToken) {
-      window.localStorage.removeItem(PENDING_ORDER_CLAIM_KEY)
-      return null
-    }
-
-    return parsed
-  } catch {
-    window.localStorage.removeItem(PENDING_ORDER_CLAIM_KEY)
+  window.localStorage.removeItem(PENDING_ORDER_CLAIM_KEY)
+  window.sessionStorage.removeItem(PENDING_ORDER_CLAIM_KEY)
+  if (!pendingOrderClaimMemory || createdAtIsStale(pendingOrderClaimMemory.createdAt)) {
+    pendingOrderClaimMemory = null
     return null
   }
+
+  return pendingOrderClaimMemory
 }
 
 export function clearPendingOrderClaim() {
   if (typeof window === 'undefined') return
   window.localStorage.removeItem(PENDING_ORDER_CLAIM_KEY)
+  window.sessionStorage.removeItem(PENDING_ORDER_CLAIM_KEY)
+  pendingOrderClaimMemory = null
+}
+
+export function saveGuestCheckoutOffer(email, fullName) {
+  if (typeof window === 'undefined') return
+  const normalizedEmail = String(email || '').trim()
+  if (!normalizedEmail) return
+  window.localStorage.removeItem(GUEST_CHECKOUT_OFFER_KEY)
+  window.sessionStorage.setItem(GUEST_CHECKOUT_OFFER_KEY, JSON.stringify({
+    email: normalizedEmail,
+    fullName: String(fullName || '').trim(),
+    createdAt: safeNowIso(),
+  }))
+}
+
+export function loadGuestCheckoutOffer() {
+  if (typeof window === 'undefined') return null
+  window.localStorage.removeItem(GUEST_CHECKOUT_OFFER_KEY)
+  try {
+    const raw = window.sessionStorage.getItem(GUEST_CHECKOUT_OFFER_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed?.email || createdAtIsStale(parsed.createdAt)) {
+      window.sessionStorage.removeItem(GUEST_CHECKOUT_OFFER_KEY)
+      return null
+    }
+    return parsed
+  } catch {
+    window.sessionStorage.removeItem(GUEST_CHECKOUT_OFFER_KEY)
+    return null
+  }
+}
+
+export function clearGuestCheckoutOffer() {
+  if (typeof window === 'undefined') return
+  window.localStorage.removeItem(GUEST_CHECKOUT_OFFER_KEY)
+  window.sessionStorage.removeItem(GUEST_CHECKOUT_OFFER_KEY)
 }
 
 export function saveCompletedCheckout(checkoutRef, statusToken) {
@@ -249,43 +292,29 @@ export function saveCompletedCheckout(checkoutRef, statusToken) {
     createdAt: safeNowIso(),
   }
 
-  window.localStorage.setItem(COMPLETED_CHECKOUT_KEY, JSON.stringify(payload))
+  window.localStorage.removeItem(COMPLETED_CHECKOUT_KEY)
+  window.sessionStorage.removeItem(COMPLETED_CHECKOUT_KEY)
+  completedCheckoutMemory = payload
 }
 
 export function loadCompletedCheckout() {
   if (typeof window === 'undefined') return null
 
-  try {
-    const raw = window.localStorage.getItem(COMPLETED_CHECKOUT_KEY)
-    if (!raw) return null
-
-    const parsed = JSON.parse(raw)
-    if (
-      !parsed ||
-      typeof parsed.checkoutRef !== 'string' ||
-      !parsed.checkoutRef ||
-      typeof parsed.statusToken !== 'string' ||
-      !parsed.statusToken
-    ) {
-      window.localStorage.removeItem(COMPLETED_CHECKOUT_KEY)
-      return null
-    }
-
-    if (createdAtIsStale(parsed.createdAt)) {
-      window.localStorage.removeItem(COMPLETED_CHECKOUT_KEY)
-      return null
-    }
-
-    return parsed
-  } catch {
-    window.localStorage.removeItem(COMPLETED_CHECKOUT_KEY)
+  window.localStorage.removeItem(COMPLETED_CHECKOUT_KEY)
+  window.sessionStorage.removeItem(COMPLETED_CHECKOUT_KEY)
+  if (!completedCheckoutMemory || createdAtIsStale(completedCheckoutMemory.createdAt)) {
+    completedCheckoutMemory = null
     return null
   }
+
+  return completedCheckoutMemory
 }
 
 export function clearCompletedCheckout() {
   if (typeof window === 'undefined') return
   window.localStorage.removeItem(COMPLETED_CHECKOUT_KEY)
+  window.sessionStorage.removeItem(COMPLETED_CHECKOUT_KEY)
+  completedCheckoutMemory = null
 }
 
 async function parseResponse(response, path = '') {
@@ -323,12 +352,20 @@ async function getJson(path) {
 }
 
 async function getCsrfToken() {
+  if (csrfTokenMemory) return csrfTokenMemory
+
+  const cookieToken = getCookie('csrftoken')
+  if (cookieToken) {
+    csrfTokenMemory = cookieToken
+    return csrfTokenMemory
+  }
+
   const body = await getJson('/csrf/')
-  const csrfToken = String(body?.csrf_token || getCookie('csrftoken') || '')
-  if (!csrfToken) {
+  csrfTokenMemory = String(body?.csrf_token || getCookie('csrftoken') || '')
+  if (!csrfTokenMemory) {
     throw new Error('Missing CSRF token')
   }
-  return csrfToken
+  return csrfTokenMemory
 }
 
 async function postJson(path, payload, options = {}) {
@@ -342,19 +379,35 @@ async function postJson(path, payload, options = {}) {
   const headers = {
     'Content-Type': 'application/json',
     Accept: 'application/json',
+    ...(options.headers || {}),
   }
 
   if (requireCsrf) {
     headers['X-CSRFToken'] = csrfToken
   }
 
-  const response = await fetch(apiUrl(path), {
+  let response = await fetch(apiUrl(path), {
     method: 'POST',
     credentials: 'include',
     headers,
     body: JSON.stringify(payload),
   })
+
+  if (response.status === 403 && requireCsrf && options.retryCsrf !== false) {
+    csrfTokenMemory = ''
+    const retryToken = await getCsrfToken()
+    response = await fetch(apiUrl(path), {
+      method: 'POST',
+      credentials: 'include',
+      headers: { ...headers, 'X-CSRFToken': retryToken },
+      body: JSON.stringify(payload),
+    })
+  }
   return parseResponse(response, path)
+}
+
+export function clearShopCsrfTokenCache() {
+  csrfTokenMemory = ''
 }
 
 export function formatCurrency(amount, currencyCode = shopConfig.currencyCode) {
@@ -386,12 +439,26 @@ export async function getProductByHandle(handle) {
 
 export async function createOnsitePaymentIntent(items, checkoutRef, customer, options = {}) {
   const antiBotToken = String(options.antiBotToken || '').trim()
+  const statusToken = String(options.statusToken || '').trim()
+  const claimToken = String(options.claimToken || '').trim()
   const payload = {
     items,
     checkoutRef,
+    statusToken: statusToken || generateCapabilityToken(),
+    claimToken: claimToken || generateCapabilityToken(),
     customer: {
       name: String(customer?.name || '').trim(),
       email: String(customer?.email || '').trim(),
+    },
+    shipping: {
+      name: String(options.shipping?.name || '').trim(),
+      phone: String(options.shipping?.phone || '').trim(),
+      addressLine1: String(options.shipping?.addressLine1 || '').trim(),
+      addressLine2: String(options.shipping?.addressLine2 || '').trim(),
+      city: String(options.shipping?.city || '').trim(),
+      county: String(options.shipping?.county || '').trim(),
+      postcode: String(options.shipping?.postcode || '').trim(),
+      countryCode: String(options.shipping?.countryCode || '').trim(),
     },
   }
 
@@ -399,7 +466,10 @@ export async function createOnsitePaymentIntent(items, checkoutRef, customer, op
     payload.antiBotToken = antiBotToken
   }
 
-  const body = await postJson('/payments/onsite-intent/', payload)
+  const accessToken = String(options.accessToken || '').trim()
+  const body = await postJson('/payments/onsite-intent/', payload, {
+    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+  })
   return {
     checkoutRef: String(body.checkoutRef || ''),
     statusToken: String(body.statusToken || ''),
@@ -408,6 +478,10 @@ export async function createOnsitePaymentIntent(items, checkoutRef, customer, op
     orderNumber: String(body.orderNumber || ''),
     claimToken: String(body.claimToken || ''),
     amountTotalCents: Number(body.amountTotalCents || 0),
+    subtotalCents: Number(body.subtotalCents || 0),
+    discountCents: Number(body.discountCents || 0),
+    shippingCents: Number(body.shippingCents || 0),
+    taxCents: Number(body.taxCents || 0),
     currency: String(body.currency || shopConfig.currencyCode),
     lineItems: Array.isArray(body.lineItems) ? body.lineItems : [],
     priceRefreshNotice: String(body.priceRefreshNotice || ''),
@@ -424,13 +498,10 @@ export async function getOnsiteCheckoutStatus(checkoutRef, statusToken) {
     throw new Error('statusToken is required')
   }
 
-  const query =
-    '/payments/onsite-status/?checkoutRef=' +
-    encodeURIComponent(ref) +
-    '&statusToken=' +
-    encodeURIComponent(token)
-
-  const body = await getJson(query)
+  const body = await postJson('/payments/onsite-status/', {
+    checkoutRef: ref,
+    statusToken: token,
+  })
   return {
     checkoutRef: String(body.checkoutRef || ''),
     status: String(body.status || ''),
@@ -450,13 +521,10 @@ export async function getOnsiteOrderSummary(checkoutRef, statusToken) {
     throw new Error('statusToken is required')
   }
 
-  const query =
-    '/payments/onsite-order-summary/?checkoutRef=' +
-    encodeURIComponent(ref) +
-    '&statusToken=' +
-    encodeURIComponent(token)
-
-  const body = await getJson(query)
+  const body = await postJson('/payments/onsite-order-summary/', {
+    checkoutRef: ref,
+    statusToken: token,
+  })
   return {
     checkoutRef: String(body.checkoutRef || ''),
     status: String(body.status || ''),

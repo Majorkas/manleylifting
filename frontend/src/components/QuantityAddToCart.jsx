@@ -6,6 +6,7 @@ export default function QuantityAddToCart({
   min = 1,
   max = 99,
   onQuantityChange,
+  disabled = false,
 }) {
   const [quantity, setQuantity] = useState(1)
   const [inputValue, setInputValue] = useState('1')
@@ -76,6 +77,7 @@ export default function QuantityAddToCart({
           <button
             type="button"
             onClick={decreaseQuantity}
+            disabled={disabled}
             className="flex h-10 w-9 items-center justify-center text-sm font-semibold text-slate-700 hover:bg-slate-100"
             aria-label="Decrease quantity"
           >
@@ -87,6 +89,7 @@ export default function QuantityAddToCart({
             min={min}
             max={max}
             value={inputValue}
+            disabled={disabled}
             onChange={handleInputChange}
             onBlur={handleInputBlur}
             className="h-10 w-14 border-0 px-1 text-center text-sm font-semibold text-slate-900 outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
@@ -96,6 +99,7 @@ export default function QuantityAddToCart({
           <button
             type="button"
             onClick={increaseQuantity}
+            disabled={disabled}
             className="flex h-10 w-9 items-center justify-center text-sm font-semibold text-slate-700 hover:bg-slate-100"
             aria-label="Increase quantity"
           >
@@ -106,6 +110,7 @@ export default function QuantityAddToCart({
         <button
           type="button"
           onClick={handleAdd}
+          disabled={disabled}
           className="inline-flex h-10 items-center justify-center rounded-md bg-[#123A7A] px-4 text-xs font-bold uppercase tracking-wide text-white transition hover:bg-[#0f3168]"
         >
           {buttonLabel}

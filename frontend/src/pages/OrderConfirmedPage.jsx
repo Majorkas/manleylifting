@@ -4,9 +4,11 @@ import { registerCommerceAccount } from '../utils/portalApi'
 import ShopPageLayout from '../components/ShopPageLayout'
 import {
   clearCompletedCheckout,
+  clearGuestCheckoutOffer,
   formatCurrency,
   getOnsiteOrderSummary,
   loadCompletedCheckout,
+  loadGuestCheckoutOffer,
   shopRoutes,
 } from '../utils/shopConfig'
 import usePageMeta from '../utils/usePageMeta'
@@ -26,18 +28,15 @@ export default function OrderConfirmedPage() {
   const [registerGuestMessage, setRegisterGuestMessage] = useState('')
   const [guestPassword, setGuestPassword] = useState('')
   const [guestConfirmPassword, setGuestConfirmPassword] = useState('')
+  const [confirmationAttempt, setConfirmationAttempt] = useState(0)
+  const paymentStatus = order?.paymentStatus || 'pending'
+  const paymentVerified = paymentStatus === 'paid' || paymentStatus === 'partially_refunded' || paymentStatus === 'refunded'
+  const paymentFailed = paymentStatus === 'failed' || paymentStatus === 'canceled'
 
   useEffect(() => {
     let cancelled = false
 
-    try {
-      const rawOffer = window.localStorage.getItem('manley-guest-checkout-offer')
-      if (rawOffer) {
-        setGuestOffer(JSON.parse(rawOffer))
-      }
-    } catch {
-      setGuestOffer(null)
-    }
+    setGuestOffer(loadGuestCheckoutOffer())
 
     async function loadOrder() {
       const completed = loadCompletedCheckout()
@@ -66,7 +65,7 @@ export default function OrderConfirmedPage() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [confirmationAttempt])
 
   async function handleRegisterGuestAccount() {
     if (!guestOffer?.email) return
@@ -96,7 +95,7 @@ export default function OrderConfirmedPage() {
       setRegisterGuestMessage('Thanks! We have sent a verification email to your address so you can activate your account.')
       setGuestPassword('')
       setGuestConfirmPassword('')
-      window.localStorage.removeItem('manley-guest-checkout-offer')
+      clearGuestCheckoutOffer()
       setGuestOffer(null)
     } catch (error) {
       setRegisterGuestMessage(String(error?.message || 'We could not create the account right now.'))
@@ -111,31 +110,60 @@ export default function OrderConfirmedPage() {
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm md:p-8">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">Order Confirmed</p>
-              <h1 className="mt-2 text-4xl font-extrabold text-[#123A7A] md:text-5xl">Thank You</h1>
+              <p className={`text-sm font-bold uppercase tracking-[0.16em] ${paymentFailed ? 'text-red-700' : 'text-[#C61F2A]'}`}>
+                {paymentVerified ? 'Order Confirmed' : paymentFailed ? 'Payment Not Completed' : 'Payment Processing'}
+              </p>
+              <h1 className="mt-2 text-4xl font-extrabold text-[#123A7A] md:text-5xl">{paymentFailed ? 'Payment issue' : 'Thank You'}</h1>
             </div>
-            <div className="rounded-full border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700">
-              Payment received • Order tracked
+            <div className={`rounded-full border px-4 py-2 text-sm font-semibold ${paymentVerified ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : paymentFailed ? 'border-red-200 bg-red-50 text-red-700' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+              {paymentVerified ? 'Payment received • Order tracked' : paymentFailed ? 'Payment could not be completed' : 'Payment is processing • Order tracked'}
             </div>
           </div>
 
-          {isLoading && <p className="mt-5 text-slate-600">Loading your order details...</p>}
+          {isLoading && (
+            <p className="mt-5 text-slate-600" role="status" aria-live="polite">
+              Loading your order details...
+            </p>
+          )}
 
           {!isLoading && errorMessage && (
-            <div className="mt-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{errorMessage}</div>
+            <div className="mt-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700" role="alert">
+              <p>{errorMessage}</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setErrorMessage('')
+                  setOrder(null)
+                  setIsLoading(true)
+                  setConfirmationAttempt((attempt) => attempt + 1)
+                }}
+                disabled={isLoading}
+                className="mt-3 rounded-md border border-red-300 px-3 py-2 font-semibold text-red-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Retry confirmation
+              </button>
+            </div>
           )}
 
           {!isLoading && order && (
             <>
               <p className="mt-5 text-slate-700">
-                We have received your payment and emailed confirmation to{' '}
-                <span className="font-semibold text-slate-900">{order.customerEmail || 'your email address'}</span>.
+                {paymentVerified && (
+                  <>
+                    We have received your payment and emailed confirmation to{' '}
+                    <span className="font-semibold text-slate-900">{order.customerEmail || 'your email address'}</span>.
+                  </>
+                )}
+                {paymentFailed && 'Payment could not be completed. Please contact support if you believe you were charged, or return to the shop to try again.'}
+                {!paymentVerified && !paymentFailed && 'Your payment is processing. We will confirm the order after the backend verifies it.'}
               </p>
 
               <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <div className="flex items-center justify-between border-b border-slate-200 pb-3 text-sm">
                   <span className="font-semibold text-slate-700">Order Status</span>
-                  <span className="font-bold uppercase tracking-wide text-emerald-700">{order.status}</span>
+                  <span className={`font-bold uppercase tracking-wide ${paymentFailed ? 'text-red-700' : paymentVerified ? 'text-emerald-700' : 'text-amber-800'}`}>
+                    {paymentFailed ? paymentStatus : paymentVerified ? order.status : paymentStatus}
+                  </span>
                 </div>
 
                 {(order.shippingName || order.shippingAddressLine1 || order.shippingCity || order.shippingPostcode) && (
@@ -171,7 +199,7 @@ export default function OrderConfirmedPage() {
                 </div>
 
                 <div className="mt-4 flex items-center justify-between border-t border-slate-200 pt-4">
-                  <span className="text-base font-bold text-[#123A7A]">Total Paid</span>
+                  <span className="text-base font-bold text-[#123A7A]">{paymentVerified ? 'Total Paid' : 'Order Total'}</span>
                   <span className="text-xl font-extrabold text-[#C61F2A]">
                     {formatCurrency(order.amountTotalCents / 100, order.currency)}
                   </span>
@@ -221,7 +249,7 @@ export default function OrderConfirmedPage() {
                     <button
                       type="button"
                       onClick={() => {
-                        window.localStorage.removeItem('manley-guest-checkout-offer')
+                        clearGuestCheckoutOffer()
                         setGuestOffer(null)
                       }}
                       className="rounded-md border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700"

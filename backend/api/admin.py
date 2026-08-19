@@ -9,6 +9,10 @@ from .models import (
 	Company,
 	Equipment,
 	InspectionReport,
+	InventoryReservation,
+	InventoryTransaction,
+	OnsiteOrder,
+	OrderItem,
 	ReportRevision,
 	UserProfile,
 )
@@ -30,6 +34,9 @@ class CatalogProductAdmin(admin.ModelAdmin):
 		"variant_ref",
 		"price_amount",
 		"currency_code",
+		"inventory_tracked",
+		"available_qty",
+		"reserved_qty",
 		"is_active",
 		"updated_at",
 	)
@@ -113,3 +120,39 @@ class AuditLogAdmin(admin.ModelAdmin):
 	list_display = ("action", "target_type", "target_id", "actor", "company", "ip_address", "created_at")
 	list_filter = ("action", "company")
 	search_fields = ("target_type", "target_id", "actor__username")
+
+
+@admin.register(OrderItem)
+class OrderItemAdmin(admin.ModelAdmin):
+	list_display = ("order", "sku", "title", "quantity", "unit_price_cents", "line_total_cents", "created_at")
+	list_filter = ("sku", "created_at")
+	search_fields = ("order__order_number", "sku", "title")
+	readonly_fields = ("created_at",)
+	ordering = ("-created_at",)
+
+
+@admin.register(OnsiteOrder)
+class OnsiteOrderAdmin(admin.ModelAdmin):
+	list_display = ("order_number", "checkout_ref", "status", "payment_status", "fulfillment_status", "amount_total_cents", "created_at")
+	list_filter = ("status", "payment_status", "fulfillment_status", "currency")
+	search_fields = ("order_number", "checkout_ref", "customer_email", "payment_intent_id")
+	readonly_fields = ("order_number", "created_at", "updated_at", "paid_at")
+	ordering = ("-created_at",)
+
+
+@admin.register(InventoryReservation)
+class InventoryReservationAdmin(admin.ModelAdmin):
+	list_display = ("order", "product", "quantity", "status", "created_at", "fulfilled_at")
+	list_filter = ("status", "created_at")
+	search_fields = ("order__order_number", "product__sku")
+	readonly_fields = ("created_at", "released_at", "fulfilled_at")
+	ordering = ("-created_at",)
+
+
+@admin.register(InventoryTransaction)
+class InventoryTransactionAdmin(admin.ModelAdmin):
+	list_display = ("product", "transaction_type", "quantity_change", "order", "reason", "created_at")
+	list_filter = ("transaction_type", "created_at")
+	search_fields = ("product__sku", "order__order_number", "reason")
+	readonly_fields = ("created_at",)
+	ordering = ("-created_at",)

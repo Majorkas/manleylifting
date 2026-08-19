@@ -1,13 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo } from 'react'
 import { ArrowLeft, Package2, ReceiptText } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import AccountLayout from '../components/AccountLayout'
 import AccountSectionTabs from '../components/AccountSectionTabs'
-import { getAccountOrders } from '../utils/portalApi'
+import { useAccountOrdersQuery } from '../hooks/useAccountQueries'
 import usePageMeta from '../utils/usePageMeta'
 
-function formatCurrency(amountCents, currency = 'GBP') {
-  const normalizedCurrency = String(currency || 'GBP').toUpperCase()
+function formatCurrency(amountCents, currency = 'EUR') {
+  const normalizedCurrency = String(currency || 'EUR').toUpperCase()
   const amount = Number(amountCents || 0) / 100
   return new Intl.NumberFormat('en-GB', {
     style: 'currency',
@@ -26,37 +26,23 @@ function formatDate(value) {
 export default function AccountOrdersPage() {
   usePageMeta({ title: 'My orders', description: 'View your recent Manley Lifting orders.', noIndex: true })
   const navigate = useNavigate()
-  const [orders, setOrders] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [errorMessage, setErrorMessage] = useState('')
+  const ordersQuery = useAccountOrdersQuery()
+  const orders = useMemo(() => ordersQuery.data || [], [ordersQuery.data])
+  const loading = ordersQuery.isPending
+  const errorMessage = ordersQuery.error?.status === 401
+    ? ''
+    : String(ordersQuery.error?.message || '')
 
   useEffect(() => {
-    let cancelled = false
-    getAccountOrders()
-      .then((result) => {
-        if (!cancelled) setOrders(result)
-      })
-      .catch((error) => {
-        if (cancelled) return
-        if (error?.status === 401) {
-          navigate('/account/login?redirect=/account/orders', { replace: true })
-          return
-        }
-        setErrorMessage(String(error?.message || 'Orders could not be loaded.'))
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-
-    return () => {
-      cancelled = true
+    if (ordersQuery.error?.status === 401) {
+      navigate('/account/login?redirect=/account/orders', { replace: true })
     }
-  }, [navigate])
+  }, [navigate, ordersQuery.error])
 
   const summary = useMemo(() => ({
     count: orders.length,
     latestAmount: orders[0]?.amountTotalCents || 0,
-    latestCurrency: orders[0]?.currency || 'GBP',
+    latestCurrency: orders[0]?.currency || 'EUR',
   }), [orders])
 
   return (

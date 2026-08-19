@@ -1,18 +1,22 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import QuantityAddToCart from '../components/QuantityAddToCart'
 import ShopPageLayout from '../components/ShopPageLayout'
 import { ProductDetailSkeleton } from '../components/ShopSkeleton'
 import { useCart } from '../context/CartContext'
-import { formatCurrency, getProductByHandle, getUserFacingErrorMessage, shopRoutes } from '../utils/shopConfig'
+import { useProductQuery } from '../hooks/useCatalogQueries'
+import { formatCurrency, getUserFacingErrorMessage, shopRoutes } from '../utils/shopConfig'
 import usePageMeta from '../utils/usePageMeta'
 
 export default function ShopProductPage() {
   const { handle } = useParams()
   const { addItem } = useCart()
-  const [product, setProduct] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [errorMessage, setErrorMessage] = useState('')
+  const productQuery = useProductQuery(handle)
+  const product = productQuery.data
+  const loading = productQuery.isPending
+  const errorMessage = productQuery.error
+    ? getUserFacingErrorMessage(productQuery.error, 'We could not load this product right now. Please try again in a moment.')
+    : ''
   const [quantity, setQuantity] = useState(1)
 
   usePageMeta({
@@ -21,40 +25,6 @@ export default function ShopProductPage() {
       product?.description ||
       'View certified lifting product details, pricing, and purchasing options from Manley Lifting.',
   })
-
-  useEffect(() => {
-    let cancelled = false
-
-    async function load() {
-      setLoading(true)
-      setErrorMessage('')
-
-      try {
-        const nextProduct = await getProductByHandle(handle)
-        if (cancelled) return
-        setProduct(nextProduct)
-      } catch (error) {
-        if (cancelled) return
-        console.error('Failed to load product page', {
-          handle,
-          error,
-        })
-        setErrorMessage(
-          getUserFacingErrorMessage(
-            error,
-            'We could not load this product right now. Please try again in a moment.',
-          ),
-        )
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-
-    load()
-    return () => {
-      cancelled = true
-    }
-  }, [handle])
 
   const basePrice = Number(product?.price || 0)
   const displayPrice = useMemo(() => basePrice * quantity, [basePrice, quantity])
@@ -90,6 +60,8 @@ export default function ShopProductPage() {
                   <img
                     src={product.imageUrl}
                     alt={product.imageAlt || product.title}
+                    fetchPriority="high"
+                    decoding="async"
                     className="mx-auto max-h-[70vh] w-full rounded-2xl border border-slate-200 object-contain bg-white"
                   />
                 ) : (
@@ -112,9 +84,11 @@ export default function ShopProductPage() {
                 <div className="mt-8">
                   <QuantityAddToCart
                     unitPrice={basePrice}
+                    max={product.inventoryTracked ? Math.max(1, product.availableQty) : 99}
+                    disabled={product.stockPolicy === 'unavailable' || (product.inventoryTracked && product.availableQty <= 0) || (product.stockPolicy === 'finite' && product.availableQty <= 0)}
                     onQuantityChange={setQuantity}
                     onAdd={(selectedQuantity) => addItem(product, selectedQuantity)}
-                    buttonLabel="Add to Cart"
+                    buttonLabel={product.stockPolicy === 'unavailable' || (product.inventoryTracked && product.availableQty <= 0) || (product.stockPolicy === 'finite' && product.availableQty <= 0) ? 'Unavailable' : 'Add to Cart'}
                   />
                 </div>
 

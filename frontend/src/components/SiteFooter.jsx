@@ -8,7 +8,7 @@ export default function SiteFooter({ legalLinks }) {
           <div>
             <h3 className="text-lg font-extrabold text-[#123A7A]">Manley Lifting</h3>
             <p className="mt-3 text-sm leading-relaxed text-slate-600">
-              Manley Lifting is a specialist team based in Oulart, Co. Wexford, providing professional inspection, certification, training, and lifting equipment support to industrial clients.
+              Inspection, certification, training, and lifting equipment support for industrial teams across Ireland.
             </p>
           </div>
 
@@ -28,9 +28,9 @@ export default function SiteFooter({ legalLinks }) {
           <div>
             <h4 className="text-sm font-bold uppercase tracking-[0.12em] text-[#C61F2A]">Company Details</h4>
             <ul className="mt-3 space-y-2 text-sm text-slate-700">
-              <li>Team: Inspection, certification, and lifting support specialists</li>
-              <li>Location: Oulart, Co. Wexford, Ireland</li>
-              <li>Email: michael@manleylifting.ie</li>
+              <li>Specialists in inspection, certification, and lifting support</li>
+              <li>Oulart, Co. Wexford, Ireland</li>
+              <li><a className="footer-link" href="mailto:michael@manleylifting.ie">michael@manleylifting.ie</a></li>
             </ul>
           </div>
         </div>

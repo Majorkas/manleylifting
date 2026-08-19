@@ -1,9 +1,14 @@
-import { act, render, screen, within, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, within, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import SiteHeader from './SiteHeader'
 import { SESSION_CHANGED_EVENT } from '../utils/portalApi'
+import { prefetchRoute } from '../utils/routePreloads'
+
+vi.mock('../utils/routePreloads', () => ({
+  prefetchRoute: vi.fn(),
+}))
 
 const sessionStorageKey = 'manley-portal-session-v1'
 
@@ -69,5 +74,17 @@ describe('SiteHeader account navigation', () => {
     })
     expect(profileLink).toHaveAttribute('href', '/account')
     expect(screen.getByRole('link', { name: 'My account' })).toBeInTheDocument()
+  })
+
+  it('prefetches route chunks on pointer and keyboard intent', () => {
+    const { container } = renderHeader()
+    const desktopNav = container.querySelector('nav.hidden.items-center.gap-8.text-sm.font-semibold.md\\:flex')
+    const shopLink = within(desktopNav).getByRole('link', { name: 'Shop' })
+
+    fireEvent.mouseEnter(shopLink)
+    fireEvent.focus(shopLink)
+
+    expect(prefetchRoute).toHaveBeenCalledWith('/shop')
+    expect(prefetchRoute).toHaveBeenCalledTimes(2)
   })
 })

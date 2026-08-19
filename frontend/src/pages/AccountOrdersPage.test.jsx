@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import AccountOrdersPage from './AccountOrdersPage'
 import * as portalApi from '../utils/portalApi'
+import { QueryProvider } from '../test/testQueryClient'
+import { createTestQueryClient } from '../test/createTestQueryClient'
 
 vi.mock('../components/AccountLayout', () => ({
   default: ({ children, title }) => (
@@ -44,11 +46,7 @@ describe('AccountOrdersPage', () => {
       },
     ])
 
-    render(
-      <MemoryRouter>
-        <AccountOrdersPage />
-      </MemoryRouter>,
-    )
+    render(<QueryProvider client={createTestQueryClient()}><MemoryRouter><AccountOrdersPage /></MemoryRouter></QueryProvider>)
 
     expect(await screen.findByText('ML-2042')).toBeInTheDocument()
     expect(screen.getByText('2 items')).toBeInTheDocument()
@@ -59,14 +57,7 @@ describe('AccountOrdersPage', () => {
   it('redirects unauthenticated users to login with a safe return path', async () => {
     portalApi.getAccountOrders.mockRejectedValue({ status: 401, message: 'Unauthorized' })
 
-    render(
-      <MemoryRouter initialEntries={['/account/orders']}>
-        <Routes>
-          <Route path="/account/orders" element={<AccountOrdersPage />} />
-          <Route path="/account/login" element={<div>Account Login</div>} />
-        </Routes>
-      </MemoryRouter>,
-    )
+    render(<QueryProvider client={createTestQueryClient()}><MemoryRouter initialEntries={['/account/orders']}><Routes><Route path="/account/orders" element={<AccountOrdersPage />} /><Route path="/account/login" element={<div>Account Login</div>} /></Routes></MemoryRouter></QueryProvider>)
 
     await waitFor(() => expect(screen.getByText('Account Login')).toBeInTheDocument())
   })

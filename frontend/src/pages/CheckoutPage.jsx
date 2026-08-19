@@ -1,23 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js'
 import { loadStripe } from '@stripe/stripe-js'
 import { Link, useNavigate } from 'react-router-dom'
 import ShopPageLayout from '../components/ShopPageLayout'
 import { useCart } from '../context/CartContext'
-import { getAccountAddresses, getAccountBootstrap, registerCommerceAccount } from '../utils/portalApi'
+import { getAccessToken, getAccountBootstrap, registerCommerceAccount } from '../utils/portalApi'
 import {
   clearPendingCheckout,
   createOnsitePaymentIntent,
   formatCurrency,
+  generateCapabilityToken,
   generateCheckoutRef,
   getOnsiteCheckoutStatus,
   saveCompletedCheckout,
+  saveGuestCheckoutOffer,
   loadPendingCheckout,
   savePendingCheckout,
   savePendingOrderClaim,
   shopRoutes,
 } from '../utils/shopConfig'
 import usePageMeta from '../utils/usePageMeta'
+import { invalidateCheckoutQueries } from '../queryInvalidation'
+import { useAccountAddressesQuery } from '../hooks/useAccountQueries'
 
 const turnstileSiteKey = String(import.meta.env.VITE_TURNSTILE_SITE_KEY || '').trim()
 const stripePublishableKey = String(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || '').trim()
@@ -120,6 +125,10 @@ function getFriendlyCheckoutErrorMessage(error) {
     return 'We could not verify your request source. Please refresh the page and try again.'
   }
 
+  if (rawMessage.includes('failed to fetch') || rawMessage.includes('network') || rawMessage.includes('timeout')) {
+    return 'We could not reach checkout. Please check your connection and try again.'
+  }
+
   return error?.message || 'We could not start checkout right now. Please try again in a moment.'
 }
 
@@ -131,17 +140,20 @@ export default function CheckoutPage() {
   })
 
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { cartItems, cartCount, subtotal, clearCart } = useCart()
   const [errorMessage, setErrorMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
+  const [canRetryPendingCheckout, setCanRetryPendingCheckout] = useState(false)
   const [customerName, setCustomerName] = useState('')
   const [customerEmail, setCustomerEmail] = useState('')
   const [checkoutAccountState, setCheckoutAccountState] = useState('checking')
   const [showAccountChoice, setShowAccountChoice] = useState(true)
   const [customerPhone, setCustomerPhone] = useState('')
   const [selectedAddressId, setSelectedAddressId] = useState('')
-  const [savedAddresses, setSavedAddresses] = useState([])
+  const savedAddressesQuery = useAccountAddressesQuery()
+  const savedAddresses = useMemo(() => savedAddressesQuery.data || [], [savedAddressesQuery.data])
   const [showOneOffAddressForm, setShowOneOffAddressForm] = useState(false)
   const [addressLine1, setAddressLine1] = useState('')
   const [addressLine2, setAddressLine2] = useState('')
@@ -156,6 +168,9 @@ export default function CheckoutPage() {
   const [checkoutRef, setCheckoutRef] = useState('')
   const [statusToken, setStatusToken] = useState('')
   const [amountTotalCents, setAmountTotalCents] = useState(0)
+  const [serverSubtotalCents, setServerSubtotalCents] = useState(0)
+  const [serverShippingCents, setServerShippingCents] = useState(0)
+  const [serverTaxCents, setServerTaxCents] = useState(0)
   const [checkoutCurrency, setCheckoutCurrency] = useState('EUR')
   const [serverLineItems, setServerLineItems] = useState([])
   const [priceRefreshNotice, setPriceRefreshNotice] = useState('')
@@ -222,25 +237,9 @@ export default function CheckoutPage() {
   }, [])
 
   useEffect(() => {
-    let cancelled = false
-    getAccountAddresses()
-      .then((result) => {
-        if (!cancelled) {
-          setSavedAddresses(result)
-          const defaultAddress = result.find((address) => address.isDefaultShipping)
-          if (defaultAddress) {
-            setSelectedAddressId(String(defaultAddress.id))
-          }
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setSavedAddresses([])
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
+    const defaultAddress = savedAddresses.find((address) => address.isDefaultShipping)
+    if (defaultAddress) setSelectedAddressId(String(defaultAddress.id))
+  }, [savedAddresses])
 
   useEffect(() => {
     const pending = loadPendingCheckout()
@@ -262,6 +261,7 @@ export default function CheckoutPage() {
           saveCompletedCheckout(pending.checkoutRef, pending.statusToken)
           clearCart()
           clearPendingCheckout()
+          setCanRetryPendingCheckout(false)
           setStatusMessage('Order confirmed. Your cart has been cleared.')
           navigate(shopRoutes.orderConfirmed)
           if (intervalId) window.clearInterval(intervalId)
@@ -270,6 +270,7 @@ export default function CheckoutPage() {
 
         if (result.status === 'failed' || result.status === 'canceled') {
           clearPendingCheckout()
+          setCanRetryPendingCheckout(false)
           setStatusMessage('Your payment was not completed. Please try again.')
           if (intervalId) window.clearInterval(intervalId)
           return
@@ -277,10 +278,14 @@ export default function CheckoutPage() {
 
         if (attempts >= maxAttempts) {
           if (intervalId) window.clearInterval(intervalId)
+          setCanRetryPendingCheckout(true)
+          setStatusMessage('Your previous payment is still being verified. If you were charged, please contact support.')
         }
       } catch {
         if (attempts >= maxAttempts && intervalId) {
           window.clearInterval(intervalId)
+          setCanRetryPendingCheckout(true)
+          setStatusMessage('Your previous payment is still being verified. If you were charged, please contact support.')
         }
       }
     }
@@ -452,6 +457,8 @@ export default function CheckoutPage() {
 
     try {
       const nextCheckoutRef = generateCheckoutRef()
+      const nextStatusToken = generateCapabilityToken()
+      const nextClaimToken = generateCapabilityToken()
       const shipping = selectedAddress
         ? {
             name: selectedAddress.recipientName,
@@ -476,12 +483,8 @@ export default function CheckoutPage() {
 
       if (checkoutAccountState !== 'signed-in') {
         try {
-          const guestOffer = {
-            email: customerEmail.trim(),
-            fullName: customerName.trim(),
-          }
           if (typeof window !== 'undefined') {
-            window.localStorage.setItem('manley-guest-checkout-offer', JSON.stringify(guestOffer))
+            saveGuestCheckoutOffer(customerEmail, customerName)
             if (createAccountForCheckout) {
               window.localStorage.setItem('manley-recent-account-address', JSON.stringify({
                 label: 'Checkout address',
@@ -544,15 +547,18 @@ export default function CheckoutPage() {
           email: customerEmail,
         },
         {
+          accessToken: getAccessToken(),
           antiBotToken: turnstileToken,
+          claimToken: nextClaimToken,
           shipping,
+          statusToken: nextStatusToken,
         },
       )
-      const nextStatusToken = checkout.statusToken
       const nextClientSecret = checkout.clientSecret
 
       if (!nextClientSecret) throw new Error('No payment client secret returned from server')
-      if (!nextStatusToken) throw new Error('No status token returned from server')
+      if (checkout.statusToken !== nextStatusToken) throw new Error('Checkout status token mismatch')
+      if (checkout.claimToken !== nextClaimToken) throw new Error('Checkout claim token mismatch')
 
       if (checkout.claimToken) {
         savePendingOrderClaim(checkout.orderNumber, checkout.claimToken, checkout.checkoutRef || nextCheckoutRef, nextStatusToken)
@@ -562,6 +568,9 @@ export default function CheckoutPage() {
       setStatusToken(nextStatusToken)
       setClientSecret(nextClientSecret)
       setAmountTotalCents(checkout.amountTotalCents)
+      setServerSubtotalCents(Number(checkout.subtotalCents || 0))
+      setServerShippingCents(Number(checkout.shippingCents || 0))
+      setServerTaxCents(Number(checkout.taxCents || 0))
       setCheckoutCurrency(checkout.currency || 'EUR')
       setServerLineItems(Array.isArray(checkout.lineItems) ? checkout.lineItems : [])
       setPriceRefreshNotice(String(checkout.priceRefreshNotice || '').trim())
@@ -588,6 +597,7 @@ export default function CheckoutPage() {
   function handlePaymentSubmitted(paymentIntent) {
     const status = String(paymentIntent?.status || '').toLowerCase()
     if (status === 'succeeded') {
+      void invalidateCheckoutQueries(queryClient, checkoutRef)
       if (checkoutRef && statusToken) {
         saveCompletedCheckout(checkoutRef, statusToken)
       }
@@ -620,13 +630,37 @@ export default function CheckoutPage() {
         </div>
 
         {statusMessage && (
-          <div className="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">
-            {statusMessage}
+          <div
+            className="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700"
+            role="status"
+            aria-live="polite"
+          >
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <span>{statusMessage}</span>
+              {canRetryPendingCheckout && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    clearPendingCheckout()
+                    setCanRetryPendingCheckout(false)
+                    setStatusMessage('')
+                    setErrorMessage('Please start a fresh payment attempt.')
+                  }}
+                  className="rounded-md border border-emerald-700 px-3 py-2 text-xs font-bold uppercase tracking-wide text-emerald-800 transition hover:bg-emerald-100"
+                >
+                  Clear and retry
+                </button>
+              )}
+            </div>
           </div>
         )}
 
         {errorMessage && (
-          <div className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          <div
+            className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+            role="alert"
+            aria-live="assertive"
+          >
             {errorMessage}
           </div>
         )}
@@ -992,6 +1026,9 @@ export default function CheckoutPage() {
                         <span className="font-semibold text-slate-900">{formatCurrency((line.lineTotalCents || 0) / 100, checkoutCurrency)}</span>
                       </div>
                     ))}
+                    <div className="flex items-center justify-between border-t border-slate-200 pt-2"><span>Server subtotal</span><span>{formatCurrency(serverSubtotalCents / 100, checkoutCurrency)}</span></div>
+                    <div className="flex items-center justify-between"><span>Shipping</span><span>{serverShippingCents ? formatCurrency(serverShippingCents / 100, checkoutCurrency) : 'Free'}</span></div>
+                    <div className="flex items-center justify-between"><span>VAT/tax</span><span>{formatCurrency(serverTaxCents / 100, checkoutCurrency)}</span></div>
                   </div>
                 </div>
               )}

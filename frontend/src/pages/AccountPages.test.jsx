@@ -9,6 +9,8 @@ import AccountResetPasswordPage from './AccountResetPasswordPage'
 import AccountChangeEmailPage from './AccountChangeEmailPage'
 import AccountVerifyEmailPage from './AccountVerifyEmailPage'
 import AccountAddressesPage from './AccountAddressesPage'
+import { QueryProvider } from '../test/testQueryClient'
+import { createTestQueryClient } from '../test/createTestQueryClient'
 import {
   completeAccountEmailChange,
   completeCommercePasswordReset,
@@ -340,7 +342,7 @@ describe('account lifecycle pages', () => {
     }))
     getAccountAddresses.mockResolvedValue([])
 
-    render(<MemoryRouter><AccountAddressesPage /></MemoryRouter>)
+    render(<QueryProvider client={createTestQueryClient()}><MemoryRouter><AccountAddressesPage /></MemoryRouter></QueryProvider>)
 
     expect(await screen.findByText('Checkout address')).toBeInTheDocument()
     expect(screen.getByText(/10 Harbour Road/i)).toBeInTheDocument()
@@ -362,7 +364,7 @@ describe('account lifecycle pages', () => {
       },
     ])
 
-    render(<MemoryRouter><AccountAddressesPage /></MemoryRouter>)
+    render(<QueryProvider client={createTestQueryClient()}><MemoryRouter><AccountAddressesPage /></MemoryRouter></QueryProvider>)
 
     expect(await screen.findByText('Default shipping')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Save address' }))
@@ -387,7 +389,7 @@ describe('account lifecycle pages', () => {
       },
     ])
 
-    render(<MemoryRouter><AccountAddressesPage /></MemoryRouter>)
+    render(<QueryProvider client={createTestQueryClient()}><MemoryRouter><AccountAddressesPage /></MemoryRouter></QueryProvider>)
 
     await user.click(await screen.findByRole('button', { name: 'Remove' }))
 

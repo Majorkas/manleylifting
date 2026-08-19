@@ -402,20 +402,33 @@ function CookiePolicyContent() {
       </Section>
 
       <Section title="2. Cookies We Use">
+        <h3 id="cookies" className="text-xl font-bold text-[#123A7A]">Cookies and Tracking</h3>
+        <p>We use the following technologies to track and analyze user behavior:</p>
         <ul className="list-disc space-y-2 pl-6">
           <li>
-            Strictly necessary cookies: essential for shopping cart, checkout, account login,
-            security, and core functionality.
+            <strong>Analytics (Google Analytics / Mixpanel):</strong> We use analytics services
+            to understand how users interact with our platform. Data includes page visits, time
+            on page, and user journey. This is considered marketing consent category.
           </li>
           <li>
-            Analytics cookies: used to understand traffic and site performance (including Google
-            Analytics), only when you consent.
+            <strong>Cloudflare Turnstile (Bot Protection):</strong> We use Cloudflare Turnstile
+            for CAPTCHA/bot protection on login, password reset, and order claim endpoints.
+            Turnstile collects IP address and interaction data.
           </li>
           <li>
-            Advertising cookies: used for measuring and delivering relevant advertising (including
-            Google Ads and Meta/Facebook Pixel), only when you consent.
+            <strong>Functional Cookies:</strong> Session cookies (HTTP-only) for user
+            authentication. These are essential and cannot be disabled.
+          </li>
+          <li>
+            <strong>Marketing Cookies:</strong> Optional cookies for retargeting and conversion
+            tracking (if enabled). Controlled by your consent preferences.
           </li>
         </ul>
+        <p>
+          You can withdraw your consent at any time by visiting our{' '}
+          <a href="#withdraw-consent" className="font-semibold text-[#123A7A] underline">Withdraw Consent</a>{' '}
+          section.
+        </p>
       </Section>
 
       <Section title="3. Legal Basis">
@@ -436,6 +449,16 @@ function CookiePolicyContent() {
           preferences.
         </p>
       </Section>
+
+      <section id="withdraw-consent" className="space-y-3">
+        <h3 className="text-xl font-bold text-[#123A7A]">Withdraw Consent</h3>
+        <div className="space-y-3 leading-7">
+          <p>
+            To withdraw your cookie consent, you can change your preferences in the cookie banner
+            or update your settings in your account page if logged in.
+          </p>
+        </div>
+      </section>
 
       <Section title="5. Third-Party Providers">
         <p>

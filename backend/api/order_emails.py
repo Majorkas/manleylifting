@@ -1,6 +1,8 @@
 from django.conf import settings
+from django.utils import timezone
 
 from .account_emails import _render_email_html, send_transactional_email
+from .models import OrderEmailDelivery
 
 
 def _order_summary(order):
@@ -42,13 +44,36 @@ def _order_email_details(order):
     ]
 
 
+def _send_idempotent_order_email(*, order, purpose, sender):
+    delivery, created = OrderEmailDelivery.objects.get_or_create(
+        order=order,
+        purpose=purpose,
+        defaults={"idempotency_key": f"order:{order.pk}:{purpose}"},
+    )
+    if not created and delivery.status == OrderEmailDelivery.STATUS_SENT:
+        return
+    try:
+        delivery.attempts += 1
+        delivery.save(update_fields=["attempts", "updated_at"])
+        sender()
+    except Exception as error:
+        delivery.status = OrderEmailDelivery.STATUS_ERROR
+        delivery.error_message = str(error)[:500]
+        delivery.save(update_fields=["status", "error_message", "updated_at"])
+        return
+    delivery.status = OrderEmailDelivery.STATUS_SENT
+    delivery.sent_at = timezone.now()
+    delivery.save(update_fields=["status", "sent_at", "updated_at"])
+
+
 def send_order_confirmation_email(*, order):
     recipient_email = str(order.customer_email or "").strip()
     if not recipient_email:
         return
 
     action_url = _order_action_url()
-    send_transactional_email(
+    def send():
+        send_transactional_email(
         recipient_email=recipient_email,
         subject=f"Order confirmed - {order.order_number}",
         text_body=(
@@ -67,10 +92,11 @@ def send_order_confirmation_email(*, order):
             accent_color="#123A7A",
             badge_label="Order Confirmation",
         ),
-    )
+        )
+    _send_idempotent_order_email(order=order, purpose=OrderEmailDelivery.PURPOSE_CONFIRMED, sender=send)
 
 
-def send_order_shipped_email(*, order):
+def _send_order_shipped_email(*, order):
     recipient_email = str(order.customer_email or "").strip()
     if not recipient_email:
         return
@@ -98,7 +124,7 @@ def send_order_shipped_email(*, order):
     )
 
 
-def send_order_completed_email(*, order):
+def _send_order_completed_email(*, order):
     recipient_email = str(order.customer_email or "").strip()
     if not recipient_email:
         return
@@ -124,3 +150,55 @@ def send_order_completed_email(*, order):
             badge_label="Delivery Confirmation",
         ),
     )
+
+
+def send_order_shipped_email(*, order):
+    _send_idempotent_order_email(
+        order=order,
+        purpose=OrderEmailDelivery.PURPOSE_SHIPPED,
+        sender=lambda: _send_order_shipped_email(order=order),
+    )
+
+
+def send_order_completed_email(*, order):
+    _send_idempotent_order_email(
+        order=order,
+        purpose=OrderEmailDelivery.PURPOSE_DELIVERED,
+        sender=lambda: _send_order_completed_email(order=order),
+    )
+
+
+def _send_status_email(*, order, purpose, subject, title, intro, badge_label):
+    recipient_email = str(order.customer_email or "").strip()
+    if not recipient_email:
+        return
+    action_url = _order_action_url()
+    lines = _order_email_details(order)
+    _send_idempotent_order_email(
+        order=order,
+        purpose=purpose,
+        sender=lambda: send_transactional_email(
+            recipient_email=recipient_email,
+            subject=f"{subject} - {order.order_number}",
+            text_body=intro + "\n\n" + "\n".join(lines) + f"\n\nView your order: {action_url}\n",
+            html_body=_render_email_html(
+                title=title,
+                intro=intro,
+                action_label="View your order",
+                action_url=action_url,
+                body_lines=lines,
+                support_note="Please contact us if you need help with this order.",
+                preheader=f"Order {order.order_number}: {subject}.",
+                accent_color="#B91C1C" if purpose == OrderEmailDelivery.PURPOSE_CANCELED else "#047857",
+                badge_label=badge_label,
+            ),
+        ),
+    )
+
+
+def send_order_canceled_email(*, order):
+    _send_status_email(order=order, purpose=OrderEmailDelivery.PURPOSE_CANCELED, subject="Order canceled", title="Your order was canceled", intro="Your Manley Lifting order has been canceled.", badge_label="Order Canceled")
+
+
+def send_order_refunded_email(*, order):
+    _send_status_email(order=order, purpose=OrderEmailDelivery.PURPOSE_REFUNDED, subject="Refund processed", title="Your refund was processed", intro="A refund has been processed for your Manley Lifting order.", badge_label="Refund Processed")

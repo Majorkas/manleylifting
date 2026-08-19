@@ -26,11 +26,16 @@ from .account_emails import send_email_change_email, send_security_notification_
 from .account_tokens import consume_account_action_token, issue_account_action_token
 from .audit import log_portal_audit_event
 from .auth_sessions import SESSION_ID_CLAIM, revoke_account_session, revoke_user_sessions
+from .capability_tokens import digest_capability_token
 from .models import AccountActionToken, AccountSecurityState, AccountSession, AuditLog, CommerceCustomerProfile, GuestOrderClaim, OnsiteOrder, SavedAddress, UserProfile
+from .privacy import recover_account_deletion, request_account_deletion
+from .privacy_export import build_account_export
+from .privacy_tokens import hash_recovery_code
 from .request_security import client_ip
 from .serializers import (
     AccountBootstrapSerializer,
     AccountChangePasswordSerializer,
+    AccountDeleteRecoverySerializer,
     AccountDeleteSerializer,
     AccountDisableSerializer,
     AccountEmailSerializer,
@@ -367,10 +372,16 @@ class AccountOrdersView(APIView):
             "checkout_ref",
             "order_number",
             "status",
+            "payment_status",
+            "fulfillment_status",
             "customer_name",
             "customer_email",
             "line_items",
             "amount_total_cents",
+            "subtotal_cents",
+            "discount_cents",
+            "shipping_cents",
+            "tax_cents",
             "currency",
             "paid_at",
             "created_at",
@@ -390,10 +401,20 @@ class AccountOrdersView(APIView):
                     "checkoutRef": order["checkout_ref"],
                     "orderNumber": order["order_number"],
                     "status": order["status"],
+                    "paymentStatus": order["payment_status"] or OnsiteOrder(
+                        status=order["status"]
+                    ).get_payment_status_from_legacy(),
+                    "fulfillmentStatus": order["fulfillment_status"] or OnsiteOrder(
+                        status=order["status"]
+                    ).get_fulfillment_status_from_legacy(),
                     "customerName": order["customer_name"],
                     "customerEmail": order["customer_email"],
                     "lineItems": order["line_items"],
                     "amountTotalCents": order["amount_total_cents"],
+                    "subtotalCents": order["subtotal_cents"],
+                    "discountCents": order["discount_cents"],
+                    "shippingCents": order["shipping_cents"],
+                    "taxCents": order["tax_cents"],
                     "currency": order["currency"],
                     "paidAt": order["paid_at"].isoformat() if order["paid_at"] else None,
                     "createdAt": order["created_at"].isoformat() if order["created_at"] else None,
@@ -414,10 +435,27 @@ class AccountOrdersView(APIView):
             "checkoutRef": order.checkout_ref,
             "orderNumber": order.order_number,
             "status": order.status,
+            "paymentStatus": order.payment_status or order.get_payment_status_from_legacy(),
+            "fulfillmentStatus": order.fulfillment_status or order.get_fulfillment_status_from_legacy(),
             "customerName": order.customer_name,
             "customerEmail": order.customer_email,
             "lineItems": order.line_items,
             "amountTotalCents": order.amount_total_cents,
+            "subtotalCents": order.subtotal_cents,
+            "discountCents": order.discount_cents,
+            "shippingCents": order.shipping_cents,
+            "taxCents": order.tax_cents,
+            "orderItems": [
+                {
+                    "sku": item.sku,
+                    "title": item.title,
+                    "variantRef": item.variant_ref,
+                    "unitPriceCents": item.unit_price_cents,
+                    "quantity": item.quantity,
+                    "lineTotalCents": item.line_total_cents,
+                }
+                for item in order.order_items.all()
+            ],
             "currency": order.currency,
             "paidAt": order.paid_at.isoformat() if order.paid_at else None,
             "createdAt": order.created_at.isoformat() if order.created_at else None,
@@ -602,7 +640,10 @@ def account_claim_order(request):
     with transaction.atomic():
         claim = (
             GuestOrderClaim.objects.select_for_update()
-            .filter(claim_token=claim_token, claim_state=GuestOrderClaim.STATE_PENDING)
+            .filter(
+                claim_token=digest_capability_token(claim_token),
+                claim_state=GuestOrderClaim.STATE_PENDING,
+            )
             .first()
         )
         if claim is None:
@@ -748,7 +789,7 @@ def account_mfa_verify(request):
     security_state.mfa_enabled = True
     security_state.mfa_secret = security_state.mfa_pending_secret
     security_state.mfa_pending_secret = ""
-    security_state.mfa_recovery_codes = recovery_codes
+    security_state.mfa_recovery_codes = [hash_recovery_code(code) for code in recovery_codes]
     security_state.save(update_fields=["mfa_enabled", "mfa_secret", "mfa_pending_secret", "mfa_recovery_codes", "updated_at"])
 
     log_portal_audit_event(
@@ -866,6 +907,33 @@ def account_logout_all(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 @throttle_classes([PortalMethodRateThrottle])
+def account_export(request):
+    if _is_operations_account(request.user):
+        return Response({"detail": "Account access is not available yet."}, status=status.HTTP_403_FORBIDDEN)
+
+    profile = CommerceCustomerProfile.objects.filter(user=request.user).first()
+    if profile is None:
+        return Response({"detail": "Account access is not available yet."}, status=status.HTTP_403_FORBIDDEN)
+    if profile.disabled_at is not None or profile.anonymized_at is not None or not profile.has_verified_email():
+        return Response({"detail": "Account access is not available yet."}, status=status.HTTP_403_FORBIDDEN)
+
+    payload = build_account_export(request.user, request=request)
+    
+    log_portal_audit_event(
+        request=request,
+        action="account.export",
+        target_type="account",
+        target_id=str(request.user.id),
+        details={"export_version": payload.get("version"), "generated_at": payload.get("generatedAt")},
+        actor=request.user,
+    )
+    
+    return Response(payload)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
 def account_disable(request):
     serializer = AccountDisableSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
@@ -909,15 +977,46 @@ def account_delete(request):
     if not request.user.check_password(payload["current_password"]):
         return Response({"detail": "Current password is incorrect"}, status=status.HTTP_400_BAD_REQUEST)
 
-    with transaction.atomic():
-        log_portal_audit_event(
-            request=request,
-            action="account.delete",
-            target_type="account",
-            target_id=str(request.user.pk),
-            details={"deleted": True},
-        )
-        request.user.delete()
+    profile = CommerceCustomerProfile.objects.filter(user=request.user).first()
+    if profile is not None and profile.deletion_requested_at is not None and profile.deletion_expires_at is not None:
+        return Response({"detail": "Account deletion is already pending."}, status=status.HTTP_409_CONFLICT)
+
+    request_account_deletion(request.user, request)
+    log_portal_audit_event(
+        request=request,
+        action="account.delete",
+        target_type="account",
+        target_id=str(request.user.pk),
+        details={"deletion_requested_at": timezone.now().isoformat()},
+    )
+    return Response({"ok": True})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([PortalMethodRateThrottle])
+def account_delete_recover(request):
+    serializer = AccountDeleteRecoverySerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    payload = serializer.validated_data
+
+    if not request.user.check_password(payload["current_password"]):
+        return Response({"detail": "Current password is incorrect"}, status=status.HTTP_400_BAD_REQUEST)
+
+    profile = CommerceCustomerProfile.objects.filter(user=request.user).first()
+    if profile is None or profile.deletion_requested_at is None or profile.deletion_expires_at is None:
+        return Response({"detail": "No pending account deletion recovery is available."}, status=status.HTTP_400_BAD_REQUEST)
+    if profile.deletion_expires_at <= timezone.now():
+        return Response({"detail": "Account recovery window has expired."}, status=status.HTTP_410_GONE)
+
+    recover_account_deletion(request.user)
+    log_portal_audit_event(
+        request=request,
+        action="account.delete_recover",
+        target_type="account",
+        target_id=str(request.user.pk),
+        details={"recovered": True},
+    )
     return Response({"ok": True})
 
 
