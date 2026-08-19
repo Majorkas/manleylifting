@@ -491,7 +491,7 @@ class CatalogProduct(models.Model):
     is_active = models.BooleanField(default=True)
     # Inventory fields (M2)
     sku = models.CharField(max_length=100, null=True, blank=True, db_index=True)
-    inventory_tracked = models.BooleanField(default=False)
+    inventory_tracked = models.BooleanField(default=True)
     STOCK_POLICY_UNTRACKED = "untracked"
     STOCK_POLICY_FINITE = "finite"
     STOCK_POLICY_UNAVAILABLE = "unavailable"
@@ -503,7 +503,7 @@ class CatalogProduct(models.Model):
     stock_policy = models.CharField(
         max_length=20,
         choices=STOCK_POLICY_CHOICES,
-        default=STOCK_POLICY_UNTRACKED,
+        default=STOCK_POLICY_FINITE,
     )
     weight_grams = models.PositiveIntegerField(null=True, blank=True)
     shipping_class = models.CharField(max_length=80, null=True, blank=True)

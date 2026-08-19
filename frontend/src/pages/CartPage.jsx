@@ -11,7 +11,7 @@ export default function CartPage() {
     noIndex: true,
   })
 
-  const { cartItems, cartCount, subtotal, removeItem } = useCart()
+  const { cartItems, cartCount, subtotal, removeItem, increaseQuantity, decreaseQuantity } = useCart()
 
   return (
     <ShopPageLayout>
@@ -62,7 +62,28 @@ export default function CartPage() {
 
                       <div>
                         <h3 className="text-lg font-bold text-[#123A7A]">{item.title}</h3>
-                        <p className="mt-2 text-sm text-slate-600">Quantity: {item.quantity}</p>
+                        <div className="mt-3 inline-flex items-center rounded-md border border-slate-300 bg-white">
+                          <button
+                            type="button"
+                            onClick={() => decreaseQuantity(item.handle)}
+                            disabled={item.quantity <= 1}
+                            className="inline-flex h-9 w-9 items-center justify-center text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                            aria-label={`Decrease quantity for ${item.title}`}
+                          >
+                            -
+                          </button>
+                          <span className="min-w-10 text-center text-sm font-semibold text-slate-900" aria-label={`Quantity: ${item.quantity}`}>
+                            {item.quantity}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => increaseQuantity(item.handle)}
+                            className="inline-flex h-9 w-9 items-center justify-center text-slate-700 transition hover:bg-slate-100"
+                            aria-label={`Increase quantity for ${item.title}`}
+                          >
+                            +
+                          </button>
+                        </div>
                       </div>
                     </div>
 
@@ -111,18 +132,29 @@ export default function CartPage() {
               </div>
 
               <div className="mt-8 space-y-3">
-                <Link
-                  to={shopRoutes.checkout}
-                  className="block rounded-md bg-[#123A7A] px-6 py-3 text-center text-sm font-bold uppercase tracking-wide text-white transition hover:bg-[#0f3168]"
-                >
-                  Proceed to Checkout
-                </Link>
-                <Link
-                  to={shopRoutes.home}
-                  className="block rounded-md border-2 border-[#123A7A] px-6 py-3 text-center text-sm font-bold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
-                >
-                  Continue Shopping
-                </Link>
+                {cartItems.length > 0 ? (
+                  <Link
+                    to={shopRoutes.checkout}
+                    className="block rounded-md bg-[#123A7A] px-6 py-3 text-center text-sm font-bold uppercase tracking-wide text-white transition hover:bg-[#0f3168]"
+                  >
+                    Proceed to Checkout
+                  </Link>
+                ) : (
+                  <Link
+                    to={shopRoutes.home}
+                    className="block rounded-md bg-[#123A7A] px-6 py-3 text-center text-sm font-bold uppercase tracking-wide text-white transition hover:bg-[#0f3168]"
+                  >
+                    Browse Products
+                  </Link>
+                )}
+                {cartItems.length > 0 && (
+                  <Link
+                    to={shopRoutes.home}
+                    className="block rounded-md border-2 border-[#123A7A] px-6 py-3 text-center text-sm font-bold uppercase tracking-wide text-[#123A7A] transition hover:bg-[#123A7A] hover:text-white"
+                  >
+                    Continue Shopping
+                  </Link>
+                )}
               </div>
             </div>
           </aside>

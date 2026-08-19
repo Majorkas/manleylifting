@@ -128,7 +128,7 @@ export function getStockStatus(product = {}) {
     }
   }
 
-  if (product.inventoryTracked || product.stockPolicy === 'finite') {
+  if (product.inventoryTracked || product.stockPolicy === 'finite' || product.stockPolicy === 'untracked') {
     const availableQty = Math.max(0, Number(product.availableQty || 0))
 
     if (availableQty === 0) {
@@ -140,7 +140,7 @@ export function getStockStatus(product = {}) {
       }
     }
 
-    if (availableQty <= 5) {
+    if (availableQty < 5) {
       return {
         label: 'Low stock',
         detail: `Only ${availableQty} left`,
@@ -158,10 +158,10 @@ export function getStockStatus(product = {}) {
   }
 
   return {
-    label: 'Available to order',
-    detail: 'Stock confirmed at checkout',
-    tone: 'positive',
-    canAdd: true,
+    label: 'Out of stock',
+    detail: 'Inventory not configured',
+    tone: 'negative',
+    canAdd: false,
   }
 }
 

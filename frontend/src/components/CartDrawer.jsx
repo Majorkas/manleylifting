@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { formatCurrency, shopRoutes } from '../utils/shopConfig'
 
@@ -10,8 +11,31 @@ export default function CartDrawer({
   onDecreaseQuantity,
   onRemoveItem,
 }) {
+  const closeButtonRef = useRef(null)
+  const restoreFocusRef = useRef(null)
+
+  useEffect(() => {
+    if (!open) return undefined
+
+    restoreFocusRef.current = document.activeElement
+    closeButtonRef.current?.focus()
+
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') onClose()
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      restoreFocusRef.current?.focus?.()
+      restoreFocusRef.current = null
+    }
+  }, [onClose, open])
+
+  if (!open) return null
+
   return (
-    <div className={'fixed inset-0 z-[90] ' + (open ? 'pointer-events-auto' : 'pointer-events-none')}>
+    <div className="fixed inset-0 z-[90] pointer-events-auto">
       <button
         type="button"
         aria-label="Close cart drawer"
@@ -40,7 +64,9 @@ export default function CartDrawer({
           <button
             type="button"
             onClick={onClose}
+            ref={closeButtonRef}
             className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:border-[#123A7A] hover:text-[#123A7A]"
+            aria-label="Close shopping cart"
           >
             Close
           </button>
@@ -67,6 +93,7 @@ export default function CartDrawer({
                       type="button"
                       onClick={() => onRemoveItem(item.handle)}
                       className="text-sm font-semibold text-slate-500 hover:text-[#C61F2A]"
+                      aria-label={'Remove ' + item.title + ' from cart'}
                     >
                       Remove
                     </button>
@@ -122,13 +149,15 @@ export default function CartDrawer({
               View Full Cart
             </Link>
 
-            <Link
-              to={shopRoutes.checkout}
-              onClick={onClose}
-              className="block rounded-md bg-[#123A7A] px-4 py-3 text-center text-sm font-bold uppercase tracking-wide text-white transition hover:bg-[#0f3168]"
-            >
-              Proceed to Checkout
-            </Link>
+            {items.length > 0 && (
+              <Link
+                to={shopRoutes.checkout}
+                onClick={onClose}
+                className="block rounded-md bg-[#123A7A] px-4 py-3 text-center text-sm font-bold uppercase tracking-wide text-white transition hover:bg-[#0f3168]"
+              >
+                Proceed to Checkout
+              </Link>
+            )}
           </div>
         </div>
       </aside>

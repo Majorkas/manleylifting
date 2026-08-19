@@ -70,6 +70,7 @@ export default function Modal({
   panelClassName = defaultPanelClassName,
   closeOnBackdrop = true,
   closeOnEscape = true,
+  ariaLabel,
 }) {
   useEffect(() => {
     if (!open || !closeOnEscape) return undefined
@@ -100,6 +101,7 @@ export default function Modal({
       className={overlayClassName}
       role="dialog"
       aria-modal="true"
+      aria-label={ariaLabel}
       onClick={(event) => {
         if (!closeOnBackdrop) return
         if (event.target === event.currentTarget) {

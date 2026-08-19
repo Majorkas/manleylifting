@@ -245,11 +245,20 @@ describe('shopConfig stock presentation', () => {
     })
   })
 
-  it('calls out low tracked stock', () => {
+  it('shows quantities below five as low stock', () => {
     expect(getStockStatus({ inventoryTracked: true, availableQty: 3 })).toEqual({
       label: 'Low stock',
       detail: 'Only 3 left',
       tone: 'caution',
+      canAdd: true,
+    })
+  })
+
+  it('keeps five remaining units in stock', () => {
+    expect(getStockStatus({ inventoryTracked: true, availableQty: 5 })).toEqual({
+      label: 'In stock',
+      detail: '5 available',
+      tone: 'positive',
       canAdd: true,
     })
   })
@@ -272,12 +281,12 @@ describe('shopConfig stock presentation', () => {
     })
   })
 
-  it('describes untracked products as available to order', () => {
-    expect(getStockStatus({ inventoryTracked: false, stockPolicy: 'infinite' })).toEqual({
-      label: 'Available to order',
-      detail: 'Stock confirmed at checkout',
-      tone: 'positive',
-      canAdd: true,
+  it('treats legacy untracked products as out of stock until inventory is configured', () => {
+    expect(getStockStatus({ inventoryTracked: false, stockPolicy: 'untracked', availableQty: 0 })).toEqual({
+      label: 'Out of stock',
+      detail: 'Currently unavailable',
+      tone: 'negative',
+      canAdd: false,
     })
   })
 

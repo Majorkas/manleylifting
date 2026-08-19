@@ -1,6 +1,8 @@
 import base64
 import secrets
 import time
+from io import BytesIO
+from pathlib import Path
 from urllib.parse import quote
 from uuid import UUID
 
@@ -11,6 +13,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import Q
+from django.http import HttpResponse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_protect
@@ -53,6 +56,109 @@ REGISTRATION_RESPONSE = {
 RESEND_RESPONSE = {
     "detail": "If an unverified account exists, a verification email will be sent."
 }
+
+
+def _build_account_order_invoice_pdf(order):
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.pdfgen import canvas
+
+    buffer = BytesIO()
+    document = canvas.Canvas(buffer, pagesize=A4)
+    page_width, page_height = A4
+    margin = 20 * mm
+    y_position = page_height - margin
+    logo_path = Path(__file__).resolve().parents[2] / "frontend" / "public" / "logo-navbar.png"
+
+    if logo_path.exists():
+        document.drawImage(
+            str(logo_path),
+            margin,
+            y_position - 16 * mm,
+            width=58 * mm,
+            height=16 * mm,
+            preserveAspectRatio=True,
+            mask="auto",
+        )
+    y_position -= 26 * mm
+    document.setStrokeColor(colors.HexColor("#123A7A"))
+    document.setLineWidth(1.5)
+    document.line(margin, y_position, page_width - margin, y_position)
+    y_position -= 12 * mm
+
+    document.setFillColor(colors.HexColor("#123A7A"))
+    document.setFont("Helvetica-Bold", 18)
+    document.drawString(margin, y_position, "Invoice")
+    document.setFillColor(colors.HexColor("#172033"))
+    document.setFont("Helvetica-Bold", 10)
+    document.drawRightString(page_width - margin, y_position, order.order_number)
+    y_position -= 6 * mm
+    document.setFont("Helvetica", 9)
+    created_at = timezone.localtime(order.created_at).strftime("%d %b %Y") if order.created_at else ""
+    document.drawRightString(page_width - margin, y_position, created_at)
+    y_position -= 12 * mm
+
+    document.setFont("Helvetica-Bold", 9)
+    document.drawString(margin, y_position, "Delivery details")
+    y_position -= 5 * mm
+    document.setFont("Helvetica", 9)
+    delivery_lines = [
+        order.shipping_name or order.customer_name,
+        order.shipping_address_line_1,
+        order.shipping_address_line_2,
+        ", ".join(part for part in [order.shipping_city, order.shipping_county, order.shipping_postcode] if part),
+        order.shipping_country_code,
+    ]
+    for line in filter(None, delivery_lines):
+        document.drawString(margin, y_position, str(line))
+        y_position -= 5 * mm
+    y_position -= 5 * mm
+
+    document.setFillColor(colors.HexColor("#F1F5F9"))
+    document.rect(margin, y_position - 7 * mm, page_width - (2 * margin), 7 * mm, fill=1, stroke=0)
+    document.setFillColor(colors.HexColor("#475569"))
+    document.setFont("Helvetica-Bold", 8)
+    document.drawString(margin + 3 * mm, y_position - 4.5 * mm, "ITEM")
+    document.drawRightString(page_width - margin - 38 * mm, y_position - 4.5 * mm, "QTY")
+    document.drawRightString(page_width - margin - 3 * mm, y_position - 4.5 * mm, "TOTAL")
+    y_position -= 12 * mm
+
+    line_items = order.line_items if isinstance(order.line_items, list) else []
+    for item in line_items:
+        if y_position < 55 * mm:
+            document.showPage()
+            y_position = page_height - margin
+        title = str(item.get("title") or item.get("sku") or "Item")
+        quantity = int(item.get("quantity") or 0)
+        line_total = int(item.get("lineTotalCents") or 0)
+        document.setFillColor(colors.HexColor("#172033"))
+        document.setFont("Helvetica", 9)
+        document.drawString(margin + 3 * mm, y_position, title[:72])
+        document.drawRightString(page_width - margin - 38 * mm, y_position, str(quantity))
+        document.drawRightString(page_width - margin - 3 * mm, y_position, f"{line_total / 100:,.2f} {order.currency}")
+        document.setStrokeColor(colors.HexColor("#E2E8F0"))
+        document.line(margin, y_position - 3 * mm, page_width - margin, y_position - 3 * mm)
+        y_position -= 8 * mm
+
+    subtotal_cents = int(order.subtotal_cents or sum(int(item.get("lineTotalCents") or 0) for item in line_items))
+    summary_rows = [
+        ("Subtotal", subtotal_cents),
+        ("Shipping paid", int(order.shipping_cents or 0)),
+        ("Taxes", int(order.tax_cents or 0)),
+        ("Total paid", int(order.amount_total_cents or 0)),
+    ]
+    y_position -= 4 * mm
+    for label, amount_cents in summary_rows:
+        is_total = label == "Total paid"
+        document.setFont("Helvetica-Bold" if is_total else "Helvetica", 10 if is_total else 9)
+        document.setFillColor(colors.HexColor("#123A7A") if is_total else colors.HexColor("#475569"))
+        document.drawRightString(page_width - margin - 42 * mm, y_position, label)
+        document.drawRightString(page_width - margin, y_position, f"{amount_cents / 100:,.2f} {order.currency}")
+        y_position -= 7 * mm
+
+    document.save()
+    return buffer.getvalue()
 
 
 OPERATIONS_ACCOUNT_ROLES = {
@@ -352,7 +458,7 @@ class ResendVerificationView(APIView):
 class AccountOrdersView(APIView):
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, checkout_ref=None, order_number=None):
+    def get(self, request, checkout_ref=None, order_number=None, invoice=False):
         if not self._has_verified_commerce_access(request.user):
             return Response({"detail": "Account access is not available yet."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -366,6 +472,10 @@ class AccountOrdersView(APIView):
             order = queryset.filter(order_number=order_number).first()
             if order is None:
                 return Response({"detail": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+            if invoice:
+                response = HttpResponse(_build_account_order_invoice_pdf(order), content_type="application/pdf")
+                response["Content-Disposition"] = f'attachment; filename="invoice-{order.order_number}.pdf"'
+                return response
             return Response(self._serialize_order(order))
 
         orders = queryset.values(

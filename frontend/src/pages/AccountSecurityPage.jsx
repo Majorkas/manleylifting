@@ -226,7 +226,7 @@ export default function AccountSecurityPage() {
         </Link>
       )}
     >
-      <AccountSectionTabs />
+      <AccountSectionTabs hideShoppingTabs={Boolean(account && !account.capabilities?.canShop)} />
       {errorMessage && <div role="alert" className="mt-5 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{errorMessage}</div>}
       {!account && !errorMessage && <p className="mt-5 text-slate-600">Loading...</p>}
       {account && (

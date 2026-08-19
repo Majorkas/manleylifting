@@ -142,6 +142,7 @@ export default function ShopCollectionPage() {
                           handleQuantityChange(product.handle, quantity)
                         }
                         onAdd={(quantity) => addItem(product, quantity)}
+                        productTitle={product.title}
                         buttonLabel={stockStatus.canAdd ? 'Add to Cart' : stockStatus.label}
                       />
                     </div>

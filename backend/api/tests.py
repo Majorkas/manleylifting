@@ -107,6 +107,14 @@ class BaseApiTestCase(TestCase):
         header_value = str(response.headers.get("Content-Security-Policy-Report-Only") or "")
         self.assertIn("default-src 'self'", header_value)
 
+    def test_secure_checkout_csp_allows_stripe_and_turnstile_iframes(self):
+        response = self.client.get("/api/hello/")
+        self.assertEqual(response.status_code, 200)
+        csp_value = str(response.headers.get("Content-Security-Policy") or "")
+        self.assertIn("https://*.stripe.com", csp_value)
+        self.assertIn("https://*.cloudflare.com", csp_value)
+        self.assertIn("frame-src", csp_value)
+
     def test_validate_required_secrets_raises_when_missing_in_production(self):
         with self.assertRaisesMessage(ValueError, "Missing required environment variables: STRIPE_SECRET_KEY"):
             validate_required_secrets(
@@ -2486,22 +2494,66 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         self.assertFalse(OnsiteOrder.objects.filter(checkout_ref="tracked-oversell").exists())
         mock_intent_create.assert_not_called()
 
+    @patch("api.views.STRIPE_CLIENT")
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)
     @patch("api.views._verify_turnstile_token", return_value=True)
-    @patch("api.views.stripe.PaymentIntent.create")
-    def test_onsite_intent_success(self, mock_intent_create, _mock_turnstile, _mock_cfg, _mock_origin):
+    def test_onsite_intent_uses_stripe_v1_client(
+        self,
+        _mock_turnstile,
+        _mock_cfg,
+        _mock_origin,
+        mock_stripe_client,
+    ):
         CatalogProduct.objects.create(
             product_ref="legacy-product-id",
             variant_ref="legacy-variant-id",
             handle="chain-block",
             title="Chain Block",
             price_amount="10.00",
+            available_qty=10,
             currency_code="EUR",
             is_active=True,
         )
 
-        mock_intent_create.return_value = {
+        mock_stripe_client.v1.payment_intents.create.return_value = {
+            "id": "pi_123",
+            "client_secret": "pi_123_secret_abc",
+        }
+
+        response = self.client.post(
+            "/api/payments/onsite-intent/",
+            data=json.dumps(
+                {
+                    "checkoutRef": "onsite_v1_client_1",
+                    "customer": {"name": "Jane Doe", "email": "jane@example.com"},
+                    "items": [{"variantId": "legacy-variant-id", "quantity": 2}],
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_stripe_client.v1.payment_intents.create.assert_called_once()
+        self.assertEqual(response.json()["paymentIntentId"], "pi_123")
+
+    @patch("api.views.STRIPE_CLIENT")
+    @patch("api.views._is_allowed_checkout_origin", return_value=True)
+    @patch("api.views._stripe_config_ok", return_value=True)
+    @patch("api.views._verify_turnstile_token", return_value=True)
+    def test_onsite_intent_success(self, _mock_turnstile, _mock_cfg, _mock_origin, mock_stripe_client):
+        CatalogProduct.objects.create(
+            product_ref="legacy-product-id",
+            variant_ref="legacy-variant-id",
+            handle="chain-block",
+            title="Chain Block",
+            price_amount="10.00",
+            available_qty=10,
+            currency_code="EUR",
+            is_active=True,
+        )
+
+        mock_stripe_client.v1.payment_intents.create.return_value = {
             "id": "pi_123",
             "client_secret": "pi_123_secret_abc",
         }
@@ -2522,6 +2574,7 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         body = response.json()
         self.assertEqual(body["paymentIntentId"], "pi_123")
         self.assertEqual(body["clientSecret"], "pi_123_secret_abc")
+        mock_stripe_client.v1.payment_intents.create.assert_called_once()
 
         order = OnsiteOrder.objects.get(checkout_ref="onsite_ok_1")
         self.assertEqual(order.status, OnsiteOrder.STATUS_PENDING)
@@ -2577,26 +2630,59 @@ class OnsiteCheckoutTests(BaseApiTestCase):
 
         self.assertEqual(response.status_code, 404)
 
+    @patch("api.views.STRIPE_CLIENT")
+    @patch("api.views.STRIPE_SECRET_KEY", "sk_test")
+    def test_onsite_status_reconciles_a_succeeded_stripe_payment(self, mock_stripe_client):
+        raw_status_token = "b" * 64
+        order = OnsiteOrder.objects.create(
+            checkout_ref="reconcile-succeeded-status",
+            status_token=digest_capability_token(raw_status_token),
+            status=OnsiteOrder.STATUS_PENDING,
+            payment_intent_id="pi_reconcile_succeeded",
+            amount_total_cents=1000,
+            currency="EUR",
+        )
+        mock_stripe_client.v1.payment_intents.retrieve.return_value = {
+            "id": order.payment_intent_id,
+            "status": "succeeded",
+            "amount": 1000,
+            "currency": "eur",
+            "metadata": {"checkout_ref": order.checkout_ref},
+        }
+
+        response = self.client.post(
+            "/api/payments/onsite-status/",
+            data=json.dumps({"checkoutRef": order.checkout_ref, "statusToken": raw_status_token}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], OnsiteOrder.STATUS_PAID)
+        order.refresh_from_db()
+        self.assertEqual(order.status, OnsiteOrder.STATUS_PAID)
+        self.assertEqual(order.payment_status, OnsiteOrder.PAYMENT_STATUS_PAID)
+
+    @patch("api.views.STRIPE_CLIENT")
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)
     @patch("api.views._verify_turnstile_token", return_value=True)
-    @patch("api.views.stripe.PaymentIntent.create")
     def test_onsite_intent_retry_reuses_local_order_and_stripe_idempotency_key(
         self,
-        mock_intent_create,
         _mock_turnstile,
         _mock_cfg,
         _mock_origin,
+        mock_stripe_client,
     ):
         CatalogProduct.objects.create(
             variant_ref="retry-variant",
             handle="retry-product",
             title="Retry Product",
             price_amount="15.00",
+            available_qty=10,
             currency_code="EUR",
             is_active=True,
         )
-        mock_intent_create.return_value = {
+        mock_stripe_client.v1.payment_intents.create.return_value = {
             "id": "pi_retry",
             "client_secret": "pi_retry_secret",
         }
@@ -2626,30 +2712,31 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         self.assertEqual(OnsiteOrder.objects.filter(checkout_ref="onsite_retry_1").count(), 1)
         self.assertEqual(GuestOrderClaim.objects.filter(order__checkout_ref="onsite_retry_1").count(), 1)
         self.assertEqual(first_response.json()["paymentIntentId"], second_response.json()["paymentIntentId"])
-        self.assertEqual(mock_intent_create.call_count, 2)
-        for call in mock_intent_create.call_args_list:
+        self.assertEqual(mock_stripe_client.v1.payment_intents.create.call_count, 2)
+        for call in mock_stripe_client.v1.payment_intents.create.call_args_list:
             self.assertEqual(call.kwargs["idempotency_key"], "onsite:onsite_retry_1")
 
+    @patch("api.views.STRIPE_CLIENT")
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)
     @patch("api.views._verify_turnstile_token", return_value=True)
-    @patch("api.views.stripe.PaymentIntent.create")
     def test_onsite_intent_retry_rejects_claim_capability_rotation(
         self,
-        mock_intent_create,
         _mock_turnstile,
         _mock_cfg,
         _mock_origin,
+        mock_stripe_client,
     ):
         CatalogProduct.objects.create(
             variant_ref="claim-rotation-variant",
             handle="claim-rotation-product",
             title="Claim Rotation Product",
             price_amount="15.00",
+            available_qty=10,
             currency_code="EUR",
             is_active=True,
         )
-        mock_intent_create.return_value = {
+        mock_stripe_client.v1.payment_intents.create.return_value = {
             "id": "pi_claim_rotation",
             "client_secret": "pi_claim_rotation_secret",
         }
@@ -2678,26 +2765,27 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         claim = GuestOrderClaim.objects.get(order__checkout_ref="onsite_claim_rotation")
         self.assertEqual(claim.claim_token, digest_capability_token(payload["claimToken"]))
 
+    @patch("api.views.STRIPE_CLIENT")
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)
     @patch("api.views._verify_turnstile_token", return_value=True)
-    @patch("api.views.stripe.PaymentIntent.create")
     def test_onsite_intent_retry_rotates_status_capability_with_existing_claim(
         self,
-        mock_intent_create,
         _mock_turnstile,
         _mock_cfg,
         _mock_origin,
+        mock_stripe_client,
     ):
         CatalogProduct.objects.create(
             variant_ref="status-rotation-variant",
             handle="status-rotation-product",
             title="Status Rotation Product",
             price_amount="15.00",
+            available_qty=10,
             currency_code="EUR",
             is_active=True,
         )
-        mock_intent_create.return_value = {
+        mock_stripe_client.v1.payment_intents.create.return_value = {
             "id": "pi_status_rotation",
             "client_secret": "pi_status_rotation_secret",
         }
@@ -2748,26 +2836,27 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         self.assertEqual(old_status_response.status_code, 404)
         self.assertEqual(new_status_response.status_code, 200)
 
+    @patch("api.views.STRIPE_CLIENT")
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)
     @patch("api.views._verify_turnstile_token", return_value=True)
-    @patch("api.views.stripe.PaymentIntent.create")
     def test_onsite_intent_provider_failure_leaves_retryable_local_order(
         self,
-        mock_intent_create,
         _mock_turnstile,
         _mock_cfg,
         _mock_origin,
+        mock_stripe_client,
     ):
         CatalogProduct.objects.create(
             variant_ref="provider-retry-variant",
             handle="provider-retry-product",
             title="Provider Retry Product",
             price_amount="15.00",
+            available_qty=10,
             currency_code="EUR",
             is_active=True,
         )
-        mock_intent_create.side_effect = [
+        mock_stripe_client.v1.payment_intents.create.side_effect = [
             RuntimeError("temporary provider failure"),
             {"id": "pi_provider_retry", "client_secret": "pi_provider_retry_secret"},
         ]
@@ -2799,26 +2888,27 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         self.assertEqual(order.payment_intent_id, "pi_provider_retry")
         self.assertEqual(OnsiteOrder.objects.filter(checkout_ref="onsite_provider_retry").count(), 1)
 
+    @patch("api.views.STRIPE_CLIENT")
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)
     @patch("api.views._verify_turnstile_token", return_value=True)
-    @patch("api.views.stripe.PaymentIntent.create")
     def test_stripe_provider_error_log_excludes_sensitive_exception_text(
         self,
-        mock_intent_create,
         _mock_turnstile,
         _mock_cfg,
         _mock_origin,
+        mock_stripe_client,
     ):
         CatalogProduct.objects.create(
             variant_ref="log-scrub-variant",
             handle="log-scrub-product",
             title="Log Scrub Product",
             price_amount="15.00",
+            available_qty=10,
             currency_code="EUR",
             is_active=True,
         )
-        mock_intent_create.side_effect = RuntimeError(
+        mock_stripe_client.v1.payment_intents.create.side_effect = RuntimeError(
             "client_secret=pi_secret address=1 Main Street, Wexford"
         )
 
@@ -2843,26 +2933,27 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         self.assertNotIn("pi_secret", log_output)
         self.assertNotIn("1 Main Street", log_output)
 
+    @patch("api.views.STRIPE_CLIENT")
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)
     @patch("api.views._verify_turnstile_token", return_value=True)
-    @patch("api.views.stripe.PaymentIntent.create")
     def test_onsite_intent_rejects_conflicting_checkout_reference_before_stripe(
         self,
-        mock_intent_create,
         _mock_turnstile,
         _mock_cfg,
         _mock_origin,
+        mock_stripe_client,
     ):
         CatalogProduct.objects.create(
             variant_ref="conflict-variant",
             handle="conflict-product",
             title="Conflict Product",
             price_amount="15.00",
+            available_qty=10,
             currency_code="EUR",
             is_active=True,
         )
-        mock_intent_create.return_value = {
+        mock_stripe_client.v1.payment_intents.create.return_value = {
             "id": "pi_conflict",
             "client_secret": "pi_conflict_secret",
         }
@@ -2887,23 +2978,24 @@ class OnsiteCheckoutTests(BaseApiTestCase):
 
         self.assertEqual(first_response.status_code, 200)
         self.assertEqual(conflict_response.status_code, 409)
-        self.assertEqual(mock_intent_create.call_count, 1)
+        self.assertEqual(mock_stripe_client.v1.payment_intents.create.call_count, 1)
 
+    @patch("api.views.STRIPE_CLIENT")
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)
     @patch("api.views._verify_turnstile_token", return_value=True)
-    @patch("api.views.stripe.PaymentIntent.create")
-    def test_onsite_intent_assigns_order_number(self, mock_intent_create, _mock_turnstile, _mock_cfg, _mock_origin):
+    def test_onsite_intent_assigns_order_number(self, _mock_turnstile, _mock_cfg, _mock_origin, mock_stripe_client):
         CatalogProduct.objects.create(
             product_ref="legacy-product-id",
             variant_ref="legacy-variant-id",
             handle="chain-block",
             title="Chain Block",
             price_amount="10.00",
+            available_qty=10,
             currency_code="EUR",
             is_active=True,
         )
-        mock_intent_create.return_value = {
+        mock_stripe_client.v1.payment_intents.create.return_value = {
             "id": "pi_456",
             "client_secret": "pi_456_secret_abc",
         }
@@ -2926,16 +3018,16 @@ class OnsiteCheckoutTests(BaseApiTestCase):
         order = OnsiteOrder.objects.get(checkout_ref="onsite_order_number")
         self.assertEqual(body["orderNumber"], order.order_number)
 
+    @patch("api.views.STRIPE_CLIENT")
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)
     @patch("api.views._verify_turnstile_token", return_value=True)
-    @patch("api.views.stripe.PaymentIntent.create")
     def test_guest_checkout_returns_claim_token_and_allows_authenticated_claim(
         self,
-        mock_intent_create,
         _mock_turnstile,
         _mock_cfg,
         _mock_origin,
+        mock_stripe_client,
     ):
         CatalogProduct.objects.create(
             product_ref="legacy-product-id",
@@ -2943,10 +3035,11 @@ class OnsiteCheckoutTests(BaseApiTestCase):
             handle="chain-block",
             title="Chain Block",
             price_amount="10.00",
+            available_qty=10,
             currency_code="EUR",
             is_active=True,
         )
-        mock_intent_create.return_value = {
+        mock_stripe_client.v1.payment_intents.create.return_value = {
             "id": "pi_claim_1",
             "client_secret": "pi_claim_1_secret",
         }
@@ -3006,16 +3099,16 @@ class OnsiteCheckoutTests(BaseApiTestCase):
             ).exists()
         )
 
+    @patch("api.views.STRIPE_CLIENT")
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)
     @patch("api.views._verify_turnstile_token", return_value=True)
-    @patch("api.views.stripe.PaymentIntent.create")
     def test_onsite_intent_returns_server_confirmed_pricing_summary(
         self,
-        mock_intent_create,
         _mock_turnstile,
         _mock_cfg,
         _mock_origin,
+        mock_stripe_client,
     ):
         CatalogProduct.objects.create(
             product_ref="legacy-product-id",
@@ -3023,6 +3116,7 @@ class OnsiteCheckoutTests(BaseApiTestCase):
             handle="chain-block",
             title="Chain Block",
             price_amount="10.00",
+            available_qty=10,
             currency_code="EUR",
             is_active=True,
         )
@@ -3032,11 +3126,12 @@ class OnsiteCheckoutTests(BaseApiTestCase):
             handle="rope-sling",
             title="Rope Sling",
             price_amount="2.50",
+            available_qty=10,
             currency_code="EUR",
             is_active=True,
         )
 
-        mock_intent_create.return_value = {
+        mock_stripe_client.v1.payment_intents.create.return_value = {
             "id": "pi_123",
             "client_secret": "pi_123_secret_abc",
         }
@@ -3170,16 +3265,16 @@ class AccountOrderAndAddressTests(BaseApiTestCase):
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 
+    @patch("api.views.STRIPE_CLIENT")
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)
     @patch("api.views._verify_turnstile_token", return_value=True)
-    @patch("api.views.stripe.PaymentIntent.create")
     def test_authenticated_checkout_associates_order_and_snapshots_address(
         self,
-        mock_intent_create,
         _mock_turnstile,
         _mock_cfg,
         _mock_origin,
+        mock_stripe_client,
     ):
         CatalogProduct.objects.create(
             product_ref="legacy-product-id",
@@ -3187,10 +3282,11 @@ class AccountOrderAndAddressTests(BaseApiTestCase):
             handle="chain-block",
             title="Chain Block",
             price_amount="10.00",
+            available_qty=10,
             currency_code="EUR",
             is_active=True,
         )
-        mock_intent_create.return_value = {
+        mock_stripe_client.v1.payment_intents.create.return_value = {
             "id": "pi_auth1",
             "client_secret": "pi_auth1_secret",
         }
@@ -3412,6 +3508,38 @@ class AccountOrderAndAddressTests(BaseApiTestCase):
         self.assertEqual(response.json()["orderNumber"], "MNL-260805-OWNED")
 
         other_response = self.client.get("/api/account/orders/by-number/MNL-260805-OTHER/")
+        self.assertEqual(other_response.status_code, 404)
+
+    def test_account_order_invoice_pdf_requires_ownership(self):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="owned_invoice_order",
+            status_token="tok_owned_invoice",
+            status=OnsiteOrder.STATUS_PAID,
+            payment_status=OnsiteOrder.PAYMENT_STATUS_PAID,
+            amount_total_cents=2299,
+            subtotal_cents=1000,
+            shipping_cents=1299,
+            tax_cents=0,
+            currency="EUR",
+            customer_name="Jane Doe",
+            customer_email="jane@example.com",
+            user=self.user,
+            order_number="MNL-260805-INVOICE",
+            line_items=[{
+                "title": "Chain Block",
+                "quantity": 1,
+                "lineTotalCents": 1000,
+            }],
+        )
+
+        response = self.client.get(f"/api/account/orders/by-number/{order.order_number}/invoice/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertIn(order.order_number, response["Content-Disposition"])
+        self.assertTrue(response.content.startswith(b"%PDF"))
+
+        other_response = self.client.get("/api/account/orders/by-number/MNL-260805-OTHER/invoice/")
         self.assertEqual(other_response.status_code, 404)
 
     def test_account_export_returns_minimized_data_for_verified_user_and_rejects_unverified_accounts(self):
@@ -6180,6 +6308,22 @@ class PortalRBACTests(TestCase):
             {OnsiteOrder.STATUS_PENDING, OnsiteOrder.STATUS_FAILED},
         )
 
+    def test_portal_orders_allows_owner_to_view_pending_order_details(self):
+        order = OnsiteOrder.objects.create(
+            checkout_ref="fulfill-pending-detail",
+            status=OnsiteOrder.STATUS_PENDING,
+            customer_name="Pending Detail",
+            customer_email="pending@example.com",
+            line_items=[{"sku": "P", "qty": 1}],
+        )
+
+        self.client.force_authenticate(user=self.owner_user)
+        response = self.client.get(f"/api/portal/orders/{order.order_number}/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["orderNumber"], order.order_number)
+        self.assertEqual(response.json()["status"], OnsiteOrder.STATUS_PENDING)
+
 
 class M2StatusSplitTests(BaseApiTestCase):
     def test_legacy_status_maps_to_payment_status(self):
@@ -6790,6 +6934,7 @@ class M2DomainCompletionTests(BaseApiTestCase):
             handle="m2-checkout-snapshot-product",
             title="Checkout Snapshot Product",
             price_amount=10,
+            available_qty=1,
             weight_grams=800,
             shipping_class="heavy",
             tax_code="REDUCED",
@@ -6836,6 +6981,16 @@ class M2DomainCompletionTests(BaseApiTestCase):
         )
         self.assertEqual(product.stock_policy, CatalogProduct.STOCK_POLICY_FINITE)
         self.assertEqual(product.weight_grams, 1000)
+
+    def test_new_catalog_products_default_to_finite_inventory(self):
+        product = CatalogProduct.objects.create(
+            variant_ref="finite-default-variant",
+            handle="finite-default-product",
+            title="Finite Default Product",
+        )
+
+        self.assertEqual(product.stock_policy, CatalogProduct.STOCK_POLICY_FINITE)
+        self.assertTrue(product.inventory_tracked)
 
     def test_product_stock_policy_rejects_invalid_value(self):
         product = CatalogProduct(
@@ -7045,26 +7200,27 @@ class M5PricingTests(BaseApiTestCase):
         with self.assertRaises(UnsupportedDestinationError):
             calculate_checkout_totals(self.line_items, country_code="FR", postcode="75001")
 
+    @patch("api.views.STRIPE_CLIENT")
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)
     @patch("api.views._verify_turnstile_token", return_value=True)
-    @patch("api.views.stripe.PaymentIntent.create")
     def test_checkout_persists_server_shipping_total(
         self,
-        mock_intent_create,
         _mock_turnstile,
         _mock_config,
         _mock_origin,
+        mock_stripe_client,
     ):
         CatalogProduct.objects.create(
             variant_ref="m5-shipping-variant",
             handle="m5-shipping-product",
             title="Shipping Product",
             price_amount="10.00",
+            available_qty=10,
             currency_code="EUR",
             is_active=True,
         )
-        mock_intent_create.return_value = {"id": "pi_m5_shipping", "client_secret": "secret"}
+        mock_stripe_client.v1.payment_intents.create.return_value = {"id": "pi_m5_shipping", "client_secret": "secret"}
         response = self.client.post(
             "/api/payments/onsite-intent/",
             data=json.dumps({
@@ -7080,7 +7236,7 @@ class M5PricingTests(BaseApiTestCase):
         self.assertEqual(order.subtotal_cents, 1000)
         self.assertEqual(order.shipping_cents, 1299)
         self.assertEqual(order.amount_total_cents, 2299)
-        self.assertEqual(mock_intent_create.call_args.kwargs["amount"], 2299)
+        self.assertEqual(mock_stripe_client.v1.payment_intents.create.call_args.kwargs["amount"], 2299)
 
     @patch("api.views._is_allowed_checkout_origin", return_value=True)
     @patch("api.views._stripe_config_ok", return_value=True)

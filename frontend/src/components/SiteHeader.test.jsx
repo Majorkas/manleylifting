@@ -31,6 +31,21 @@ function renderHeader() {
   )
 }
 
+function renderPortalStyledHeader() {
+  return render(
+    <MemoryRouter>
+      <SiteHeader
+        navbarLogo="/logo-navbar.png"
+        variant="shop"
+        isMobileMenuOpen={false}
+        onToggleMobileMenu={() => {}}
+        onCloseMobileMenu={() => {}}
+        navItems={[{ label: 'Portal', to: '/portal' }]}
+      />
+    </MemoryRouter>,
+  )
+}
+
 describe('SiteHeader account navigation', () => {
   afterEach(() => {
     window.localStorage.removeItem(sessionStorageKey)
@@ -86,5 +101,10 @@ describe('SiteHeader account navigation', () => {
 
     expect(prefetchRoute).toHaveBeenCalledWith('/shop')
     expect(prefetchRoute).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not render store search on portal-styled headers without a cart action', () => {
+    renderPortalStyledHeader()
+    expect(screen.queryByRole('button', { name: /search products/i })).not.toBeInTheDocument()
   })
 })

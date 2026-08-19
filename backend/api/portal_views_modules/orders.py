@@ -16,7 +16,18 @@ from ..permissions import HasPortalAccess
 from ..portal_views import _get_pagination_params, _paginate_queryset, _profile_for_user
 from ..throttles import PortalMethodRateThrottle
 
-stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "").strip()
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
+STRIPE_CLIENT = stripe.StripeClient(api_key=STRIPE_SECRET_KEY) if STRIPE_SECRET_KEY else None
+
+
+def _get_stripe_client():
+    if STRIPE_CLIENT is not None:
+        return STRIPE_CLIENT
+    if STRIPE_SECRET_KEY:
+        return stripe.StripeClient(api_key=STRIPE_SECRET_KEY)
+    return None
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -187,15 +198,15 @@ def portal_orders(request, order_number=None):
         return Response({"detail": "You do not have permission to view fulfillment orders."}, status=status.HTTP_403_FORBIDDEN)
 
     if order_number is not None:
-        order = OnsiteOrder.objects.filter(
-            order_number=order_number,
-            status__in=PAID_CONFIRMED_STATUSES,
-        ).first()
+        order = OnsiteOrder.objects.filter(order_number=order_number).first()
         if order is None:
             return Response({"detail": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
 
         if request.method == "GET":
             return Response(_serialize_order_detail(order))
+
+        if order.status not in PAID_CONFIRMED_STATUSES:
+            return Response({"detail": "This order is not ready for fulfillment."}, status=status.HTTP_400_BAD_REQUEST)
 
         if not _can_update_fulfillment_order(request.user):
             return Response({"detail": "You do not have permission to update fulfillment orders."}, status=status.HTTP_403_FORBIDDEN)
@@ -237,10 +248,14 @@ def portal_orders(request, order_number=None):
             reason = str(request.data.get("reason") or "").strip()
             if not reason:
                 return Response({"detail": "A refund reason is required."}, status=400)
-            if not stripe.api_key or not order.payment_intent_id:
+            client = _get_stripe_client()
+            if not client or not order.payment_intent_id:
                 return Response({"detail": "This order is not refundable yet."}, status=400)
             try:
-                refund = stripe.Refund.create(payment_intent=order.payment_intent_id, amount=refund_cents, metadata={"order_number": order.order_number})
+                if hasattr(client, "v1") and hasattr(client.v1, "refunds"):
+                    refund = client.v1.refunds.create(payment_intent=order.payment_intent_id, amount=refund_cents, metadata={"order_number": order.order_number})
+                else:
+                    refund = stripe.Refund.create(payment_intent=order.payment_intent_id, amount=refund_cents, metadata={"order_number": order.order_number})
             except Exception:
                 logger.exception("Stripe refund failed for order %s", order.order_number)
                 return Response({"detail": "Refund could not be started."}, status=502)

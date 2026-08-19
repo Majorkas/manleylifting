@@ -87,19 +87,20 @@ export default function ShopProductPage() {
 
                 <div className="mt-8 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
                   <StockStatusBadge status={stockStatus} />
-                  <p className="mt-3 text-sm text-slate-600">
-                    {stockStatus.canAdd
-                      ? product.inventoryTracked
+                  {stockStatus.canAdd && (
+                    <p className="mt-3 text-sm text-slate-600">
+                      {product.inventoryTracked
                         ? `Choose up to ${Math.max(1, product.availableQty)} units.`
-                        : 'Quantity is confirmed when your order is prepared.'
-                      : 'This item cannot be added to the cart right now.'}
-                  </p>
+                        : 'Quantity is confirmed when your order is prepared.'}
+                    </p>
+                  )}
                   <QuantityAddToCart
                     unitPrice={basePrice}
                     max={product.inventoryTracked ? Math.max(1, product.availableQty) : 99}
                     disabled={!stockStatus.canAdd}
                     onQuantityChange={setQuantity}
                     onAdd={(selectedQuantity) => addItem(product, selectedQuantity)}
+                    productTitle={product.title}
                     buttonLabel={stockStatus.canAdd ? 'Add to Cart' : stockStatus.label}
                   />
                 </div>

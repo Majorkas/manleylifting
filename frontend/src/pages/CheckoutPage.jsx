@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
 import { Elements, PaymentElement, useElements, useStripe } from '@stripe/react-stripe-js'
 import { loadStripe } from '@stripe/stripe-js'
 import { Link, useNavigate } from 'react-router-dom'
@@ -21,7 +20,6 @@ import {
   shopRoutes,
 } from '../utils/shopConfig'
 import usePageMeta from '../utils/usePageMeta'
-import { invalidateCheckoutQueries } from '../queryInvalidation'
 import { useAccountAddressesQuery } from '../hooks/useAccountQueries'
 
 const turnstileSiteKey = String(import.meta.env.VITE_TURNSTILE_SITE_KEY || '').trim()
@@ -68,7 +66,14 @@ function OnsitePaymentForm({
 
   return (
     <form className="mt-4 space-y-3" onSubmit={handleSubmit}>
-      <PaymentElement onReady={onPaymentElementReady} />
+      <PaymentElement
+        options={{
+          layout: {
+            type: 'tabs',
+          },
+        }}
+        onReady={onPaymentElementReady}
+      />
       <button
         type="submit"
         disabled={!stripe || !elements || !isPaymentElementReady || isSubmitting}
@@ -140,7 +145,6 @@ export default function CheckoutPage() {
   })
 
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const { cartItems, cartCount, subtotal, clearCart } = useCart()
   const [errorMessage, setErrorMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -599,13 +603,7 @@ export default function CheckoutPage() {
   function handlePaymentSubmitted(paymentIntent) {
     const status = String(paymentIntent?.status || '').toLowerCase()
     if (status === 'succeeded') {
-      void invalidateCheckoutQueries(queryClient, checkoutRef)
-      if (checkoutRef && statusToken) {
-        saveCompletedCheckout(checkoutRef, statusToken)
-      }
-      clearCart()
-      clearPendingCheckout()
-      setStatusMessage('Payment confirmed. Thank you for your order.')
+      setStatusMessage('Payment received. Opening your order...')
       setIsSubmitting(false)
       navigate(shopRoutes.orderConfirmed)
       return
@@ -668,6 +666,21 @@ export default function CheckoutPage() {
         )}
 
         <div className="grid gap-10 lg:grid-cols-[1.25fr_0.75fr]">
+          {cartItems.length === 0 ? (
+            <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm lg:col-span-2">
+              <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">Nothing to pay for yet</p>
+              <h2 className="mt-2 text-2xl font-bold text-[#123A7A]">Your cart is empty</h2>
+              <p className="mt-3 max-w-xl text-slate-600">
+                Add an item from the shop before continuing to checkout. Your order total and secure payment form will appear here once you are ready.
+              </p>
+              <Link
+                to={shopRoutes.home}
+                className="mt-6 inline-flex rounded-md bg-[#123A7A] px-5 py-3 text-sm font-bold uppercase tracking-wide text-white transition hover:bg-[#0f3168]"
+              >
+                Browse products
+              </Link>
+            </section>
+          ) : (
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-xl font-bold text-[#123A7A]">Customer Details</h2>
 
@@ -898,15 +911,20 @@ export default function CheckoutPage() {
                           />
                         </label>
                         <label htmlFor="checkout-address-country-code" className="text-sm font-medium text-slate-700">
-                          <span className="mb-1 block">Country code</span>
-                          <input
+                          <span className="mb-1 block">Country</span>
+                          <select
                             id="checkout-address-country-code"
-                            type="text"
                             value={addressCountryCode}
                             onChange={(event) => setAddressCountryCode(event.target.value)}
-                            className="w-full rounded-md border border-slate-300 px-3 py-2"
-                            placeholder="IE"
-                          />
+                            className="w-full rounded-md border border-slate-300 bg-white px-3 py-2"
+                          >
+                            <option value="IE">Ireland</option>
+                            <option value="GB">United Kingdom</option>
+                            <option value="FR">France</option>
+                            <option value="DE">Germany</option>
+                            <option value="NL">Netherlands</option>
+                            <option value="BE">Belgium</option>
+                          </select>
                         </label>
                       </div>
 
@@ -957,6 +975,7 @@ export default function CheckoutPage() {
               </form>
             )}
           </section>
+          )}
 
           <aside className="rounded-2xl border border-slate-200 bg-[#f8fafc] p-6 shadow-sm">
             <h2 className="text-xl font-bold text-[#123A7A]">Order Summary</h2>
@@ -993,12 +1012,22 @@ export default function CheckoutPage() {
               </div>
             </div>
 
-            <div className="mt-6 border-t border-slate-200 pt-6">
+              {cartItems.length > 0 && (
+              <div className="mt-6 border-t border-slate-200 pt-6">
               <div className="flex items-center justify-between">
                 <span className="text-base font-bold text-[#123A7A]">{displayedTotalLabel}</span>
                 <span className="text-xl font-extrabold text-[#C61F2A]">
                   {formatCurrency(displayedTotal, checkoutCurrency)}
                 </span>
+              </div>
+
+              <div className="mt-4 grid gap-2 text-xs text-slate-600 sm:grid-cols-2">
+                <Link to="/shipping-and-delivery" className="rounded-md border border-slate-200 bg-white px-3 py-2 transition hover:border-[#123A7A] hover:text-[#123A7A]">
+                  Delivery information
+                </Link>
+                <Link to="/returns-and-refunds" className="rounded-md border border-slate-200 bg-white px-3 py-2 transition hover:border-[#123A7A] hover:text-[#123A7A]">
+                  Returns and refunds
+                </Link>
               </div>
 
               {priceRefreshNotice && (
@@ -1073,28 +1102,34 @@ export default function CheckoutPage() {
                 )}
 
                 {clientSecret && stripePromise && (
-                  <Elements stripe={stripePromise} options={{ clientSecret }}>
-                    {!isPaymentElementReady && (
-                      <p className="text-xs text-slate-500">Loading secure payment options...</p>
-                    )}
-                    {paymentElementLoadIssue && (
-                      <p className="text-xs text-red-700">{paymentElementLoadIssue}</p>
-                    )}
-                    <OnsitePaymentForm
-                      amountTotalCents={amountTotalCents}
-                      currency={checkoutCurrency}
-                      email={customerEmail}
-                      isPaymentElementReady={isPaymentElementReady}
-                      isSubmitting={isSubmitting}
-                      setIsSubmitting={setIsSubmitting}
-                      setErrorMessage={setErrorMessage}
-                      onPaymentElementReady={() => {
-                        setIsPaymentElementReady(true)
-                        setPaymentElementLoadIssue('')
-                      }}
-                      onPaymentSubmitted={handlePaymentSubmitted}
-                    />
-                  </Elements>
+                  <div
+                    data-testid="checkout-payment-shell"
+                    className="relative z-10 pointer-events-auto"
+                    style={{ pointerEvents: 'auto' }}
+                  >
+                    <Elements stripe={stripePromise} options={{ clientSecret }}>
+                      {!isPaymentElementReady && (
+                        <p className="text-xs text-slate-500">Loading secure payment options...</p>
+                      )}
+                      {paymentElementLoadIssue && (
+                        <p className="text-xs text-red-700">{paymentElementLoadIssue}</p>
+                      )}
+                      <OnsitePaymentForm
+                        amountTotalCents={amountTotalCents}
+                        currency={checkoutCurrency}
+                        email={customerEmail}
+                        isPaymentElementReady={isPaymentElementReady}
+                        isSubmitting={isSubmitting}
+                        setIsSubmitting={setIsSubmitting}
+                        setErrorMessage={setErrorMessage}
+                        onPaymentElementReady={() => {
+                          setIsPaymentElementReady(true)
+                          setPaymentElementLoadIssue('')
+                        }}
+                        onPaymentSubmitted={handlePaymentSubmitted}
+                      />
+                    </Elements>
+                  </div>
                 )}
 
                 </section>
@@ -1106,7 +1141,8 @@ export default function CheckoutPage() {
                   Back to Cart
                 </Link>
               </div>
-            </div>
+              </div>
+              )}
           </aside>
         </div>
       </main>

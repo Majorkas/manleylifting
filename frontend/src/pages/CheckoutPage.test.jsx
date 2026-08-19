@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import CheckoutPage from './CheckoutPage'
 import { QueryProvider } from '../test/testQueryClient'
@@ -8,18 +8,25 @@ import { createTestQueryClient } from '../test/createTestQueryClient'
 import { createOnsitePaymentIntent, getOnsiteCheckoutStatus, loadPendingCheckout } from '../utils/shopConfig'
 import { getAccessToken, getAccountAddresses, getAccountBootstrap, registerCommerceAccount } from '../utils/portalApi'
 
+const mockUseCart = vi.hoisted(() => vi.fn())
+const mockPaymentElement = vi.hoisted(() => vi.fn())
+const mockUseStripe = vi.hoisted(() => vi.fn())
+const mockUseElements = vi.hoisted(() => vi.fn())
+
 vi.mock('../components/ShopPageLayout', () => ({
   default: ({ children }) => <div>{children}</div>,
 }))
 
 vi.mock('../context/CartContext', () => ({
-  useCart: () => ({
+  useCart: () => mockUseCart(),
+}))
+
+const defaultCart = {
     cartItems: [{ handle: 'chain-block', title: 'Chain Block', quantity: 1, price: 10, currency: 'EUR' }],
     cartCount: 1,
     subtotal: 10,
     clearCart: vi.fn(),
-  }),
-}))
+}
 
 vi.mock('../utils/portalApi', () => ({
   createAccountAddress: vi.fn(),
@@ -46,9 +53,12 @@ vi.mock('../utils/shopConfig', async () => {
 
 vi.mock('@stripe/react-stripe-js', () => ({
   Elements: ({ children }) => <div>{children}</div>,
-  PaymentElement: () => null,
-  useStripe: () => null,
-  useElements: () => null,
+  PaymentElement: (props) => {
+    mockPaymentElement(props)
+    return <button type="button" onClick={props.onReady}>Mark payment element ready</button>
+  },
+  useStripe: () => mockUseStripe(),
+  useElements: () => mockUseElements(),
 }))
 
 vi.mock('@stripe/stripe-js', () => ({
@@ -71,6 +81,9 @@ describe('checkout saved-address flow', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.useRealTimers()
+    mockUseStripe.mockReturnValue(null)
+    mockUseElements.mockReturnValue(null)
+    mockUseCart.mockReturnValue(defaultCart)
     getAccountBootstrap.mockRejectedValue(new Error('not signed in'))
     getAccessToken.mockReturnValue('')
     getAccountAddresses.mockResolvedValue([
@@ -98,6 +111,26 @@ describe('checkout saved-address flow', () => {
       amountTotalCents: 1000,
       currency: 'EUR',
     }))
+  })
+
+  it('guides an empty cart back to the shop without showing payment setup', async () => {
+    mockUseCart.mockReturnValue({
+      cartItems: [],
+      cartCount: 0,
+      subtotal: 0,
+      clearCart: vi.fn(),
+    })
+
+    renderWithQuery(
+      <MemoryRouter>
+        <CheckoutPage />
+      </MemoryRouter>,
+    )
+
+    expect((await screen.findAllByText(/your cart is empty/i)).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByRole('link', { name: /browse products/i })).toHaveAttribute('href', '/shop')
+    expect(screen.queryByRole('heading', { name: /customer details/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /continue to payment/i })).not.toBeInTheDocument()
   })
 
   it('sends the selected saved address as shipping details during payment preparation', async () => {
@@ -230,6 +263,62 @@ describe('checkout saved-address flow', () => {
     expect(screen.getByText(/We refreshed your order with the latest pricing and stock availability/i)).toBeInTheDocument()
     expect(screen.getAllByText(/Chain Block/i).length).toBeGreaterThan(0)
     expect(screen.getByText('€12.50')).toBeInTheDocument()
+  })
+
+  it('renders the secure payment shell in an interaction-safe layer and opens the first payment method', async () => {
+    const user = userEvent.setup()
+
+    renderWithQuery(
+      <MemoryRouter>
+        <CheckoutPage />
+      </MemoryRouter>,
+    )
+
+    await user.click(await screen.findByRole('button', { name: /Continue as guest/i }))
+    await user.type(screen.getByLabelText(/Full Name/i), 'Guest User')
+    await user.type(screen.getByLabelText(/Email/i), 'guest@example.com')
+    await user.click(screen.getByRole('button', { name: /Continue to payment/i }))
+
+    await waitFor(() => expect(mockPaymentElement).toHaveBeenCalled())
+    const paymentShell = screen.getByTestId('checkout-payment-shell')
+    expect(paymentShell).toHaveClass('pointer-events-auto')
+    expect(paymentShell).toHaveClass('relative')
+    expect(mockPaymentElement).toHaveBeenCalledWith(expect.objectContaining({
+      options: expect.objectContaining({
+        layout: expect.objectContaining({
+          type: 'tabs',
+        }),
+      }),
+    }))
+  })
+
+  it('redirects to the pending order page after Stripe accepts the payment', async () => {
+    const user = userEvent.setup()
+    const confirmPayment = vi.fn().mockResolvedValue({ paymentIntent: { status: 'succeeded' } })
+    const clearCart = vi.fn()
+    mockUseStripe.mockReturnValue({ confirmPayment })
+    mockUseElements.mockReturnValue({})
+    mockUseCart.mockReturnValue({ ...defaultCart, clearCart })
+    function CurrentPath() {
+      return <output data-testid="current-path">{useLocation().pathname}</output>
+    }
+
+    renderWithQuery(
+      <MemoryRouter initialEntries={['/checkout']}>
+        <CheckoutPage />
+        <CurrentPath />
+      </MemoryRouter>,
+    )
+
+    await user.click(await screen.findByRole('button', { name: /Continue as guest/i }))
+    await user.type(screen.getByLabelText(/Full Name/i), 'Guest User')
+    await user.type(screen.getByLabelText(/Email/i), 'guest@example.com')
+    await user.click(screen.getByRole('button', { name: /Continue to payment/i }))
+    await user.click(await screen.findByRole('button', { name: /Mark payment element ready/i }))
+    await user.click(screen.getByRole('button', { name: /Pay €10.00/i }))
+
+    await waitFor(() => expect(screen.getByTestId('current-path')).toHaveTextContent('/order-confirmed'))
+    expect(clearCart).not.toHaveBeenCalled()
   })
 
   it('shows a sign-in prompt for guests and lets them continue as guests', async () => {

@@ -41,9 +41,15 @@ STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "").strip()
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
 STRIPE_CURRENCY = os.getenv("STRIPE_CURRENCY", "eur").strip().lower() or "eur"
 logger = logging.getLogger(__name__)
+STRIPE_CLIENT = stripe.StripeClient(api_key=STRIPE_SECRET_KEY) if STRIPE_SECRET_KEY else None
 
-if STRIPE_SECRET_KEY:
-  stripe.api_key = STRIPE_SECRET_KEY
+
+def _get_stripe_client():
+  if STRIPE_CLIENT is not None:
+    return STRIPE_CLIENT
+  if STRIPE_SECRET_KEY:
+    return stripe.StripeClient(api_key=STRIPE_SECRET_KEY)
+  return None
 
 
 def _env_int(name, default):
@@ -554,8 +560,8 @@ def _map_catalog_product(product):
     "currency": str(product.currency_code or "EUR"),
     "collectionHandle": str(getattr(collection, "handle", "") or ""),
     "collectionTitle": str(getattr(collection, "title", "") or ""),
-    "stockPolicy": str(product.stock_policy or "untracked"),
-    "inventoryTracked": bool(product.inventory_tracked),
+    "stockPolicy": CatalogProduct.STOCK_POLICY_FINITE,
+    "inventoryTracked": True,
     "availableQty": max(0, int(product.available_qty or 0) - int(product.reserved_qty or 0)),
   }
 
@@ -588,12 +594,13 @@ def shop_collections(request):
       scope="shop-read",
     )
 
-  collections = CatalogCollection.objects.filter(is_active=True)[:24]
+  collections = CatalogCollection.objects.filter(is_active=True).prefetch_related("products")[:24]
   normalized = [
     {
       "handle": item.handle or "",
       "title": item.title or "",
       "description": item.description or "",
+      "productCount": sum(1 for product in item.products.all() if product.is_active),
     }
     for item in collections
   ]
@@ -930,17 +937,30 @@ def onsite_checkout_intent(request):
         ]
       )
 
+  client = _get_stripe_client()
   try:
-    intent = stripe.PaymentIntent.create(
-      amount=amount_total,
-      currency=currency,
-      automatic_payment_methods={"enabled": True},
-      idempotency_key=f"onsite:{checkout_ref}",
-      receipt_email=customer_email,
-      metadata={
-        "checkout_ref": checkout_ref,
-      },
-    )
+    if client is not None and hasattr(client, "v1") and hasattr(client.v1, "payment_intents"):
+      intent = client.v1.payment_intents.create(
+        amount=amount_total,
+        currency=currency,
+        automatic_payment_methods={"enabled": True},
+        idempotency_key=f"onsite:{checkout_ref}",
+        receipt_email=customer_email,
+        metadata={
+          "checkout_ref": checkout_ref,
+        },
+      )
+    else:
+      intent = stripe.PaymentIntent.create(
+        amount=amount_total,
+        currency=currency,
+        automatic_payment_methods={"enabled": True},
+        idempotency_key=f"onsite:{checkout_ref}",
+        receipt_email=customer_email,
+        metadata={
+          "checkout_ref": checkout_ref,
+        },
+      )
   except Exception as error:
     logger.error(
       "Failed to create Stripe PaymentIntent provider_error_type=%s",
@@ -1015,6 +1035,32 @@ def onsite_checkout_status(request):
     order.status_token_expires_at and order.status_token_expires_at <= timezone.now()
   ) or order.status_token_revoked_at:
     return _client_error("Checkout not found", status=404)
+
+  if (
+    order.status in {OnsiteOrder.STATUS_PENDING, OnsiteOrder.STATUS_PROCESSING}
+    and order.payment_intent_id
+    and _stripe_config_ok()
+  ):
+    try:
+      client = _get_stripe_client()
+      if client is not None and hasattr(client, "v1") and hasattr(client.v1, "payment_intents"):
+        payment_intent = client.v1.payment_intents.retrieve(order.payment_intent_id)
+      else:
+        payment_intent = stripe.PaymentIntent.retrieve(order.payment_intent_id)
+      provider_status = str(_stripe_field(payment_intent, "status", "") or "").strip().lower()
+      status_map = {
+        "succeeded": OnsiteOrder.STATUS_PAID,
+        "canceled": OnsiteOrder.STATUS_CANCELED,
+        "requires_payment_method": OnsiteOrder.STATUS_FAILED,
+        "requires_action": OnsiteOrder.STATUS_FAILED,
+      }
+      next_status = status_map.get(provider_status)
+      if next_status:
+        with transaction.atomic():
+          _set_onsite_order_from_payment_intent(payment_intent, next_status)
+        order.refresh_from_db()
+    except Exception:
+      logger.warning("Stripe status reconciliation failed for order %s", order.order_number)
 
   return JsonResponse(
     {

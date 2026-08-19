@@ -34,8 +34,8 @@ def _serialize_product(product):
         "sortOrder": product.sort_order,
         "isActive": product.is_active,
         "sku": product.sku,
-        "stockPolicy": product.stock_policy,
-        "inventoryTracked": product.inventory_tracked,
+        "stockPolicy": CatalogProduct.STOCK_POLICY_FINITE,
+        "inventoryTracked": True,
         "weightGrams": product.weight_grams,
         "shippingClass": product.shipping_class,
         "taxCode": product.tax_code,
@@ -88,6 +88,8 @@ def _apply_product(product, data, create=False):
         if target == "sort_order": value = max(0, int(value or 0))
         if target in {"weight_grams"} and value is not None: value = int(value)
         setattr(product, target, value)
+    product.stock_policy = CatalogProduct.STOCK_POLICY_FINITE
+    product.inventory_tracked = True
     if create or "priceAmount" in data:
         product.price_amount = Decimal(str(data.get("priceAmount", product.price_amount)))
     if create or "collectionId" in data:

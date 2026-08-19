@@ -7,11 +7,15 @@ const tabClassName = ({ isActive }) => [
     : 'border-slate-200 bg-white text-slate-700 hover:border-[#123A7A] hover:text-[#123A7A]',
 ].join(' ')
 
-export default function AccountSectionTabs() {
+export default function AccountSectionTabs({ hideShoppingTabs = false }) {
   return (
     <nav aria-label="Account sections" className="mb-6 flex flex-wrap gap-2">
-      <NavLink className={tabClassName} to="/account/orders">Orders</NavLink>
-      <NavLink className={tabClassName} to="/account/addresses">Addresses</NavLink>
+      {!hideShoppingTabs && (
+        <>
+          <NavLink className={tabClassName} to="/account/orders">Orders</NavLink>
+          <NavLink className={tabClassName} to="/account/addresses">Addresses</NavLink>
+        </>
+      )}
       <NavLink className={tabClassName} to="/account/security">Security</NavLink>
     </nav>
   )

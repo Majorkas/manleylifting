@@ -3,6 +3,7 @@ import { User } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { hasPortalSession, SESSION_CHANGED_EVENT } from '../utils/portalApi'
 import { prefetchRoute } from '../utils/routePreloads'
+import ShopSearchPopover from './ShopSearchPopover'
 
 export default function SiteHeader({
   navbarLogo,
@@ -43,6 +44,7 @@ export default function SiteHeader({
       ]
 
   const isShopHeader = variant === 'shop'
+  const showShopSearch = isShopHeader && typeof onCartClick === 'function'
   const headerClassName = isShopHeader
     ? 'site-header site-header--shop'
     : `site-header ${
@@ -107,6 +109,8 @@ export default function SiteHeader({
                 </Link>
               )}
             </nav>
+
+            {showShopSearch && <ShopSearchPopover />}
 
             {showCartButton && (
               <button

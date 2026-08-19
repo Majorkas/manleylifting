@@ -1,14 +1,19 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { registerCommerceAccount } from '../utils/portalApi'
+import { getAccountBootstrap, registerCommerceAccount } from '../utils/portalApi'
 import ShopPageLayout from '../components/ShopPageLayout'
+import { useCart } from '../context/CartContext'
 import {
   clearCompletedCheckout,
   clearGuestCheckoutOffer,
+  clearPendingCheckout,
   formatCurrency,
+  getOnsiteCheckoutStatus,
   getOnsiteOrderSummary,
   loadCompletedCheckout,
   loadGuestCheckoutOffer,
+  loadPendingCheckout,
+  saveCompletedCheckout,
   shopRoutes,
 } from '../utils/shopConfig'
 import usePageMeta from '../utils/usePageMeta'
@@ -20,6 +25,7 @@ export default function OrderConfirmedPage() {
     noIndex: true,
   })
 
+  const { clearCart } = useCart()
   const [isLoading, setIsLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
   const [order, setOrder] = useState(null)
@@ -29,6 +35,7 @@ export default function OrderConfirmedPage() {
   const [guestPassword, setGuestPassword] = useState('')
   const [guestConfirmPassword, setGuestConfirmPassword] = useState('')
   const [confirmationAttempt, setConfirmationAttempt] = useState(0)
+  const [orderNumberCopied, setOrderNumberCopied] = useState(false)
   const paymentStatus = order?.paymentStatus || 'pending'
   const paymentVerified = paymentStatus === 'paid' || paymentStatus === 'partially_refunded' || paymentStatus === 'refunded'
   const paymentFailed = paymentStatus === 'failed' || paymentStatus === 'canceled'
@@ -36,20 +43,89 @@ export default function OrderConfirmedPage() {
   useEffect(() => {
     let cancelled = false
 
-    setGuestOffer(loadGuestCheckoutOffer())
+    async function resolveGuestOffer() {
+      try {
+        await getAccountBootstrap()
+        if (cancelled) return
+        clearGuestCheckoutOffer()
+        setGuestOffer(null)
+      } catch {
+        if (!cancelled) setGuestOffer(loadGuestCheckoutOffer())
+      }
+    }
+
+    void resolveGuestOffer()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    let retryTimeoutId = null
+
+    function isFinalPaymentStatus(value) {
+      return ['paid', 'partially_refunded', 'refunded', 'failed', 'canceled'].includes(String(value || '').toLowerCase())
+    }
+
+    function applySummary(nextSummary) {
+      setOrder((currentSummary) => {
+        const currentIsFinal = isFinalPaymentStatus(currentSummary?.paymentStatus)
+        const nextIsFinal = isFinalPaymentStatus(nextSummary?.paymentStatus)
+        return currentIsFinal && !nextIsFinal ? currentSummary : nextSummary
+      })
+    }
 
     async function loadOrder() {
       const completed = loadCompletedCheckout()
-      if (!completed?.checkoutRef || !completed?.statusToken) {
+      const pending = completed ? null : loadPendingCheckout()
+      const checkout = completed || pending
+      if (!checkout?.checkoutRef || !checkout?.statusToken) {
         setErrorMessage('We could not find a recent completed order. Please contact support if you were charged.')
         setIsLoading(false)
         return
       }
 
       try {
-        const summary = await getOnsiteOrderSummary(completed.checkoutRef, completed.statusToken)
+        const summary = await getOnsiteOrderSummary(checkout.checkoutRef, checkout.statusToken)
         if (cancelled) return
-        setOrder(summary)
+        applySummary(summary)
+
+        const paymentStatus = String(summary.paymentStatus || '').toLowerCase()
+        const paymentIsFinal = ['paid', 'partially_refunded', 'refunded', 'failed', 'canceled'].includes(paymentStatus)
+        if (!paymentIsFinal) {
+          const pollForConfirmation = async () => {
+            try {
+              const result = await getOnsiteCheckoutStatus(checkout.checkoutRef, checkout.statusToken)
+              if (cancelled) return
+
+              const refreshedSummary = await getOnsiteOrderSummary(checkout.checkoutRef, checkout.statusToken)
+              if (cancelled) return
+              applySummary(refreshedSummary)
+
+              const resolvedStatus = String(result.status || refreshedSummary.paymentStatus || '').toLowerCase()
+              if (resolvedStatus === 'paid') {
+                saveCompletedCheckout(checkout.checkoutRef, checkout.statusToken)
+                clearPendingCheckout()
+                clearCart()
+                return
+              }
+
+              if (resolvedStatus === 'failed' || resolvedStatus === 'canceled') return
+            } catch {
+              if (cancelled) return
+            }
+
+            if (!cancelled) {
+              retryTimeoutId = window.setTimeout(() => {
+                void pollForConfirmation()
+              }, 3000)
+            }
+          }
+
+          void pollForConfirmation()
+        }
       } catch (error) {
         if (cancelled) return
         setErrorMessage(error?.message || 'We could not load your order confirmation right now.')
@@ -64,8 +140,9 @@ export default function OrderConfirmedPage() {
 
     return () => {
       cancelled = true
+      if (retryTimeoutId) window.clearTimeout(retryTimeoutId)
     }
-  }, [confirmationAttempt])
+  }, [clearCart, confirmationAttempt])
 
   async function handleRegisterGuestAccount() {
     if (!guestOffer?.email) return
@@ -102,6 +179,19 @@ export default function OrderConfirmedPage() {
     } finally {
       setRegisteringGuest(false)
     }
+  }
+
+  async function handleCopyOrderNumber() {
+    const orderNumber = String(order?.orderNumber || '').trim()
+    if (!orderNumber) return
+
+    try {
+      await navigator.clipboard.writeText(orderNumber)
+    } catch {
+      // The visible copied state still confirms the action when clipboard access is unavailable.
+    }
+    setOrderNumberCopied(true)
+    window.setTimeout(() => setOrderNumberCopied(false), 2200)
   }
 
   return (
@@ -157,6 +247,31 @@ export default function OrderConfirmedPage() {
                 {paymentFailed && 'Payment could not be completed. Please contact support if you believe you were charged, or return to the shop to try again.'}
                 {!paymentVerified && !paymentFailed && 'Your payment is processing. We will confirm the order after the backend verifies it.'}
               </p>
+
+              {order.orderNumber && (
+                <div className="mt-5 grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:grid-cols-2">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Order number</p>
+                    <p className="mt-1 break-all font-mono text-sm font-bold text-slate-900">{order.orderNumber}</p>
+                  </div>
+                  <div className="flex items-end justify-between gap-3 sm:justify-end">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Order date</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">
+                        {order.createdAt ? new Date(order.createdAt).toLocaleDateString('en-IE') : 'Not available'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleCopyOrderNumber}
+                      className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-[#123A7A] hover:text-[#123A7A]"
+                      aria-label="Copy order number"
+                    >
+                      {orderNumberCopied ? 'Copied' : 'Copy'}
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <div className="flex items-center justify-between border-b border-slate-200 pb-3 text-sm">

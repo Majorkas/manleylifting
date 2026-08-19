@@ -56,4 +56,9 @@ class ContentSecurityPolicyReportOnlyMiddleware:
         policy_value = str(getattr(settings, "CONTENT_SECURITY_POLICY_REPORT_ONLY", "")).strip()
         if policy_value and "Content-Security-Policy-Report-Only" not in response:
             response["Content-Security-Policy-Report-Only"] = policy_value
+
+        strict_policy = str(getattr(settings, "CONTENT_SECURITY_POLICY", "")).strip()
+        if strict_policy and "Content-Security-Policy" not in response:
+            response["Content-Security-Policy"] = strict_policy
+
         return response

@@ -419,8 +419,17 @@ JWT_REFRESH_COOKIE_MAX_AGE = int(SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"].total_seco
 CONTENT_SECURITY_POLICY_REPORT_ONLY = os.getenv(
     "CONTENT_SECURITY_POLICY_REPORT_ONLY",
     "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; "
-    "script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; "
-    "font-src 'self' data:; connect-src 'self' https:",
+    "script-src 'self' https://js.stripe.com https://challenges.cloudflare.com 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "img-src 'self' data: https:; font-src 'self' data: https://fonts.gstatic.com; "
+    "connect-src 'self' https://api.stripe.com https://js.stripe.com https://m.stripe.com https://*.stripe.com https://challenges.cloudflare.com https://*.cloudflare.com; "
+    "frame-src 'self' https://js.stripe.com https://hooks.stripe.com https://*.stripe.com https://challenges.cloudflare.com https://*.cloudflare.com; "
+    "object-src 'none'; frame-ancestors 'none'; upgrade-insecure-requests",
+).strip()
+
+CONTENT_SECURITY_POLICY = os.getenv(
+    "CONTENT_SECURITY_POLICY",
+    CONTENT_SECURITY_POLICY_REPORT_ONLY,
 ).strip()
 
 CLOUDINARY_URL = os.getenv("CLOUDINARY_URL", "").strip()

@@ -656,6 +656,16 @@ export async function getAccountOrders() {
   })) : []
 }
 
+export async function downloadAccountOrderInvoice(orderNumber) {
+  const normalizedOrderNumber = String(orderNumber || '').trim()
+  const path = '/account/orders/by-number/' + encodeURIComponent(normalizedOrderNumber) + '/invoice/'
+  const response = await authFetch(path)
+  if (!response.ok) {
+    await parseResponse(response, path)
+  }
+  return response.blob()
+}
+
 export async function getPortalOrders({ bucket = 'recent', page = 1, pageSize = 3 } = {}) {
   const params = new URLSearchParams()
   params.set('bucket', String(bucket || 'recent'))
