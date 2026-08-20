@@ -18,11 +18,17 @@ def noop_reverse(apps, schema_editor):
 
 class Migration(migrations.Migration):
 
+    atomic = False
+
     dependencies = [
         ('api', '0031_accountsecuritystate_mfa_enabled_and_more'),
     ]
 
     operations = [
+        migrations.RunSQL(
+            sql='DROP INDEX IF EXISTS "api_onsiteorder_order_number_e8975e61_like";',
+            reverse_sql=migrations.RunSQL.noop,
+        ),
         migrations.AddField(
             model_name='onsiteorder',
             name='order_number',
