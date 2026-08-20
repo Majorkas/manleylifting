@@ -2438,6 +2438,20 @@ class CatalogReadEndpointTests(BaseApiTestCase):
         self.assertEqual(body["products"][0]["variantId"], "legacy-variant-id")
         self.assertEqual(body["products"][0]["images"][0]["alt"], "Front view")
 
+    def test_featured_products_uses_uploaded_image_for_card_image(self):
+        product = CatalogProduct.objects.get(handle="chain-block")
+        product.image_url = ""
+        product.save(update_fields=["image_url"])
+
+        response = self.client.get("/api/shop/products/featured/")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(
+            body["products"][0]["imageUrl"],
+            body["products"][0]["images"][0]["url"],
+        )
+
     def test_collections_success(self):
         response = self.client.get("/api/shop/collections/")
         self.assertEqual(response.status_code, 200)

@@ -602,12 +602,13 @@ def _map_catalog_product(product):
     }
     for image in product.images.all()
   ]
+  image_url = str(product.image_url or (images[0]["url"] if images else ""))
   return {
     "id": str(product.product_ref or ""),
     "title": str(product.title or ""),
     "handle": str(product.handle or ""),
     "description": str(product.description or ""),
-    "imageUrl": str(product.image_url or ""),
+    "imageUrl": image_url,
     "imageAlt": str(product.image_alt or ""),
     "images": images,
     "variantId": str(product.variant_ref or ""),
