@@ -27,7 +27,13 @@ vi.mock('../hooks/useCatalogManagementQueries', () => ({
     isPending: false,
     isError: false,
   }),
+  useCatalogCollectionsQuery: () => ({
+    data: { results: [] },
+    isPending: false,
+    isError: false,
+  }),
   useCatalogManagementMutation: () => ({ mutate: vi.fn(), isPending: false, isError: mockState.mutationError, error: mockState.mutationError ? new Error('Duplicate handle') : null }),
+  useCatalogCollectionMutation: () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null }),
 }))
 
 describe('catalog management panel', () => {
@@ -40,6 +46,12 @@ describe('catalog management panel', () => {
     expect(screen.getByRole('heading', { name: 'Store products' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Add product' })).toBeInTheDocument()
     expect(screen.queryByLabelText('stockPolicy')).not.toBeInTheDocument()
+  })
+
+  it('renders collection management controls', () => {
+    render(<MemoryRouter><PortalCatalogManagementPanel /></MemoryRouter>)
+    expect(screen.getByRole('heading', { name: 'Store collections' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add collection' })).toBeInTheDocument()
   })
 
   it('opens the product form in a modal and closes it with Escape', async () => {

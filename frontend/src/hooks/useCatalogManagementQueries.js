@@ -19,6 +19,14 @@ export function useCatalogManagementQuery({ search = '', isActive, page = 1 } = 
   })
 }
 
+export function useCatalogCollectionsQuery({ search = '', isActive } = {}) {
+  return useQuery({
+    queryKey: queryKeys.ownerCatalog({ type: 'collections', search, isActive }),
+    queryFn: () => catalogRequest(`/portal/catalog/collections/?search=${encodeURIComponent(search)}${isActive == null ? '' : `&isActive=${isActive}`}`),
+    staleTime: 30 * 1000,
+  })
+}
+
 function invalidateCatalogQueries(queryClient, product) {
   return Promise.all([
     queryClient.invalidateQueries({ queryKey: queryKeys.ownerCatalog() }),
@@ -59,5 +67,27 @@ export function useCatalogManagementMutation() {
       })
     },
     onSuccess: (product) => invalidateCatalogQueries(queryClient, product),
+  })
+}
+
+export function useCatalogCollectionMutation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ collectionId, action, payload }) => {
+      const path = action === 'state'
+        ? `/portal/catalog/collections/${collectionId}/state/`
+        : collectionId
+          ? `/portal/catalog/collections/${collectionId}/`
+          : '/portal/catalog/collections/'
+      return catalogRequest(path, {
+        method: collectionId && action !== 'state' ? 'PATCH' : 'POST',
+        body: JSON.stringify(payload || {}),
+      })
+    },
+    onSuccess: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.ownerCatalog() }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.products() }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.collections() }),
+    ]),
   })
 }

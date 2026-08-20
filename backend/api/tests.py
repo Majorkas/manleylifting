@@ -4177,6 +4177,45 @@ class PortalRBACTests(TestCase):
         owner_profile = UserProfile.objects.create(user=self.owner_user, role=UserProfile.ROLE_OWNER)
         owner_profile.allowed_companies.add(self.company_a, self.company_b)
 
+    def test_owner_can_manage_and_archive_store_collection(self):
+        self.client.force_authenticate(user=self.owner_user)
+
+        create_response = self.client.post(
+            "/api/portal/catalog/collections/",
+            data={
+                "handle": "lifting-accessories",
+                "title": "Lifting Accessories",
+                "description": "Accessories for everyday lifting work.",
+                "sortOrder": 2,
+            },
+            format="json",
+        )
+
+        self.assertEqual(create_response.status_code, 201)
+        collection_id = create_response.json()["id"]
+        self.assertTrue(create_response.json()["isActive"])
+
+        list_response = self.client.get("/api/portal/catalog/collections/")
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(list_response.json()["results"][0]["handle"], "lifting-accessories")
+
+        update_response = self.client.patch(
+            f"/api/portal/catalog/collections/{collection_id}/",
+            data={"title": "Lifting Accessories and Slings"},
+            format="json",
+        )
+        self.assertEqual(update_response.status_code, 200)
+        self.assertEqual(update_response.json()["title"], "Lifting Accessories and Slings")
+
+        archive_response = self.client.post(
+            f"/api/portal/catalog/collections/{collection_id}/state/",
+            data={"action": "archive"},
+            format="json",
+        )
+        self.assertEqual(archive_response.status_code, 200)
+        self.assertFalse(archive_response.json()["isActive"])
+        self.assertTrue(CatalogCollection.objects.filter(pk=collection_id).exists())
+
     def test_owner_can_create_product_with_multiple_images(self):
         self.client.force_authenticate(user=self.owner_user)
         first_image = SimpleUploadedFile("front.png", _png_bytes(), content_type="image/png")

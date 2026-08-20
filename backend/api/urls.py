@@ -55,6 +55,9 @@ from .portal_views import (
     portal_staff_assignments,
 )
 from .portal_views_modules.catalog import (
+    portal_catalog_collection_detail,
+    portal_catalog_collection_state,
+    portal_catalog_collections,
     portal_catalog_product_adjust_stock,
     portal_catalog_product_detail,
     portal_catalog_product_state,
@@ -119,6 +122,9 @@ urlpatterns = [
     path("portal/orders/", portal_orders),
     path("portal/orders/<str:order_number>/", portal_orders),
     path("portal/catalog/products/", portal_catalog_products),
+    path("portal/catalog/collections/", portal_catalog_collections),
+    path("portal/catalog/collections/<int:collection_id>/", portal_catalog_collection_detail),
+    path("portal/catalog/collections/<int:collection_id>/state/", portal_catalog_collection_state),
     path("portal/catalog/products/<int:product_id>/", portal_catalog_product_detail),
     path("portal/catalog/products/<int:product_id>/state/", portal_catalog_product_state),
     path("portal/catalog/products/<int:product_id>/stock/", portal_catalog_product_adjust_stock),

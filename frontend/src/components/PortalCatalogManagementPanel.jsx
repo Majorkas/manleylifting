@@ -8,6 +8,8 @@ import {
 } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import {
+  useCatalogCollectionMutation,
+  useCatalogCollectionsQuery,
   useCatalogManagementMutation,
   useCatalogManagementQuery,
 } from "../hooks/useCatalogManagementQueries";
@@ -21,6 +23,7 @@ const emptyForm = {
   priceAmount: "",
   sku: "",
   description: "",
+  collectionId: "",
   images: [],
   existingImages: [],
   removedImageIds: [],
@@ -36,6 +39,9 @@ export default function PortalCatalogManagementPanel() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [editingProduct, setEditingProduct] = useState(null);
   const [isProductFormOpen, setIsProductFormOpen] = useState(false);
+  const [isCollectionFormOpen, setIsCollectionFormOpen] = useState(false);
+  const [editingCollection, setEditingCollection] = useState(null);
+  const [collectionForm, setCollectionForm] = useState({ handle: "", title: "", description: "", sortOrder: 0 });
   const [stockTarget, setStockTarget] = useState(null);
   const [stockDelta, setStockDelta] = useState("");
   const [stockReason, setStockReason] = useState("");
@@ -49,7 +55,10 @@ export default function PortalCatalogManagementPanel() {
   const page = readPositiveInt(searchParams.get("page"));
   const catalogQuery = useCatalogManagementQuery({ search, isActive, page });
   const mutation = useCatalogManagementMutation();
+  const collectionsQuery = useCatalogCollectionsQuery();
+  const collectionMutation = useCatalogCollectionMutation();
   const products = catalogQuery.data?.results || [];
+  const collections = collectionsQuery.data?.results || [];
   const totalCount = Number(
     catalogQuery.data?.total_count ||
       catalogQuery.data?.totalCount ||
@@ -92,6 +101,44 @@ export default function PortalCatalogManagementPanel() {
     setIsProductFormOpen(true);
   }
 
+  function openCreateCollection() {
+    setEditingCollection(null);
+    setCollectionForm({ handle: "", title: "", description: "", sortOrder: 0 });
+    setIsCollectionFormOpen(true);
+  }
+
+  function openEditCollection(collection) {
+    setEditingCollection(collection);
+    setCollectionForm({
+      handle: collection.handle || "",
+      title: collection.title || "",
+      description: collection.description || "",
+      sortOrder: collection.sortOrder || 0,
+    });
+    setIsCollectionFormOpen(true);
+  }
+
+  function submitCollection(event) {
+    event.preventDefault();
+    collectionMutation.mutate(
+      {
+        collectionId: editingCollection?.id,
+        action: editingCollection ? "update" : "create",
+        payload: collectionForm,
+      },
+      {
+        onSuccess: () => {
+          setIsCollectionFormOpen(false);
+          setEditingCollection(null);
+          setToast({
+            title: editingCollection ? "Collection updated" : "Collection created",
+            message: `${collectionForm.title} is ready.`,
+          });
+        },
+      },
+    );
+  }
+
   function openEdit(product) {
     const existingImages = Array.isArray(product.images)
       ? product.images.map((image) => ({ ...image }))
@@ -104,6 +151,7 @@ export default function PortalCatalogManagementPanel() {
       priceAmount: product.priceAmount,
       sku: product.sku || "",
       description: product.description || "",
+      collectionId: product.collectionId || "",
       images: [],
       existingImages,
       removedImageIds: [],
@@ -224,6 +272,46 @@ export default function PortalCatalogManagementPanel() {
         aria-labelledby="catalog-management-heading"
         className="mt-8 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6"
       >
+        <div className="border-b border-slate-200 pb-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">Store structure</p>
+              <h2 className="mt-1 text-2xl font-extrabold text-[#123A7A]">Store collections</h2>
+              <p className="mt-1 text-sm text-slate-600">Group products into customer-facing collections.</p>
+            </div>
+            <button type="button" onClick={openCreateCollection} className="min-h-11 rounded-md border border-[#123A7A] px-4 py-2 text-sm font-semibold text-[#123A7A]">
+              Add collection
+            </button>
+          </div>
+          {collectionMutation.isError && <p role="alert" className="mt-4 rounded-md bg-red-50 p-3 text-sm text-red-700">{collectionMutation.error?.message || "Collection update failed."}</p>}
+          {collectionsQuery.isError && <p role="alert" className="mt-4 rounded-md bg-red-50 p-3 text-sm text-red-700">{collectionsQuery.error?.message || "Collections could not be loaded."}</p>}
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {collections.map((collection) => (
+              <article key={collection.id} className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="font-bold text-[#123A7A]">{collection.title}</h3>
+                    <p className="mt-1 text-xs text-slate-500">/{collection.handle} · {collection.productCount} products</p>
+                  </div>
+                  <span className={`text-xs font-semibold ${collection.isActive ? "text-emerald-700" : "text-slate-500"}`}>{collection.isActive ? "Active" : "Archived"}</span>
+                </div>
+                {collection.description && <p className="mt-3 line-clamp-2 text-sm text-slate-600">{collection.description}</p>}
+                <div className="mt-4 flex gap-3">
+                  <button type="button" onClick={() => openEditCollection(collection)} className="text-sm font-semibold text-[#123A7A]">Edit</button>
+                  <button
+                    type="button"
+                    disabled={collectionMutation.isPending}
+                    onClick={() => collectionMutation.mutate({ collectionId: collection.id, action: "state", payload: { action: collection.isActive ? "archive" : "reactivate" } })}
+                    className="text-sm font-semibold text-[#C61F2A]"
+                  >
+                    {collection.isActive ? "Archive" : "Reactivate"}
+                  </button>
+                </div>
+              </article>
+            ))}
+            {!collectionsQuery.isPending && collections.length === 0 && <p className="text-sm text-slate-600">No collections yet.</p>}
+          </div>
+        </div>
         <div className="flex flex-col gap-5 border-b border-slate-200 pb-5 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">
@@ -431,6 +519,36 @@ export default function PortalCatalogManagementPanel() {
         )}
       </section>
       <Modal
+        open={isCollectionFormOpen}
+        onClose={() => setIsCollectionFormOpen(false)}
+        ariaLabel={editingCollection ? "Edit collection" : "Add a collection"}
+      >
+        <form onSubmit={submitCollection} className="space-y-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-base font-bold text-slate-900">{editingCollection ? "Edit collection" : "Add a collection"}</h3>
+              <p className="mt-1 text-sm text-slate-600">Collections can be archived without deleting their products.</p>
+            </div>
+            <button type="button" aria-label="Close collection form" onClick={() => setIsCollectionFormOpen(false)} className="rounded-md border border-slate-300 p-2 text-slate-600"><X size={18} /></button>
+          </div>
+          {[
+            ["handle", "Collection handle", "Lowercase URL handle"],
+            ["title", "Collection name", "Customer-facing name"],
+            ["sortOrder", "Display order", "0"],
+          ].map(([field, label, placeholder]) => (
+            <label key={field} className="block text-sm font-semibold text-slate-700">
+              <span className="mb-1 block">{label}</span>
+              <input required={field !== "sortOrder"} type={field === "sortOrder" ? "number" : "text"} min={field === "sortOrder" ? "0" : undefined} value={collectionForm[field]} placeholder={placeholder} onChange={(event) => setCollectionForm((current) => ({ ...current, [field]: event.target.value }))} className="min-h-11 w-full rounded-md border border-slate-300 px-3 py-2 font-normal" />
+            </label>
+          ))}
+          <label className="block text-sm font-semibold text-slate-700">
+            <span className="mb-1 block">Description</span>
+            <textarea value={collectionForm.description} onChange={(event) => setCollectionForm((current) => ({ ...current, description: event.target.value }))} rows={4} className="w-full rounded-md border border-slate-300 px-3 py-2 font-normal" />
+          </label>
+          <button type="submit" disabled={collectionMutation.isPending} className="min-h-11 rounded-md bg-[#123A7A] px-4 py-2 font-semibold text-white disabled:opacity-60">{collectionMutation.isPending ? "Saving..." : editingCollection ? "Save collection changes" : "Add collection"}</button>
+        </form>
+      </Modal>
+      <Modal
         open={isProductFormOpen}
         onClose={closeProductForm}
         ariaLabel={editingProduct ? "Edit product" : "Add a product"}
@@ -509,6 +627,19 @@ export default function PortalCatalogManagementPanel() {
               rows={4}
               className="w-full rounded-md border border-slate-300 px-3 py-2 font-normal"
             />
+          </label>
+          <label className="block text-sm font-semibold text-slate-700">
+            <span className="mb-1 block">Collection</span>
+            <select
+              value={form.collectionId}
+              onChange={(event) => setForm((current) => ({ ...current, collectionId: event.target.value }))}
+              className="min-h-11 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-normal"
+            >
+              <option value="">No collection</option>
+              {collections.filter((collection) => collection.isActive || String(collection.id) === String(form.collectionId)).map((collection) => (
+                <option key={collection.id} value={collection.id}>{collection.title}</option>
+              ))}
+            </select>
           </label>
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
             <div className="flex items-center justify-between gap-3">

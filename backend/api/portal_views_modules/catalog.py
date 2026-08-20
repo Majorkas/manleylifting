@@ -23,6 +23,18 @@ def _catalog_allowed(user):
     return _is_owner(user)
 
 
+def _serialize_collection(collection):
+    return {
+        "id": collection.id,
+        "handle": collection.handle,
+        "title": collection.title,
+        "description": collection.description,
+        "sortOrder": collection.sort_order,
+        "isActive": collection.is_active,
+        "productCount": collection.products.count(),
+    }
+
+
 def _serialize_product(product):
     images = [
         {
@@ -60,6 +72,89 @@ def _serialize_product(product):
         "createdAt": product.created_at.isoformat() if product.created_at else None,
         "updatedAt": product.updated_at.isoformat() if product.updated_at else None,
     }
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated, HasPortalAccess])
+@throttle_classes([PortalMethodRateThrottle])
+def portal_catalog_collections(request):
+    if not _catalog_allowed(request.user):
+        return Response({"detail": "Catalog management requires owner or office staff role."}, status=403)
+    if request.method == "GET":
+        queryset = CatalogCollection.objects.prefetch_related("products").order_by(
+            "sort_order", "title", "handle"
+        )
+        search = str(request.GET.get("search") or "").strip()
+        if search:
+            queryset = queryset.filter(Q(title__icontains=search) | Q(handle__icontains=search))
+        if request.GET.get("isActive") is not None:
+            queryset = queryset.filter(is_active=str(request.GET.get("isActive")).lower() != "false")
+        page, page_size = _get_pagination_params(request)
+        page_data = _paginate_queryset(queryset, page, page_size)
+        return Response({**page_data, "results": [_serialize_collection(item) for item in page_data["results"]]})
+
+    handle = str(request.data.get("handle") or "").strip()
+    title = str(request.data.get("title") or "").strip()
+    if not handle or not title:
+        return Response({"detail": "handle and title are required"}, status=400)
+    try:
+        collection = CatalogCollection.objects.create(
+            handle=handle,
+            title=title,
+            description=str(request.data.get("description") or ""),
+            sort_order=max(0, int(request.data.get("sortOrder") or 0)),
+        )
+    except (IntegrityError, ValueError, TypeError):
+        return Response({"detail": "Handle already exists or sort order is invalid."}, status=400)
+    return Response(_serialize_collection(collection), status=status.HTTP_201_CREATED)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated, HasPortalAccess])
+@throttle_classes([PortalMethodRateThrottle])
+def portal_catalog_collection_detail(request, collection_id):
+    if not _catalog_allowed(request.user):
+        return Response({"detail": "Catalog management requires owner or office staff role."}, status=403)
+    try:
+        collection = CatalogCollection.objects.get(pk=collection_id)
+    except CatalogCollection.DoesNotExist:
+        return Response({"detail": "Not found."}, status=404)
+    if "handle" in request.data:
+        collection.handle = str(request.data.get("handle") or "").strip()
+    if "title" in request.data:
+        collection.title = str(request.data.get("title") or "").strip()
+    if "description" in request.data:
+        collection.description = str(request.data.get("description") or "")
+    if "sortOrder" in request.data:
+        try:
+            collection.sort_order = max(0, int(request.data.get("sortOrder") or 0))
+        except (TypeError, ValueError):
+            return Response({"detail": "sort order must be an integer"}, status=400)
+    if not collection.handle or not collection.title:
+        return Response({"detail": "handle and title are required"}, status=400)
+    try:
+        collection.save()
+    except IntegrityError:
+        return Response({"detail": "Handle already exists."}, status=400)
+    return Response(_serialize_collection(collection))
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, HasPortalAccess])
+@throttle_classes([PortalMethodRateThrottle])
+def portal_catalog_collection_state(request, collection_id):
+    if not _catalog_allowed(request.user):
+        return Response({"detail": "Catalog management requires owner or office staff role."}, status=403)
+    try:
+        collection = CatalogCollection.objects.get(pk=collection_id)
+    except CatalogCollection.DoesNotExist:
+        return Response({"detail": "Not found."}, status=404)
+    action = str(request.data.get("action") or "").lower()
+    if action not in {"archive", "reactivate"}:
+        return Response({"detail": "action must be archive or reactivate"}, status=400)
+    collection.is_active = action == "reactivate"
+    collection.save(update_fields=["is_active", "updated_at"])
+    return Response(_serialize_collection(collection))
 
 
 def _validate_product_images(uploaded_images):
