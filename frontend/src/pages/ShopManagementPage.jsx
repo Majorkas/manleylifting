@@ -12,6 +12,7 @@ export default function ShopManagementPage() {
   const navigate = useNavigate()
   const [profile, setProfile] = useState(null)
   const [errorMessage, setErrorMessage] = useState('')
+  const [isCatalogModalOpen, setIsCatalogModalOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -42,7 +43,7 @@ export default function ShopManagementPage() {
   }, [navigate])
 
   return (
-    <PortalLayout>
+    <PortalLayout hideNavbar={isCatalogModalOpen}>
       <div className="mx-auto w-full max-w-7xl px-6 pb-16">
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-6">
           <div>
@@ -56,7 +57,7 @@ export default function ShopManagementPage() {
         </div>
         {errorMessage && <div role="alert" className="mt-6 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{errorMessage}</div>}
         {!profile && !errorMessage && <p className="mt-6 text-sm text-slate-600" role="status">Loading shop management...</p>}
-        {profile && <PortalCatalogManagementPanel />}
+        {profile && <PortalCatalogManagementPanel onModalStateChange={setIsCatalogModalOpen} />}
       </div>
     </PortalLayout>
   )

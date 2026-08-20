@@ -35,7 +35,7 @@ function readPositiveInt(value, fallback = 1) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-export default function PortalCatalogManagementPanel() {
+export default function PortalCatalogManagementPanel({ onModalStateChange }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [editingProduct, setEditingProduct] = useState(null);
   const [isProductFormOpen, setIsProductFormOpen] = useState(false);
@@ -257,6 +257,10 @@ export default function PortalCatalogManagementPanel() {
     [newImagePreviews],
   );
   const formDirty = JSON.stringify(form) !== JSON.stringify(initialForm);
+
+  useEffect(() => {
+    onModalStateChange?.(isProductFormOpen || isCollectionFormOpen || Boolean(stockTarget));
+  }, [isCollectionFormOpen, isProductFormOpen, onModalStateChange, stockTarget]);
 
   function closeProductForm() {
     if (formDirty && !window.confirm("Discard unsaved product changes?"))

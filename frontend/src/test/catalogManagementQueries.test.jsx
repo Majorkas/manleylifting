@@ -67,6 +67,18 @@ describe('catalog management panel', () => {
     expect(screen.queryByRole('dialog', { name: /add a product/i })).not.toBeInTheDocument()
   })
 
+  it('reports modal visibility so the portal navbar can hide', async () => {
+    const user = (await import('@testing-library/user-event')).default.setup()
+    const onModalStateChange = vi.fn()
+    render(<MemoryRouter><PortalCatalogManagementPanel onModalStateChange={onModalStateChange} /></MemoryRouter>)
+
+    await user.click(screen.getByRole('button', { name: 'Add product' }))
+    expect(onModalStateChange).toHaveBeenLastCalledWith(true)
+
+    await user.keyboard('{Escape}')
+    expect(onModalStateChange).toHaveBeenLastCalledWith(false)
+  })
+
   it('renders mutation errors and supports status filtering', () => {
     mockState.mutationError = true
     render(<MemoryRouter><PortalCatalogManagementPanel /></MemoryRouter>)
