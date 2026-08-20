@@ -45,21 +45,22 @@ export default function ShopManagementPage() {
 
   return (
     <PortalLayout hideNavbar={isCatalogModalOpen}>
-      <div className="mx-auto w-full max-w-7xl px-6 pb-16">
-        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-6">
-          <div>
-            <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">Store operations</p>
-            <h1 className="mt-1 text-3xl font-extrabold text-[#123A7A]">Shop management</h1>
-            <p className="mt-2 text-sm text-slate-600">Create, update, publish, archive, and adjust stock for store products.</p>
+      {!profile && !errorMessage ? <ShopManagementSkeleton /> : (
+        <div className="mx-auto w-full max-w-7xl px-6 pb-16">
+          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-6">
+            <div>
+              <p className="text-sm font-bold uppercase tracking-[0.16em] text-[#C61F2A]">Store operations</p>
+              <h1 className="mt-1 text-3xl font-extrabold text-[#123A7A]">Shop management</h1>
+              <p className="mt-2 text-sm text-slate-600">Create, update, publish, archive, and adjust stock for store products.</p>
+            </div>
+            <Link to="/account" className="min-h-11 rounded-md border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-[#123A7A] hover:bg-slate-50">
+              Back to profile
+            </Link>
           </div>
-          <Link to="/account" className="min-h-11 rounded-md border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-[#123A7A] hover:bg-slate-50">
-            Back to profile
-          </Link>
+          {errorMessage && <div role="alert" className="mt-6 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{errorMessage}</div>}
+          {profile && <PortalCatalogManagementPanel onModalStateChange={setIsCatalogModalOpen} />}
         </div>
-        {errorMessage && <div role="alert" className="mt-6 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{errorMessage}</div>}
-        {!profile && !errorMessage && <ShopManagementSkeleton />}
-        {profile && <PortalCatalogManagementPanel onModalStateChange={setIsCatalogModalOpen} />}
-      </div>
+      )}
     </PortalLayout>
   )
 }
