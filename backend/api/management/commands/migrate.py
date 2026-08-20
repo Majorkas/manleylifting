@@ -27,25 +27,35 @@ ORDER_NUMBER_MIGRATION = ("api", "0032_onsiteorder_order_number")
 def repair_stale_order_number_indexes(using="default"):
     connection = connections[using]
     if connection.vendor != "postgresql":
-        return
+        return 0
     if ORDER_NUMBER_MIGRATION in MigrationRecorder(connection).applied_migrations():
-        return
+        return 0
     with connection.cursor() as cursor:
         cursor.execute(
-            "SELECT indexname FROM pg_indexes "
+            "SELECT schemaname, indexname FROM pg_indexes "
             "WHERE tablename = %s AND indexname LIKE %s",
             [STALE_INDEX_TABLE, f"{STALE_INDEX_PREFIX}%"],
         )
-        stale_index_names = [row[0] for row in cursor.fetchall()]
-        for index_name in stale_index_names:
+        stale_indexes = cursor.fetchall()
+        for schema_name, index_name in stale_indexes:
             cursor.execute(
-                f"DROP INDEX IF EXISTS {connection.ops.quote_name(index_name)} CASCADE;"
+                "DROP INDEX IF EXISTS "
+                f"{connection.ops.quote_name(schema_name)}."
+                f"{connection.ops.quote_name(index_name)} CASCADE;"
             )
+    connection.commit()
+    return len(stale_indexes)
 
 
 class Command(MigrateCommand):
     def handle(self, *args, **options):
         if not any(options.get(flag) for flag in ("plan", "check", "fake")):
             database = options.get("database") or "default"
-            repair_stale_order_number_indexes(using=database)
+            repaired_count = repair_stale_order_number_indexes(using=database)
+            if repaired_count:
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"Removed {repaired_count} stale order_number index(es)."
+                    )
+                )
         return super().handle(*args, **options)
