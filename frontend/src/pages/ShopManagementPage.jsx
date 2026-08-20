@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import PortalCatalogManagementPanel from '../components/PortalCatalogManagementPanel'
 import PortalLayout from '../components/PortalLayout'
+import { ShopManagementSkeleton } from '../components/PortalLoadingSkeletons'
 import { getPortalMe } from '../utils/portalApi'
 import usePageMeta from '../utils/usePageMeta'
 
@@ -56,7 +57,7 @@ export default function ShopManagementPage() {
           </Link>
         </div>
         {errorMessage && <div role="alert" className="mt-6 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{errorMessage}</div>}
-        {!profile && !errorMessage && <p className="mt-6 text-sm text-slate-600" role="status">Loading shop management...</p>}
+        {!profile && !errorMessage && <ShopManagementSkeleton />}
         {profile && <PortalCatalogManagementPanel onModalStateChange={setIsCatalogModalOpen} />}
       </div>
     </PortalLayout>

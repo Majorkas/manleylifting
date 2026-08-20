@@ -51,4 +51,17 @@ describe('ShopManagementPage', () => {
 
     await waitFor(() => expect(screen.getByText('Portal dashboard')).toBeInTheDocument())
   })
+
+  it('renders a management skeleton while the profile loads', () => {
+    portalApi.getPortalMe.mockReturnValue(new Promise(() => {}))
+
+    render(
+      <MemoryRouter>
+        <ShopManagementPage />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByLabelText('Loading shop management')).toBeInTheDocument()
+    expect(screen.queryByText('Loading shop management...')).not.toBeInTheDocument()
+  })
 })

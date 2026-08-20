@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Modal from "../components/Modal";
 import PortalToast from "../components/PortalToast";
 import PortalLayout from "../components/PortalLayout";
+import { FulfillmentOperationsSkeleton, FulfillmentQueueSkeleton } from "../components/PortalLoadingSkeletons";
 import { useFulfillmentOrdersQuery } from "../hooks/usePortalOrderQueries";
 import { invalidatePortalOrderQueries } from "../queryInvalidation";
 import { queryKeys } from "../queryKeys";
@@ -205,9 +206,7 @@ export default function FulfillmentOperationsPage() {
   if (!profile && !errorMessage)
     return (
       <PortalLayout>
-        <main className="mx-auto max-w-7xl px-6 py-16">
-          <p role="status">Loading fulfillment operations...</p>
-        </main>
+        <FulfillmentOperationsSkeleton />
       </PortalLayout>
     );
   if (errorMessage)
@@ -299,11 +298,7 @@ export default function FulfillmentOperationsPage() {
               )}
             </div>
           )}
-          {!ordersQuery.error && ordersQuery.isPending && (
-            <p className="mt-6 text-sm text-slate-600" role="status">
-              Loading fulfillment orders...
-            </p>
-          )}
+          {!ordersQuery.error && ordersQuery.isPending && <FulfillmentQueueSkeleton count={pageSize} showHeader={false} />}
           {!ordersQuery.error &&
             !ordersQuery.isPending &&
             orders.length === 0 && (

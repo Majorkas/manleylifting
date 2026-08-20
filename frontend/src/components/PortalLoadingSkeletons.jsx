@@ -2,6 +2,152 @@ function PulseBlock({ className = '' }) {
   return <div className={`animate-pulse rounded bg-slate-200 ${className}`.trim()} aria-hidden="true" />
 }
 
+export function ShopManagementSkeleton() {
+  return (
+    <div className="mx-auto w-full max-w-7xl px-6 pb-16" aria-label="Loading shop management">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 pb-6">
+        <div>
+          <PulseBlock className="h-3 w-32" />
+          <PulseBlock className="mt-3 h-9 w-64" />
+          <PulseBlock className="mt-3 h-4 w-80 max-w-full" />
+        </div>
+        <PulseBlock className="h-11 w-32 rounded-md" />
+      </div>
+      <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+        <div className="flex items-end justify-between gap-4 border-b border-slate-200 pb-5">
+          <div>
+            <PulseBlock className="h-3 w-28" />
+            <PulseBlock className="mt-3 h-7 w-48" />
+            <PulseBlock className="mt-2 h-4 w-72 max-w-full" />
+          </div>
+          <PulseBlock className="h-11 w-32 rounded-md" />
+        </div>
+        <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, index) => (
+            <article key={index} className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <PulseBlock className="h-5 w-36" />
+                <PulseBlock className="h-4 w-14 rounded-full" />
+              </div>
+              <PulseBlock className="mt-3 h-3 w-48" />
+              <PulseBlock className="mt-3 h-4 w-full" />
+              <div className="mt-4 flex gap-3">
+                <PulseBlock className="h-4 w-10" />
+                <PulseBlock className="h-4 w-16" />
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+      <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+        <div className="flex items-end justify-between gap-4 border-b border-slate-200 pb-5">
+          <div>
+            <PulseBlock className="h-3 w-28" />
+            <PulseBlock className="mt-3 h-7 w-40" />
+          </div>
+          <PulseBlock className="h-11 w-32 rounded-md" />
+        </div>
+        <div className="mt-5 grid gap-3 lg:grid-cols-[minmax(0,1fr)_12rem_auto]">
+          <PulseBlock className="h-11 w-full rounded-md" />
+          <PulseBlock className="h-11 w-full rounded-md" />
+          <PulseBlock className="h-5 w-28 self-end" />
+        </div>
+        <div className="mt-5 space-y-3">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="flex items-center justify-between gap-4 border-b border-slate-100 py-4">
+              <div className="flex items-center gap-3">
+                <PulseBlock className="h-12 w-12 rounded-md" />
+                <div>
+                  <PulseBlock className="h-5 w-40" />
+                  <PulseBlock className="mt-2 h-3 w-28" />
+                </div>
+              </div>
+              <PulseBlock className="h-9 w-24 rounded-md" />
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+export function FulfillmentOperationsSkeleton() {
+  return (
+    <div className="mx-auto w-full max-w-7xl px-6 pb-16 pt-10" aria-label="Loading fulfillment operations">
+      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200 pb-6">
+        <div>
+          <PulseBlock className="h-3 w-32" />
+          <PulseBlock className="mt-3 h-9 w-72" />
+          <PulseBlock className="mt-3 h-4 w-96 max-w-full" />
+        </div>
+        <PulseBlock className="h-11 w-32 rounded-md" />
+      </div>
+      <FulfillmentQueueSkeleton />
+    </div>
+  )
+}
+
+export function FulfillmentQueueSkeleton({ count = 5, showHeader = true }) {
+  return (
+    <div className={showHeader ? "mt-8 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6" : "mt-6"} aria-label="Loading fulfillment orders">
+      {showHeader && <>
+        <div className="flex flex-wrap items-end justify-between gap-4 border-b border-slate-200 pb-5">
+          <div>
+            <PulseBlock className="h-7 w-40" />
+            <PulseBlock className="mt-2 h-4 w-72 max-w-full" />
+          </div>
+          <PulseBlock className="h-4 w-36" />
+        </div>
+        <div className="mt-5 flex flex-wrap gap-2">
+          {Array.from({ length: 3 }).map((_, index) => <PulseBlock key={index} className="h-11 w-40 rounded-md" />)}
+        </div>
+      </>}
+      <div className="space-y-3 md:hidden">
+        {Array.from({ length: count }).map((_, index) => (
+          <article key={index} className="rounded-lg border border-slate-200 p-4">
+            <PulseBlock className="h-5 w-36" />
+            <PulseBlock className="mt-2 h-4 w-24" />
+            <PulseBlock className="mt-2 h-4 w-40" />
+            <PulseBlock className="mt-4 h-9 w-24 rounded-md" />
+          </article>
+        ))}
+      </div>
+      <div className="hidden overflow-hidden rounded-xl border border-slate-200 md:block">
+        <div className="grid grid-cols-6 gap-4 bg-[#123A7A] px-4 py-3">
+          {Array.from({ length: 6 }).map((_, index) => <PulseBlock key={index} className="h-4 w-20 bg-white/40" />)}
+        </div>
+        {Array.from({ length: count }).map((_, index) => (
+          <div key={index} className="grid grid-cols-6 gap-4 border-t border-slate-200 px-4 py-4">
+            {Array.from({ length: 6 }).map((__, cell) => <PulseBlock key={cell} className={cell === 0 ? "h-4 w-36" : "h-4 w-24"} />)}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+export function CatalogManagementSkeleton() {
+  return (
+    <div className="space-y-3" aria-label="Loading store catalog">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <div key={index} className="flex items-center justify-between gap-4 border-b border-slate-100 py-4">
+          <div className="flex items-center gap-3">
+            <PulseBlock className="h-12 w-12 rounded-md" />
+            <div>
+              <PulseBlock className="h-5 w-44" />
+              <PulseBlock className="mt-2 h-3 w-28" />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <PulseBlock className="h-9 w-24 rounded-md" />
+            <PulseBlock className="h-9 w-16 rounded-md" />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function CustomerStatsSkeleton() {
   return (
     <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-label="Loading customer stats">

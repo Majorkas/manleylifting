@@ -109,4 +109,22 @@ describe("FulfillmentOperationsPage", () => {
     expect(screen.getByText("Shipping address")).toBeInTheDocument();
     expect(screen.getByText("jane.customer@example.com")).toBeInTheDocument();
   });
+
+  it("renders fulfillment skeletons while the profile loads", () => {
+    portalApi.getPortalMe.mockReturnValue(new Promise(() => {}));
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <FulfillmentOperationsPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByLabelText("Loading fulfillment operations")).toBeInTheDocument();
+    expect(screen.queryByText("Loading fulfillment operations...")).not.toBeInTheDocument();
+  });
 });

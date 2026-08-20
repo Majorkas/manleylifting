@@ -15,6 +15,7 @@ import {
 } from "../hooks/useCatalogManagementQueries";
 import Modal from "./Modal";
 import PortalToast from "./PortalToast";
+import { CatalogManagementSkeleton } from "./PortalLoadingSkeletons";
 
 const emptyForm = {
   variantRef: "",
@@ -289,7 +290,7 @@ export default function PortalCatalogManagementPanel({ onModalStateChange }) {
           </div>
           {collectionMutation.isError && <p role="alert" className="mt-4 rounded-md bg-red-50 p-3 text-sm text-red-700">{collectionMutation.error?.message || "Collection update failed."}</p>}
           {collectionsQuery.isError && <p role="alert" className="mt-4 rounded-md bg-red-50 p-3 text-sm text-red-700">{collectionsQuery.error?.message || "Collections could not be loaded."}</p>}
-          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {collectionsQuery.isPending ? <CatalogManagementSkeleton /> : <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {collections.map((collection) => (
               <article key={collection.id} className="rounded-lg border border-slate-200 bg-slate-50 p-4">
                 <div className="flex items-start justify-between gap-3">
@@ -313,8 +314,8 @@ export default function PortalCatalogManagementPanel({ onModalStateChange }) {
                 </div>
               </article>
             ))}
-            {!collectionsQuery.isPending && collections.length === 0 && <p className="text-sm text-slate-600">No collections yet.</p>}
-          </div>
+            {collections.length === 0 && <p className="text-sm text-slate-600">No collections yet.</p>}
+          </div>}
         </div>
         <div className="flex flex-col gap-5 border-b border-slate-200 pb-5 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -401,11 +402,7 @@ export default function PortalCatalogManagementPanel({ onModalStateChange }) {
             {mutation.error?.message || "Catalog update failed."}
           </p>
         )}
-        {catalogQuery.isPending && (
-          <p className="mt-5 text-sm text-slate-600" role="status">
-            Loading store products...
-          </p>
-        )}
+        {catalogQuery.isPending && <div className="mt-5"><CatalogManagementSkeleton /></div>}
         {catalogQuery.isError && (
           <p
             role="alert"
