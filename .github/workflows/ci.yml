@@ -40,6 +40,11 @@ jobs:
   frontend:
     name: Frontend checks
     runs-on: ubuntu-latest
+    env:
+      # Tests mock @stripe/stripe-js and never make a real network call; this
+      # placeholder only satisfies CheckoutPage's truthy env-var check so the
+      # payment form renders instead of short-circuiting to a config error.
+      VITE_STRIPE_PUBLISHABLE_KEY: pk_test_replace
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
