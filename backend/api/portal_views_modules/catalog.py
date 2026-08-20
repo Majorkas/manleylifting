@@ -195,12 +195,20 @@ def _save_product_images(product, uploaded_images):
         )
 
 
+def _parse_json_list(value):
+    if value in (None, ""):
+        return []
+    if isinstance(value, list):
+        return value
+    return json.loads(value)
+
+
 def _apply_product_image_changes(product, request_data, uploaded_images):
     raw_removed_ids = request_data.get("removedImageIds", "[]")
     raw_image_order = request_data.get("imageOrder", "[]")
     try:
-        removed_ids = {int(value) for value in json.loads(raw_removed_ids or "[]")}
-        image_order = [int(value) for value in json.loads(raw_image_order or "[]")]
+        removed_ids = {int(value) for value in _parse_json_list(raw_removed_ids)}
+        image_order = [int(value) for value in _parse_json_list(raw_image_order)]
     except (TypeError, ValueError, json.JSONDecodeError):
         raise ValueError("Product image ordering data is invalid")
 

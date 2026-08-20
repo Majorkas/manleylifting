@@ -4296,6 +4296,35 @@ class PortalRBACTests(TestCase):
         self.assertEqual(images[0].id, second.id)
         self.assertEqual(images[1].sort_order, 1)
 
+    def test_owner_can_save_product_image_order_from_json_payload(self):
+        self.client.force_authenticate(user=self.owner_user)
+        product = CatalogProduct.objects.create(
+            variant_ref="json-image-order-variant",
+            handle="json-image-order",
+            title="JSON Image Order",
+            price_amount="25.00",
+        )
+        first = CatalogProductImage.objects.create(
+            product=product,
+            image=SimpleUploadedFile("json-first.png", _png_bytes(), content_type="image/png"),
+            sort_order=0,
+        )
+        second = CatalogProductImage.objects.create(
+            product=product,
+            image=SimpleUploadedFile("json-second.png", _png_bytes(), content_type="image/png"),
+            sort_order=1,
+        )
+
+        response = self.client.patch(
+            f"/api/portal/catalog/products/{product.id}/",
+            data={"imageOrder": [second.id, first.id], "removedImageIds": []},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        images = list(CatalogProductImage.objects.filter(product=product).order_by("sort_order"))
+        self.assertEqual([image.id for image in images], [second.id, first.id])
+
     def test_authenticate_with_case_insensitive_username(self):
         user_model = get_user_model()
         user = user_model.objects.create_user(username="MixedCaseUser", password="testpass123")
