@@ -23,13 +23,6 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        # A prior interrupted deploy can leave this Postgres "_like" index behind
-        # even though the migration itself was never recorded as applied. Drop it
-        # first so the AlterField below can safely recreate it.
-        migrations.RunSQL(
-            sql='DROP INDEX IF EXISTS "api_onsiteorder_order_number_e8975e61_like";',
-            reverse_sql=migrations.RunSQL.noop,
-        ),
         migrations.AddField(
             model_name='onsiteorder',
             name='order_number',
