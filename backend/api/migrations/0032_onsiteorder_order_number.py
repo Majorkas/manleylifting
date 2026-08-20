@@ -16,6 +16,63 @@ def noop_reverse(apps, schema_editor):
     return
 
 
+def ensure_order_number_column(apps, schema_editor):
+    OnsiteOrder = apps.get_model('api', 'OnsiteOrder')
+    connection = schema_editor.connection
+
+    if connection.vendor == 'postgresql':
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'ALTER TABLE "api_onsiteorder" '
+                'ADD COLUMN IF NOT EXISTS "order_number" varchar(32) '
+                "DEFAULT '' NOT NULL;"
+            )
+            cursor.execute(
+                'ALTER TABLE "api_onsiteorder" '
+                'ALTER COLUMN "order_number" DROP DEFAULT;'
+            )
+        return
+
+    with connection.cursor() as cursor:
+        columns = {
+            column.name
+            for column in connection.introspection.get_table_description(
+                cursor, OnsiteOrder._meta.db_table
+            )
+        }
+    if 'order_number' not in columns:
+        field = models.CharField(
+            blank=True,
+            db_index=True,
+            default='',
+            max_length=32,
+        )
+        field.set_attributes_from_name('order_number')
+        schema_editor.add_field(OnsiteOrder, field)
+
+
+def ensure_order_number_indexes(apps, schema_editor):
+    connection = schema_editor.connection
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'DROP INDEX IF EXISTS "api_onsiteorder_order_number_e8975e61";'
+        )
+        cursor.execute(
+            'DROP INDEX IF EXISTS "api_onsiteorder_order_number_e8975e61_like";'
+        )
+        cursor.execute(
+            'CREATE UNIQUE INDEX IF NOT EXISTS '
+            '"api_onsiteorder_order_number_e8975e61" '
+            'ON "api_onsiteorder" ("order_number");'
+        )
+        if connection.vendor == 'postgresql':
+            cursor.execute(
+                'CREATE INDEX IF NOT EXISTS '
+                '"api_onsiteorder_order_number_e8975e61_like" '
+                'ON "api_onsiteorder" ("order_number" varchar_pattern_ops);'
+            )
+
+
 class Migration(migrations.Migration):
 
     atomic = False
@@ -25,19 +82,40 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunSQL(
-            sql='DROP INDEX IF EXISTS "api_onsiteorder_order_number_e8975e61_like";',
-            reverse_sql=migrations.RunSQL.noop,
-        ),
-        migrations.AddField(
-            model_name='onsiteorder',
-            name='order_number',
-            field=models.CharField(blank=True, db_index=True, default='', max_length=32),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunPython(ensure_order_number_column, noop_reverse),
+            ],
+            state_operations=[
+                migrations.AddField(
+                    model_name='onsiteorder',
+                    name='order_number',
+                    field=models.CharField(
+                        blank=True,
+                        db_index=True,
+                        default='',
+                        max_length=32,
+                    ),
+                ),
+            ],
         ),
         migrations.RunPython(populate_legacy_order_numbers, noop_reverse),
-        migrations.AlterField(
-            model_name='onsiteorder',
-            name='order_number',
-            field=models.CharField(blank=True, db_index=True, default='', max_length=32, unique=True),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunPython(ensure_order_number_indexes, noop_reverse),
+            ],
+            state_operations=[
+                migrations.AlterField(
+                    model_name='onsiteorder',
+                    name='order_number',
+                    field=models.CharField(
+                        blank=True,
+                        db_index=True,
+                        default='',
+                        max_length=32,
+                        unique=True,
+                    ),
+                ),
+            ],
         ),
     ]
